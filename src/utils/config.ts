@@ -12,6 +12,7 @@ export interface VManageConfig {
   allowWrite: boolean;
   timeoutMs: number;
   maxConcurrency: number;
+  logTiming: boolean;
 }
 
 function positiveInt(name: string, fallback: number): number {
@@ -55,5 +56,6 @@ export function loadConfig(): VManageConfig {
     allowWrite,
     timeoutMs,
     maxConcurrency,
+    logTiming: process.env.VMANAGE_LOG_TIMING === 'true',
   };
 }

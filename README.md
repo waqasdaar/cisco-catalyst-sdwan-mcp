@@ -9,11 +9,13 @@ All requests go through vManage. The server never connects to routers directly.
 - **Validated against the spec.** Calls through the general tools are checked against the OpenAPI spec published by *your* vManage before they are sent.
 - **Secrets are protected.** Endpoints that issue tokens, passwords, OTPs or credentials are blocked. Session IDs and CSRF tokens are redacted from responses.
 - **Fast and resilient.**
-  - Reuses connections and shares one login across concurrent calls.
+  - Logs in, loads the device list and the API spec in the background at startup, so the first question doesn't wait.
+  - Reuses connections and shares one login across concurrent calls; the JWT is renewed in the background before it expires.
   - Combines identical concurrent requests and caps how many run against vManage at once.
-  - Retries dropped connections, with bounded timeouts and clear errors when vManage is unreachable.
-  - Caches the API spec on disk.
-  - Returns compact JSON.
+  - Retries dropped connections and 429/502/503/504 with jittered backoff, honouring `Retry-After`.
+  - Fails fast for 10 s after vManage proves unreachable, instead of every call waiting for a timeout.
+  - Caches the API spec on disk and short-lived lookups in a bounded memory cache.
+  - Returns compact JSON, and every list tool accepts `fields` and `filter` to return only what is needed.
 - **Device names work everywhere.** Pass a hostname (`Branch-1`), system IP, UUID or serial number.
 - **JWT authentication** (vManage 20.18.1+) with session-cookie fallback for older releases.
 
@@ -147,6 +149,17 @@ Operations count as **write** when their method is POST, PUT or DELETE, or when 
 
 Parameters marked `*` are required; all others are optional. Every `device_id` / `device` parameter accepts a **hostname** (e.g. `Branch-1`), **system IP**, UUID or serial number. Real-time device tools query the device through the Manager; tools with `synced` can return the Manager's cached copy instead, which is faster.
 
+**Response shaping (all tools except the three API catalog tools).** Two optional arguments trim list results before they reach the assistant, which means fewer tokens and faster answers:
+
+| Argument | Example | Effect |
+|---|---|---|
+| `fields` | `["host-name", "system-ip", "reachability"]` | Keep only these fields in each row |
+| `filter` | `{ "reachability": "unreachable" }` or `{ "color": ["mpls", "private1"] }` | Keep only matching rows (case-insensitive; an array matches any value). The response includes `selection: { matched, of }`. |
+
+```json
+{ "name": "list_devices", "arguments": { "fields": ["host-name", "system-ip"], "filter": { "device-type": "vedge" } } }
+```
+
 #### Devices and inventory (5)
 
 | Tool | Description | Key parameters | Example prompt |
@@ -206,15 +219,15 @@ Use the Validator's system IP or hostname as `device_id`.
 
 | Tool | Description | Key parameters | Example prompt |
 |---|---|---|---|
-| `get_bfd_sessions` | BFD sessions (tunnels) of a device | `device_id`\* | "Are all BFD sessions on Branch-1 up?" |
+| `get_bfd_sessions` | BFD sessions (tunnels) of a device | `device_id`\*, `synced` | "Are all BFD sessions on Branch-1 up?" |
 | `get_bfd_summary` | BFD session summary | `device_id`\* | "BFD summary of Branch-2." |
 | `get_bfd_tloc` | BFD session summary per TLOC | `device_id`\* | "BFD sessions per TLOC color on Branch-3." |
 | `get_device_tloc` | TLOC information of a device | `device_id`\* | "Show TLOCs of Branch-1." |
 | `get_device_vpn` | VPN configuration of a device | `device_id`\* | "Which VPNs are configured on Hub-2?" |
 | `get_bridge_table` | Bridge forwarding table | `device_id`\* | "Show the bridge table of Branch-2." |
-| `get_device_interfaces` | Interface status and configuration | `device_id`\* | "Which interfaces are down on Branch-3?" |
+| `get_device_interfaces` | Interface status and configuration | `device_id`\*, `synced` | "Which interfaces are down on Branch-3?" |
 | `get_device_arp` | ARP table (IPv4 to MAC) | `device_id`\* | "Show the ARP table of Hub-1." |
-| `get_system_status` | CPU, memory, uptime | `device_id`\* | "What's the CPU and memory usage on Hub-1?" |
+| `get_system_status` | CPU, memory, uptime | `device_id`\*, `synced` | "What's the CPU and memory usage on Hub-1?" |
 | `get_bgp_neighbors` | BGP neighbors | `device_id`\* | "Show BGP neighbors on Hub-1." |
 | `get_bgp_routes` | BGP routes | `device_id`\* | "Show BGP routes on Hub-2." |
 | `get_bgp_summary` | BGP summary | `device_id`\* | "BGP summary of Hub-1." |
@@ -332,6 +345,7 @@ The server reads `.env` from the project (or deployed) root folder. You can also
 | `VMANAGE_ALLOW_WRITE` | No | `false` | `true` allows write operations through `call_api_operation` (each still needs `confirm: true`) |
 | `VMANAGE_TIMEOUT_MS` | No | `120000` | Per-request timeout. Real-time device queries are proxied through the Manager and can be slow. |
 | `VMANAGE_MAX_CONCURRENCY` | No | `8` | Maximum simultaneous requests sent to the Manager |
+| `VMANAGE_LOG_TIMING` | No | `false` | `true` logs each vManage call (path, status, duration, retries, cache hits) to stderr. Never logs credentials or response data. |
 
 The OpenAPI spec is cached in `~/.cache/catalyst-sdwan-mcp/` for 24 hours. If the Manager is unreachable, an older cached copy is used. Delete the file to force a refresh after an upgrade.
 
@@ -738,7 +752,8 @@ npx @modelcontextprotocol/inspector node /absolute/path/to/build/index.js
 | `ETIMEDOUT ... read` or the server hangs on start | Project is in a cloud-synced folder whose files were moved to the cloud. Run `npm run deploy` and point the client at `~/mcp-servers/catalyst-sdwan-mcp/build/index.js`. |
 | `Cannot reach vManage at <host>:443 (ETIMEDOUT)` | No network path to the Manager (often a disconnected VPN). The server gives up after 10 s instead of hanging. Spec-based tools keep working from the cached spec. |
 | A tool is missing or behaves like an old version | The client is starting a different copy of the server. Check every config the client reads: for OpenCode, both the project `opencode.json` and the global `~/.config/opencode/opencode.json(c)`. |
-| Calls take ~2 s each | That is the Manager's own response time per request, even on a reused connection. Prefer the combined tools (`get_ux2_overview`, `list_feature_profiles`), which run their requests in parallel. |
+| Calls take ~2 s each | That is the Manager's own response time per request, even on a reused connection. Prefer the combined tools (`get_ux2_overview`, `list_feature_profiles`), which run their requests in parallel, and use `fields`/`filter` to keep responses small. Set `VMANAGE_LOG_TIMING=true` to see per-call durations. |
+| `... Retrying the connection in N s.` | The previous call found vManage unreachable, so calls fail immediately for 10 s instead of each waiting for a timeout. Restore connectivity and retry. |
 | OpenChamber: *"This file still uses the OpenCode 1 format"* or "No MCP servers configured" | OpenCode 2 reads only `mcp.servers.<name>`. See [OpenChamber / OpenCode](#openchamber--opencode). |
 | `VMANAGE_HOST environment variable is required` | `.env` is missing next to `build/` (after deploying, run `npm run deploy` again) or the client `env` is incomplete. |
 | `JWT authentication failed: 400 ... Duration must be ... <= 1800` | Fixed in this version (token duration is 1800 s). Rebuild. |

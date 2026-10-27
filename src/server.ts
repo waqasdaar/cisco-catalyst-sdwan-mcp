@@ -160,6 +160,59 @@ function filterRows(result: unknown, filters: Record<string, unknown>): unknown 
   return { ...(result as object), data: rows };
 }
 
+// Catalog tools have their own arguments (list_api_categories already uses `filter`).
+const NO_ROW_OPTIONS = new Set(['list_api_categories', 'search_api_operations', 'describe_api_operation']);
+const ROW_OPTIONS = {
+  fields: {
+    type: 'array',
+    items: { type: 'string' },
+    description: 'Return only these fields of each row (smaller, faster responses), e.g. host-name, system-ip, reachability',
+  },
+  filter: {
+    type: 'object',
+    additionalProperties: true,
+    description: 'Return only rows whose fields match these values (case-insensitive; an array value matches any of its items), e.g. state: down',
+  },
+};
+const SYNCED_OPTION = {
+  type: 'boolean',
+  description: 'Return vManage cached (synced) data instead of querying the device in real time (faster)',
+};
+
+/** Applies the optional `filter` and `fields` arguments to list rows (`data`, `items` or a top-level array). */
+function selectRows(result: unknown, fields: unknown, filter: unknown): unknown {
+  if (fields === undefined && filter === undefined) return result;
+  if (fields !== undefined && (!Array.isArray(fields) || fields.some((f) => typeof f !== 'string'))) {
+    throw new Error('fields must be an array of field names');
+  }
+  if (filter !== undefined && (filter === null || typeof filter !== 'object' || Array.isArray(filter))) {
+    throw new Error('filter must be an object of field/value pairs');
+  }
+  const container = result as Record<string, unknown>;
+  const key = Array.isArray(result) ? null : Array.isArray(container?.data) ? 'data' : Array.isArray(container?.items) ? 'items' : undefined;
+  if (key === undefined) return result;
+  const rows = (key === null ? result : container[key]) as unknown[];
+
+  const norm = (v: unknown) => String(v).toLowerCase();
+  const conditions = Object.entries((filter ?? {}) as Record<string, unknown>).filter(([, v]) => v !== undefined && v !== null && v !== '');
+  let selected = conditions.length
+    ? rows.filter((row) => {
+        const r = (row ?? {}) as Record<string, unknown>;
+        return conditions.every(([k, v]) => k in r && (Array.isArray(v) ? v.some((x) => norm(x) === norm(r[k])) : norm(v) === norm(r[k])));
+      })
+    : rows;
+  if (fields) {
+    const wanted = fields as string[];
+    selected = selected.map((row) =>
+      row && typeof row === 'object'
+        ? Object.fromEntries(wanted.filter((f) => f in (row as object)).map((f) => [f, (row as Record<string, unknown>)[f]]))
+        : row
+    );
+  }
+  if (key === null) return selected;
+  return { ...container, [key]: selected, ...(conditions.length ? { selection: { matched: selected.length, of: rows.length } } : {}) };
+}
+
 export class CatalystSdwanMCPServer {
   private server: Server;
   private apiService: VManageApiService;
@@ -193,7 +246,10 @@ export class CatalystSdwanMCPServer {
     this.server.setRequestHandler(CallToolRequestSchema, async (request) => {
       const { name, arguments: args } = request.params;
       try {
-        const result = await this.handleToolCall(name, args || {});
+        const { fields, filter, ...toolArgs } = args ?? {};
+        const result = NO_ROW_OPTIONS.has(name)
+          ? await this.handleToolCall(name, args || {})
+          : selectRows(await this.handleToolCall(name, toolArgs), fields, filter);
         return {
           content: [{ type: 'text', text: toLimitedJson(shapeResponse(result, Number.MAX_SAFE_INTEGER)) }],
         };
@@ -207,7 +263,18 @@ export class CatalystSdwanMCPServer {
     });
   }
 
+  private tools: Tool[] | null = null;
+
   private getAllTools(): Tool[] {
+    this.tools ??= this.baseTools().map((tool) =>
+      NO_ROW_OPTIONS.has(tool.name)
+        ? tool
+        : { ...tool, inputSchema: { ...tool.inputSchema, properties: { ...ROW_OPTIONS, ...(tool.inputSchema.properties ?? {}) } } }
+    );
+    return this.tools;
+  }
+
+  private baseTools(): Tool[] {
     return [
       // === Full vManage API (spec-driven, covers every 26.x operation) ===
       {
@@ -625,6 +692,7 @@ export class CatalystSdwanMCPServer {
           type: 'object',
           properties: {
             device_id: { type: 'string', description: 'Device ID or system-ip' },
+            synced: SYNCED_OPTION,
           },
           required: ['device_id'],
         },
@@ -660,6 +728,7 @@ export class CatalystSdwanMCPServer {
           type: 'object',
           properties: {
             device_id: { type: 'string', description: 'Device ID or system-ip' },
+            synced: SYNCED_OPTION,
           },
           required: ['device_id'],
         },
@@ -671,6 +740,7 @@ export class CatalystSdwanMCPServer {
           type: 'object',
           properties: {
             device_id: { type: 'string', description: 'Device ID or system-ip' },
+            synced: SYNCED_OPTION,
           },
           required: ['device_id'],
         },
@@ -1299,16 +1369,22 @@ export class CatalystSdwanMCPServer {
         return deviceGet('/dataservice/device/orchestrator/proxymapping');
 
       case 'get_bfd_sessions':
-        return this.apiService.get(addDeviceId('/dataservice/device/bfd/sessions'));
+        return synced
+          ? deviceGet('/dataservice/device/bfd/synced/sessions')
+          : this.apiService.get(addDeviceId('/dataservice/device/bfd/sessions'));
       case 'get_bfd_summary':
         return this.apiService.get(addDeviceId('/dataservice/device/bfd/summary'));
       case 'get_bfd_tloc':
         return this.apiService.get(addDeviceId('/dataservice/device/bfd/tloc'));
 
       case 'get_device_interfaces':
-        return this.apiService.get(addDeviceId('/dataservice/device/interface'));
+        return synced
+          ? deviceGet('/dataservice/device/interface/synced')
+          : this.apiService.get(addDeviceId('/dataservice/device/interface'));
       case 'get_system_status':
-        return this.apiService.get(addDeviceId('/dataservice/device/system/status'));
+        return synced
+          ? deviceGet('/dataservice/device/system/synced/status')
+          : this.apiService.get(addDeviceId('/dataservice/device/system/status'));
       case 'get_device_arp':
         return this.apiService.get(addDeviceId('/dataservice/device/arp'));
 
@@ -1620,7 +1696,8 @@ export class CatalystSdwanMCPServer {
     const transport = new StdioServerTransport();
     await this.server.connect(transport);
     console.error('Cisco Catalyst SD-WAN MCP Server running on stdio');
-    // Warm the API catalog in the background so the first spec-driven call is fast.
+    // Warm the API catalog, login and device index in the background so the first calls are fast.
     this.catalog.load().catch((err) => console.error(`API catalog preload failed: ${err instanceof Error ? err.message : err}`));
+    this.deviceIndex().catch((err) => console.error(`Device index preload failed: ${err instanceof Error ? err.message : err}`));
   }
 }

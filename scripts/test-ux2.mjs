@@ -99,7 +99,36 @@ await Promise.all([
 ]);
 console.log(`      6 parallel calls finished in ${Date.now() - t0} ms`);
 
+console.log('\nCached (synced) data and response shaping:');
+for (const name of ['get_bfd_sessions', 'get_device_interfaces', 'get_system_status']) {
+  await call(name, { device_id: EDGE, synced: true }, { check: (v) => (Array.isArray(v?.data) ? null : 'no data rows') });
+}
+const allDevices = await call('list_devices', {});
+await call(
+  'list_devices',
+  { fields: ['host-name', 'system-ip'] },
+  {
+    check: (v) =>
+      v?.data?.length === allDevices?.data?.length && v.data.every((r) => Object.keys(r).every((k) => k === 'host-name' || k === 'system-ip'))
+        ? null
+        : 'fields not applied',
+  }
+);
+await call(
+  'list_devices',
+  { filter: { 'host-name': EDGE.toLowerCase() } },
+  { check: (v) => (v?.data?.length === 1 && v.selection?.matched === 1 ? null : 'filter not applied') }
+);
+await call(
+  'list_config_groups',
+  { fields: ['name'], filter: { name: [cg?.name ?? '', 'no-such-group'] } },
+  { check: (v) => (Array.isArray(v) && v.length === (cg ? 1 : 0) && (!cg || Object.keys(v[0]).join() === 'name') ? null : 'array selection failed') }
+);
+await call('list_api_categories', { filter: 'Monitoring' }, { check: (v) => (v && !v.selection ? null : 'catalog filter changed') });
+
 console.log('\nValidation (expected errors):');
+await call('list_devices', { fields: 'host-name' }, { expectError: true });
+await call('list_devices', { filter: ['up'] }, { expectError: true });
 await call('get_omp_routes', { device_id: 'no-such-device' }, { expectError: true });
 await call('get_config_group', { config_group: 'no-such-group' }, { expectError: true });
 await call('get_feature_profile', { profile_type: 'bogus', profile: 'x' }, { expectError: true });
