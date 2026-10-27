@@ -9,6 +9,7 @@
     "build": "tsc",
     "deploy": "npm run build && node scripts/deploy.mjs",
     "dev": "tsx src/index.ts",
+    "test": "node scripts/test-mock.mjs",
     "test:control-plane": "node scripts/test-control-plane.mjs",
     "test:ux2": "node scripts/test-ux2.mjs",
     "verify:api": "node scripts/verify-api-coverage.mjs"
@@ -16,7 +17,7 @@
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.0.4",
     "dotenv": "^17.3.1",
-    "node-fetch": "^3.3.2"
+    "undici": "^6.29.1"
   },
   "devDependencies": {
     "@types/node": "^20.5.0",

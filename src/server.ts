@@ -67,6 +67,7 @@ interface UxGroup {
 }
 
 const DEVICE_INDEX_TTL_MS = 60_000;
+const DEVICE_INDEX_STALE_MS = 10 * 60_000;
 const GROUP_LIST_TTL_MS = 30_000;
 const MAX_FABRIC_DEVICES = 200;
 const IPV4 = /^\d{1,3}(\.\d{1,3}){3}$/;
@@ -366,6 +367,10 @@ export class CatalystSdwanMCPServer {
             body: { description: 'Request body for POST/PUT operations (JSON)' },
             confirm: { type: 'boolean', description: 'Must be true for write operations, after explicit user approval' },
             max_items: { type: 'number', description: 'Max rows returned from list responses (default 200)' },
+            all_pages: {
+              type: 'boolean',
+              description: 'For paged statistics operations (".../page" with scrollId): keep fetching pages until max_items rows are collected',
+            },
           },
           required: ['operation_id'],
         },
@@ -1313,6 +1318,7 @@ export class CatalystSdwanMCPServer {
           body: args.body,
           confirm: args.confirm === true,
           maxItems: typeof args.max_items === 'number' ? args.max_items : undefined,
+          allPages: args.all_pages === true,
         });
       }
       case 'list_devices': {
@@ -1772,8 +1778,14 @@ export class CatalystSdwanMCPServer {
     }
   }
 
-  private async deviceIndex(): Promise<DeviceRow[]> {
-    const body = await this.apiService.get<{ data?: DeviceRow[] }>('/dataservice/device', undefined, DEVICE_INDEX_TTL_MS);
+  /** allowStale: answer name lookups from an older copy while it refreshes in the background. */
+  private async deviceIndex(allowStale = false): Promise<DeviceRow[]> {
+    const body = await this.apiService.get<{ data?: DeviceRow[] }>(
+      '/dataservice/device',
+      undefined,
+      DEVICE_INDEX_TTL_MS,
+      allowStale ? DEVICE_INDEX_STALE_MS : undefined
+    );
     return body.data ?? [];
   }
 
@@ -1818,10 +1830,15 @@ export class CatalystSdwanMCPServer {
   private async findDevice(input: string): Promise<DeviceRow> {
     const value = input.trim();
     const lower = value.toLowerCase();
-    const rows = await this.deviceIndex();
-    const hit = rows.find(
-      (d) => d['system-ip'] === value || d['host-name']?.toLowerCase() === lower || d.uuid === value || d['board-serial'] === value
-    );
+    const matches = (d: DeviceRow) =>
+      d['system-ip'] === value || d['host-name']?.toLowerCase() === lower || d.uuid === value || d['board-serial'] === value;
+    let rows = await this.deviceIndex(true);
+    let hit = rows.find(matches);
+    if (!hit) {
+      // The older copy may predate a newly added device.
+      rows = await this.deviceIndex();
+      hit = rows.find(matches);
+    }
     if (hit) return hit;
     const similar = rows
       .filter((d) => d['host-name']?.toLowerCase().includes(lower))
@@ -1891,5 +1908,10 @@ export class CatalystSdwanMCPServer {
     // Warm the API catalog, login and device index in the background so the first calls are fast.
     this.catalog.load().catch((err) => console.error(`API catalog preload failed: ${err instanceof Error ? err.message : err}`));
     this.deviceIndex().catch((err) => console.error(`Device index preload failed: ${err instanceof Error ? err.message : err}`));
+  }
+
+  async shutdown(): Promise<void> {
+    await this.apiService.logout();
+    await this.server.close().catch(() => undefined);
   }
 }

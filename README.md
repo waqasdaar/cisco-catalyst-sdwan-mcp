@@ -1,5 +1,7 @@
 # Cisco Catalyst SD-WAN MCP Server
 
+[![CI](https://github.com/waqasdaar/cisco-catalyst-sdwan-mcp/actions/workflows/ci.yml/badge.svg)](https://github.com/waqasdaar/cisco-catalyst-sdwan-mcp/actions/workflows/ci.yml)
+
 A [Model Context Protocol (MCP)](https://modelcontextprotocol.io/) server for **Cisco Catalyst SD-WAN Manager (vManage)**. It lets AI assistants such as OpenChamber/OpenCode, GitHub Copilot in VS Code and Visual Studio, Cursor and Claude query the SD-WAN fabric in natural language: devices, control plane, OMP, BFD, routing, templates, policies, alarms and the rest of the vManage REST API.
 
 All requests go through vManage. The server never connects to routers directly.
@@ -10,12 +12,14 @@ All requests go through vManage. The server never connects to routers directly.
 - **Secrets are protected.** Endpoints that issue tokens, passwords, OTPs or credentials are blocked. Session IDs and CSRF tokens are redacted from responses.
 - **Fast and resilient.**
   - Logs in, loads the device list and the API spec in the background at startup, so the first question doesn't wait.
-  - Reuses connections and shares one login across concurrent calls; the JWT is renewed in the background before it expires.
+  - Uses Node's `undici` HTTP client with a pooled keep-alive connection set and one login shared across concurrent calls; the JWT is renewed in the background before it expires.
   - Combines identical concurrent requests and caps how many run against vManage at once.
   - Retries dropped connections and 429/502/503/504 with jittered backoff, honouring `Retry-After`.
   - Fails fast for 10 s after vManage proves unreachable, instead of every call waiting for a timeout.
-  - Caches the API spec on disk and short-lived lookups in a bounded memory cache.
+  - Separate timeouts: real-time device queries get longer than inventory, configuration and statistics queries.
+  - Caches the API spec on disk and short-lived lookups in a bounded memory cache; hostname lookups answer from the last device list while it refreshes in the background.
   - Returns compact JSON, and every list tool accepts `fields` and `filter` to return only what is needed.
+  - Logs out session-cookie logins when the client disconnects, so they don't pile up against vManage's session limit.
 - **Device names work everywhere.** Pass a hostname (`Branch-1`), system IP, UUID or serial number.
 - **JWT authentication** (vManage 20.18.1+) with session-cookie fallback for older releases.
 
@@ -115,7 +119,7 @@ See [Installation](#installation), [Configuration](#configuration) and [Integrat
 | MCP server | **1.0.0** | `package.json` version, reported in the MCP `initialize` response |
 | Catalyst SD-WAN Manager | **Tested on 26.2.1** | Controllers 26.2.1, WAN edges Catalyst 8000V IOS XE 26.02.01 |
 | Catalyst SD-WAN Manager (auth) | 20.18.1+ for JWT | Older releases: set `VMANAGE_USE_JWT=false` (session cookie + XSRF token) |
-| Node.js | 18+ to run the server; 20.12+ for the test/verification scripts | Tested on Node.js 26 |
+| Node.js | 18.17+ to run the server; 20.12+ for the live test/verification scripts | CI runs the offline tests on Node.js 18, 20 and 22; tested live on Node.js 26 |
 | MCP TypeScript SDK | `@modelcontextprotocol/sdk` ^1.0.4 | Tested with 1.27.1 |
 | Transport | stdio | The client starts the server as a child process |
 | MCP clients tested | OpenChamber 2.5 (bundled OpenCode 2.0.32), OpenCode 1.19 | Other clients use their documented standard MCP config |
@@ -133,7 +137,7 @@ The four general API tools (`list_api_categories`, `search_api_operations`, `des
 | `list_api_categories` | Lists the API categories (390 on 26.2) with counts of read, write and blocked operations | `filter` | "Which API categories exist for monitoring?" |
 | `search_api_operations` | Finds operations by keywords matched against path, operationId, category and summary | `query`, `category`, `method` (`GET`/`POST`/`PUT`/`DELETE`), `access` (`read`/`write`/`blocked`), `limit` (default 25, max 100) | "Find the API for OSPF neighbors." |
 | `describe_api_operation` | Shows an operation's documented parameters, request-body schema/example and access level | `operation_id`\* | "What parameters does `createOSPFNeighbors` take?" |
-| `call_api_operation` | Calls any operation; parameters and body are validated against the spec | `operation_id`\*, `path_params`, `query`, `body`, `confirm`, `max_items` (default 200) | "Show OSPF neighbors on Branch-1." |
+| `call_api_operation` | Calls any operation; parameters and body are validated against the spec | `operation_id`\*, `path_params`, `query`, `body`, `confirm`, `max_items` (default 200), `all_pages` | "Show OSPF neighbors on Branch-1." |
 
 Each of the 4,128 operations in the 26.2 spec falls into one of three access levels:
 
@@ -306,7 +310,7 @@ Anything without a dedicated tool, such as OSPF, EIGRP, NAT, IPsec/IKE, QoS, mul
 
 ## Installation
 
-Prerequisites: Node.js 18+ (20.12+ for the test scripts), npm, and HTTPS access to Catalyst SD-WAN Manager.
+Prerequisites: Node.js 18.17+ (20.12+ for the live test scripts), npm, and HTTPS access to Catalyst SD-WAN Manager.
 
 ```bash
 git clone https://github.com/waqasdaar/cisco-catalyst-sdwan-mcp.git
@@ -355,7 +359,8 @@ The server reads `.env` from the project (or deployed) root folder. You can also
 | `VMANAGE_PORT` | No | `443` | HTTPS port |
 | `VMANAGE_USE_JWT` | No | `true` | `false` uses session-cookie auth (Manager releases before 20.18.1) |
 | `VMANAGE_ALLOW_WRITE` | No | `false` | `true` allows write operations through `call_api_operation` (each still needs `confirm: true`) |
-| `VMANAGE_TIMEOUT_MS` | No | `120000` | Per-request timeout. Real-time device queries are proxied through the Manager and can be slow. |
+| `VMANAGE_TIMEOUT_MS` | No | `120000` | Timeout for real-time device queries (calls with a `deviceId`), which the Manager proxies to the device and can be slow. |
+| `VMANAGE_LIST_TIMEOUT_MS` | No | `60000` | Timeout for everything else: inventory, configuration, statistics and login. |
 | `VMANAGE_MAX_CONCURRENCY` | No | `8` | Maximum simultaneous requests sent to the Manager |
 | `VMANAGE_LOG_TIMING` | No | `false` | `true` logs each vManage call (path, status, duration, retries, cache hits) to stderr. Never logs credentials or response data. |
 
@@ -705,6 +710,21 @@ Path parameters and statistics queries:
 
 Operation IDs can differ between Manager releases. Use `search_api_operations` to find the ID on your release.
 
+Statistics `.../page` operations return results in pages with a `scrollId`. `all_pages: true` keeps fetching pages until `max_items` rows are collected (up to 50 pages):
+
+```json
+{
+  "name": "call_api_operation",
+  "arguments": {
+    "operation_id": "getPostStatBulkRawData_MonitoringApplicationAwareRouting_2504",
+    "query": { "count": 100 },
+    "body": { "query": { "condition": "AND", "rules": [{ "field": "entry_time", "type": "date", "operator": "last_n_hours", "value": ["1"] }] } },
+    "all_pages": true,
+    "max_items": 500
+  }
+}
+```
+
 A write operation, when `VMANAGE_ALLOW_WRITE=true`, after the user has approved it:
 
 ```json
@@ -731,11 +751,14 @@ Without `confirm: true`, or with writes disabled, the server refuses the call an
 
 ```bash
 npm run build                 # compile TypeScript
+npm test                      # offline tests against a simulated vManage (no lab needed; runs in CI)
 # <edge>, <controller>, <validator>: hostname or system IP of a WAN edge, Controller and Validator in your fabric
 npm run test:control-plane -- <edge> <controller> <validator>   # 39 live control-plane/OMP/validator calls + input-validation checks
-npm run test:ux2 -- <edge-hostname>   # UX 2.0 tools incl. config preview, hostname resolution, parallel calls, error handling (with timings)
+npm run test:ux2 -- <edge-hostname>   # UX 2.0, fabric-wide, paging and response-shaping tools; hostname resolution, parallel calls, error handling (with timings)
 npm run verify:api -- <edge> <controller> <validator>   # full read-only coverage run (≈25 min) → API_COVERAGE.md + api_coverage.csv
 ```
+
+`npm test` starts a simulated Manager on localhost (HTTPS with a throwaway certificate created by `openssl`) and drives the real MCP server against it. It covers tool listing, hostname resolution, `fields`/`filter`, the fabric-wide tools, `Retry-After` retries, re-login after an expired token, statistics paging, write protection, both timeouts, fail-fast when the Manager is unreachable, session-cookie login and logout. GitHub Actions runs it on every push and pull request ([.github/workflows/ci.yml](.github/workflows/ci.yml)).
 
 `verify:api` calls every read operation that needs no IDs or input (about 1,260 on 26.2) through the real MCP server. It records the result of each operation in [API_COVERAGE.md](API_COVERAGE.md) and [api_coverage.csv](api_coverage.csv). Although it only runs read operations, it sends a large number of calls, so run it against a lab Manager. The reports replace the test device IDs and the sampled group, profile and template names with placeholders such as `<edge>` and `<config-group>`, so they can be published.
 
@@ -766,6 +789,7 @@ npx @modelcontextprotocol/inspector node /absolute/path/to/build/index.js
 | A tool is missing or behaves like an old version | The client is starting a different copy of the server. Check every config the client reads: for OpenCode, both the project `opencode.json` and the global `~/.config/opencode/opencode.json(c)`. |
 | Calls take ~2 s each | That is the Manager's own response time per request, even on a reused connection. Prefer the combined tools (`get_ux2_overview`, `list_feature_profiles`), which run their requests in parallel, and use `fields`/`filter` to keep responses small. Set `VMANAGE_LOG_TIMING=true` to see per-call durations. |
 | `... Retrying the connection in N s.` | The previous call found vManage unreachable, so calls fail immediately for 10 s instead of each waiting for a timeout. Restore connectivity and retry. |
+| `vManage did not respond within N ms ... Raise VMANAGE_TIMEOUT_MS` / `VMANAGE_LIST_TIMEOUT_MS` | The message names the timeout that applied: real-time device queries use `VMANAGE_TIMEOUT_MS`, everything else `VMANAGE_LIST_TIMEOUT_MS`. Raise that one in `.env` and restart the server. |
 | OpenChamber: *"This file still uses the OpenCode 1 format"* or "No MCP servers configured" | OpenCode 2 reads only `mcp.servers.<name>`. See [OpenChamber / OpenCode](#openchamber--opencode). |
 | `VMANAGE_HOST environment variable is required` | `.env` is missing next to `build/` (after deploying, run `npm run deploy` again) or the client `env` is incomplete. |
 | `JWT authentication failed: 400 ... Duration must be ... <= 1800` | Fixed in this version (token duration is 1800 s). Rebuild. |
@@ -773,7 +797,7 @@ npx @modelcontextprotocol/inspector node /absolute/path/to/build/index.js
 | `... is disabled: write operations need VMANAGE_ALLOW_WRITE=true` | Expected in read-only mode. Enable deliberately, then `npm run deploy` and restart the client. |
 | `Unknown query parameter(s)` / `Missing required ...` | The call does not match the spec. Run `describe_api_operation` for the exact parameter names. |
 | `vManage API error 400 ... Empty query` | Statistics endpoints need a query body even when the spec marks it optional. See the statistics example above. |
-| `truncated` in a response | The response was larger than the limit. Filter (for example `vpn_id`, `site_id`) or lower `max_items`. |
+| `truncated` in a response | The response was larger than the limit. Filter (for example `vpn_id`, `site_id`) or lower `max_items`. For statistics `.../page` operations, `all_pages: true` follows the scroll pages up to `max_items` rows. |
 | Node warns about `NODE_TLS_REJECT_UNAUTHORIZED` | Comes from your shell environment, not this server. Remove the variable if you don't need it. |
 
 ---
@@ -784,14 +808,16 @@ npx @modelcontextprotocol/inspector node /absolute/path/to/build/index.js
 src/
   index.ts                  # entry point: loads .env, starts stdio server
   server.ts                 # MCP tool definitions and handlers
-  services/vmanageApi.ts    # HTTPS client, JWT/session auth, generic request()
-  services/apiCatalog.ts    # OpenAPI-driven catalog: search, describe, validated calls, access control
+  services/vmanageApi.ts    # HTTPS client (undici), JWT/session auth, retries, caching, generic request()
+  services/apiCatalog.ts    # OpenAPI-driven catalog: search, describe, validated calls, paging, access control
   utils/config.ts           # environment configuration
 scripts/
   deploy.mjs                # deploy runtime copy outside cloud-synced folders
+  test-mock.mjs             # offline tests against a simulated vManage (npm test, CI)
   test-control-plane.mjs    # live regression test
-  test-ux2.mjs              # live UX 2.0 tools test
+  test-ux2.mjs              # live UX 2.0 / fabric-wide tools test
   verify-api-coverage.mjs   # full coverage run and report
+.github/workflows/ci.yml    # build + offline tests on Node.js 18/20/22
 .vscode/mcp.json            # VS Code MCP server registration
 API_COVERAGE.md, api_coverage.csv   # last coverage report
 Dockerfile, docker-compose.yml

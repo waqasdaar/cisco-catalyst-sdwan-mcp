@@ -5,39 +5,32 @@
  * Docs: https://developer.cisco.com/docs/sdwan/overview/
  */
 
-import https from 'https';
-import type { Socket } from 'net';
-import fetch, { type Response } from 'node-fetch';
+import { Agent, fetch, type Response } from 'undici';
 import type { VManageConfig } from '../utils/config.js';
 
-// keepAlive reuses TLS sessions (~100 ms saved per call); self-signed lab certificates are accepted.
-const HTTPS_AGENT = new https.Agent({ rejectUnauthorized: false, keepAlive: true, keepAliveMsecs: 30_000, maxSockets: 32 });
-
-// Without this, an unreachable host blocks for the OS TCP timeout (~75 s on macOS).
+// Without a connect timeout, an unreachable host blocks for the OS TCP timeout (~75 s on macOS).
 const CONNECT_TIMEOUT_MS = 10_000;
-const agentWithCreate = HTTPS_AGENT as unknown as { createConnection: (...args: unknown[]) => Socket };
-const createConnection = agentWithCreate.createConnection.bind(HTTPS_AGENT);
-agentWithCreate.createConnection = (...args: unknown[]) => {
-  const socket = createConnection(...args);
-  const timer = setTimeout(() => {
-    socket.destroy(Object.assign(new Error(`connect timed out after ${CONNECT_TIMEOUT_MS} ms`), { code: 'ETIMEDOUT' }));
-  }, CONNECT_TIMEOUT_MS);
-  socket.once('secureConnect', () => clearTimeout(timer));
-  socket.once('close', () => clearTimeout(timer));
-  return socket;
-};
+// Pooled keep-alive connections reuse TLS sessions; self-signed lab certificates are accepted.
+const DISPATCHER = new Agent({
+  connect: { rejectUnauthorized: false, timeout: CONNECT_TIMEOUT_MS },
+  keepAliveTimeout: 30_000,
+  connections: 32,
+});
 
 const MAX_RETRIES = 2;
 const RETRY_STATUS = new Set([429, 502, 503, 504]);
 const MAX_RETRY_AFTER_MS = 10_000;
 // Dropped or stale keep-alive connections: a retry on a fresh connection usually succeeds.
-const RETRYABLE_CODES = new Set(['ECONNRESET', 'EPIPE']);
-const UNREACHABLE_CODES = new Set(['ETIMEDOUT', 'ECONNREFUSED', 'EHOSTUNREACH', 'ENETUNREACH', 'EAI_AGAIN', 'ENOTFOUND']);
+const RETRYABLE_CODES = new Set(['ECONNRESET', 'EPIPE', 'UND_ERR_SOCKET']);
+const UNREACHABLE_CODES = new Set([
+  'ETIMEDOUT', 'ECONNREFUSED', 'EHOSTUNREACH', 'ENETUNREACH', 'EAI_AGAIN', 'ENOTFOUND', 'UND_ERR_CONNECT_TIMEOUT',
+]);
 // After vManage proves unreachable, later calls fail immediately for this long instead of each waiting for a timeout.
 const UNREACHABLE_HOLD_MS = 10_000;
 // Renew the JWT in the background this long before it expires, so no call waits for a login.
 const JWT_REFRESH_AHEAD_S = 300;
 const CACHE_MAX_ENTRIES = 500;
+const LOGOUT_TIMEOUT_MS = 3_000;
 
 interface JwtLoginResponse {
   token?: string;
@@ -56,6 +49,8 @@ export interface RequestOptions {
   accept?: string;
   /** GET only: reuse a successful response for this many milliseconds. */
   cacheTtlMs?: number;
+  /** GET only: after cacheTtlMs, keep answering from the old response for this long while it refreshes in the background. */
+  staleMs?: number;
 }
 
 export interface ApiResponse {
@@ -88,12 +83,18 @@ class SessionExpiredError extends Error {}
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
 function errorCode(err: unknown): string {
-  const e = err as { code?: string; erroredSysCall?: string; message?: string };
-  return e?.code ?? /\b(E[A-Z]{4,})\b/.exec(e?.message ?? '')?.[1] ?? '';
+  // undici wraps network errors: TypeError('fetch failed') with the system error as `cause`.
+  const e = err as { code?: string; cause?: { code?: string }; message?: string };
+  return e?.cause?.code ?? e?.code ?? /\b(E[A-Z]{4,})\b/.exec(e?.message ?? '')?.[1] ?? '';
+}
+
+function isTimeout(err: unknown): boolean {
+  const name = (err as { name?: string })?.name;
+  return name === 'AbortError' || name === 'TimeoutError';
 }
 
 function isRetryable(err: unknown): boolean {
-  if ((err as { name?: string })?.name === 'AbortError') return false;
+  if (isTimeout(err)) return false;
   return RETRYABLE_CODES.has(errorCode(err)) || /socket hang up/i.test((err as Error)?.message ?? '');
 }
 
@@ -166,8 +167,31 @@ export class VManageApiService {
     this.tokenExpiry = 0;
   }
 
-  private timeoutSignal(): AbortSignal {
-    return AbortSignal.timeout(this.config.timeoutMs);
+  private timeoutSignal(realTime = false): AbortSignal {
+    return AbortSignal.timeout(realTime ? this.config.timeoutMs : this.config.listTimeoutMs);
+  }
+
+  /** Real-time device queries are proxied by vManage to the device and get the longer timeout. */
+  private isRealTime(path: string, options: RequestOptions): boolean {
+    return options.query?.deviceId !== undefined || /[?&]deviceId=/.test(path);
+  }
+
+  /** Ends a session-cookie login so it doesn't count against vManage's per-user session limit. JWTs simply expire. */
+  async logout(): Promise<void> {
+    const cookie = this.jsessionId;
+    if (!cookie) return;
+    this.invalidateAuth();
+    try {
+      await fetch(`${this.baseUrl}/logout?nocache=${Date.now()}`, {
+        headers: { Cookie: cookie },
+        redirect: 'manual',
+        dispatcher: DISPATCHER,
+        signal: AbortSignal.timeout(LOGOUT_TIMEOUT_MS),
+      });
+      if (this.config.logTiming) console.error('[vmanage] session logged out');
+    } catch {
+      // Shutting down: the session will expire on vManage anyway.
+    }
   }
 
   private async authenticateJwt(): Promise<void> {
@@ -181,7 +205,7 @@ export class VManageApiService {
         // vManage rejects JWT durations above 1800 seconds
         duration: 1800,
       }),
-      agent: HTTPS_AGENT,
+      dispatcher: DISPATCHER,
       signal: this.timeoutSignal(),
     });
 
@@ -210,7 +234,7 @@ export class VManageApiService {
         j_password: this.config.password,
       }),
       redirect: 'manual',
-      agent: HTTPS_AGENT,
+      dispatcher: DISPATCHER,
       signal: this.timeoutSignal(),
     });
 
@@ -236,7 +260,7 @@ export class VManageApiService {
         'Content-Type': 'application/json',
         Cookie: this.jsessionId,
       },
-      agent: HTTPS_AGENT,
+      dispatcher: DISPATCHER,
       signal: this.timeoutSignal(),
     });
 
@@ -245,8 +269,8 @@ export class VManageApiService {
     }
   }
 
-  async get<T = unknown>(path: string, params?: Record<string, string>, cacheTtlMs?: number): Promise<T> {
-    return (await this.request('GET', path, { query: params, cacheTtlMs })).body as T;
+  async get<T = unknown>(path: string, params?: Record<string, string>, cacheTtlMs?: number, staleMs?: number): Promise<T> {
+    return (await this.request('GET', path, { query: params, cacheTtlMs, staleMs })).body as T;
   }
 
   async post<T = unknown>(path: string, body?: object): Promise<T> {
@@ -271,8 +295,18 @@ export class VManageApiService {
     const key = `${path}|${JSON.stringify(options.query ?? {})}|${options.accept ?? ''}`;
     if (options.cacheTtlMs) {
       const cached = this.cache.get(key);
-      if (cached && cached.expires > Date.now()) {
+      const now = Date.now();
+      if (cached && cached.expires > now) {
         if (this.config.logTiming) console.error(`[vmanage] GET ${path.split('?')[0]} cache-hit`);
+        return cached.value;
+      }
+      if (cached && options.staleMs && cached.expires + options.staleMs > now) {
+        if (!this.inFlightGets.has(key)) {
+          const refresh = this.execute(method, path, options).finally(() => this.inFlightGets.delete(key));
+          this.inFlightGets.set(key, refresh);
+          refresh.then((r) => this.cacheSet(key, r, options.cacheTtlMs as number)).catch(() => undefined);
+        }
+        if (this.config.logTiming) console.error(`[vmanage] GET ${path.split('?')[0]} stale-hit (refreshing in background)`);
         return cached.value;
       }
     }
@@ -337,14 +371,17 @@ export class VManageApiService {
           continue;
         }
         this.logCall(method, path, status !== undefined ? String(status) : errorCode(err) || 'error', started, attempt);
-        throw this.describeFailure(err, method, path);
+        throw this.describeFailure(err, method, path, options);
       }
     }
   }
 
-  private describeFailure(err: unknown, method: HttpMethod, path: string): unknown {
-    if ((err as { name?: string }).name === 'AbortError' || (err as { type?: string }).type === 'aborted') {
-      return new Error(`vManage did not respond within ${this.config.timeoutMs} ms (${method} ${path}). Raise VMANAGE_TIMEOUT_MS for slow real-time queries.`);
+  private describeFailure(err: unknown, method: HttpMethod, path: string, options: RequestOptions): unknown {
+    if (isTimeout(err) || (err as { type?: string }).type === 'aborted') {
+      const [ms, variable] = this.isRealTime(path, options)
+        ? [this.config.timeoutMs, 'VMANAGE_TIMEOUT_MS']
+        : [this.config.listTimeoutMs, 'VMANAGE_LIST_TIMEOUT_MS'];
+      return new Error(`vManage did not respond within ${ms} ms (${method} ${path.split('?')[0]}). Raise ${variable} if this query is expected to be slow.`);
     }
     const code = errorCode(err);
     if (UNREACHABLE_CODES.has(code) || isRetryable(err)) {
@@ -356,7 +393,7 @@ export class VManageApiService {
   }
 
   private async sendOnce(method: HttpMethod, path: string, options: RequestOptions): Promise<ApiResponse> {
-    const signal = this.timeoutSignal();
+    const signal = this.timeoutSignal(this.isRealTime(path, options));
     const response = await this.send(method, path, options, signal);
     const contentType = response.headers.get('content-type') || '';
 
@@ -425,6 +462,6 @@ export class VManageApiService {
           : JSON.stringify(options.body);
     }
 
-    return fetch(url.toString(), { method, headers, body, agent: HTTPS_AGENT, signal });
+    return fetch(url.toString(), { method, headers, body, dispatcher: DISPATCHER, signal });
   }
 }

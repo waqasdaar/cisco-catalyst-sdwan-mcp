@@ -11,6 +11,7 @@ export interface VManageConfig {
   useJwt: boolean;
   allowWrite: boolean;
   timeoutMs: number;
+  listTimeoutMs: number;
   maxConcurrency: number;
   logTiming: boolean;
 }
@@ -45,6 +46,8 @@ export function loadConfig(): VManageConfig {
   const allowWrite = process.env.VMANAGE_ALLOW_WRITE === 'true';
   // Real-time device queries are proxied through vManage to the device and can take tens of seconds.
   const timeoutMs = positiveInt('VMANAGE_TIMEOUT_MS', 120_000);
+  // Inventory, configuration and statistics queries are answered by vManage itself.
+  const listTimeoutMs = positiveInt('VMANAGE_LIST_TIMEOUT_MS', 60_000);
   const maxConcurrency = positiveInt('VMANAGE_MAX_CONCURRENCY', 8);
 
   return {
@@ -55,6 +58,7 @@ export function loadConfig(): VManageConfig {
     useJwt,
     allowWrite,
     timeoutMs,
+    listTimeoutMs,
     maxConcurrency,
     logTiming: process.env.VMANAGE_LOG_TIMING === 'true',
   };

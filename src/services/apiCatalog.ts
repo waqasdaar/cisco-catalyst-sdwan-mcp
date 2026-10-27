@@ -80,6 +80,8 @@ export interface CallInput {
   body?: unknown;
   confirm?: boolean;
   maxItems?: number;
+  /** Follow pageInfo.scrollId until max_items rows are collected (statistics `/page` operations). */
+  allPages?: boolean;
 }
 
 const SPEC_PATH = '/apidocs/vmanageapi.json';
@@ -106,6 +108,7 @@ const ACTION_DESCRIPTION = new RegExp(`^(${ACTION_VERBS})\\b|\\bopt[ -]?(in|out)
 const SECRET_KEY = /(password|passwd|secret|token|csrf|sessionid|privatekey|private-key)/i;
 
 const MAX_ITEMS_DEFAULT = 200;
+const MAX_PAGES = 50;
 
 function stripHtml(text: string | undefined): string {
   return (text ?? '')
@@ -477,14 +480,30 @@ export class ApiCatalog {
     if (op.bodyType === 'form' && input.body !== undefined && (typeof input.body !== 'object' || Array.isArray(input.body))) {
       throw new Error(`${op.operationId} expects a form body given as an object of string fields`);
     }
+    if (input.allPages && !querySpec.has('scrollId')) {
+      throw new Error(`${op.operationId} does not support paging (it has no scrollId parameter). Look for the matching ".../page" operation.`);
+    }
 
-    const res = await this.api.request(op.method, `/dataservice${path}`, {
-      query: finalQuery,
-      body: input.body,
-      bodyType: op.bodyType,
-      accept: op.accept,
-    });
-    return shapeResponse(res.body, input.maxItems ?? MAX_ITEMS_DEFAULT);
+    const send = (q: Record<string, QueryValue>) =>
+      this.api.request(op.method, `/dataservice${path}`, { query: q, body: input.body, bodyType: op.bodyType, accept: op.accept });
+    const res = await send(finalQuery);
+    const maxItems = input.maxItems ?? MAX_ITEMS_DEFAULT;
+    if (!input.allPages) return shapeResponse(res.body, maxItems);
+
+    type Page = { data?: unknown[]; pageInfo?: { scrollId?: string; hasMoreData?: boolean; [key: string]: unknown } };
+    const first = res.body as Page;
+    if (!Array.isArray(first?.data)) return shapeResponse(res.body, maxItems);
+    const rows = [...first.data];
+    let info = first.pageInfo;
+    let pages = 1;
+    while (info?.hasMoreData && info.scrollId && rows.length < maxItems && pages < MAX_PAGES) {
+      const next = (await send({ ...finalQuery, scrollId: info.scrollId })).body as Page;
+      pages++;
+      if (!Array.isArray(next?.data) || !next.data.length) break;
+      rows.push(...next.data);
+      info = next.pageInfo;
+    }
+    return shapeResponse({ ...first, data: rows, pageInfo: { ...info, pagesFetched: pages } }, maxItems);
   }
 }
 

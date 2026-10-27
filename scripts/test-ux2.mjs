@@ -126,6 +126,24 @@ await call(
 );
 await call('list_api_categories', { filter: 'Monitoring' }, { check: (v) => (v && !v.selection ? null : 'catalog filter changed') });
 
+console.log('\nStatistics paging (all_pages):');
+await call(
+  'call_api_operation',
+  {
+    operation_id: 'getPostStatBulkRawData_MonitoringApplicationAwareRouting_2504',
+    query: { count: 50 },
+    body: { query: { condition: 'AND', rules: [{ field: 'entry_time', operator: 'last_n_hours', type: 'date', value: ['1'] }] } },
+    all_pages: true,
+    max_items: 120,
+  },
+  {
+    check: (v) => {
+      const expected = Math.min(120, Number(v?.pageInfo?.totalCount ?? 0));
+      return v?.data?.length === expected && (expected <= 50 || v.pageInfo.pagesFetched > 1) ? null : `rows=${v?.data?.length} expected=${expected}`;
+    },
+  }
+);
+
 console.log('\nFabric-wide tools:');
 const edgeRow = allDevices?.data?.find((d) => d['host-name'] === EDGE);
 await call('get_fabric_health', {}, { check: (v) => (v?.devices?.total === allDevices?.data?.length ? null : `device total ${v?.devices?.total} != ${allDevices?.data?.length}`) });

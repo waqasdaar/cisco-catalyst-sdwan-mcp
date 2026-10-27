@@ -22,6 +22,16 @@ import { CatalystSdwanMCPServer } from './server.js';
 
 async function main() {
   const server = new CatalystSdwanMCPServer();
+  let stopping = false;
+  const stop = () => {
+    if (stopping) return;
+    stopping = true;
+    server.shutdown().finally(() => process.exit(0));
+  };
+  process.on('SIGINT', stop);
+  process.on('SIGTERM', stop);
+  // The MCP client closed stdin: the session is over.
+  process.stdin.on('end', stop);
   await server.run();
 }
 
