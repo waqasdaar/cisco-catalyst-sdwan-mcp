@@ -7,7 +7,11 @@
   "scripts": {
     "start": "node build/index.js",
     "build": "tsc",
-    "dev": "tsx src/index.ts"
+    "deploy": "npm run build && node scripts/deploy.mjs",
+    "dev": "tsx src/index.ts",
+    "test:control-plane": "node scripts/test-control-plane.mjs",
+    "test:ux2": "node scripts/test-ux2.mjs",
+    "verify:api": "node scripts/verify-api-coverage.mjs"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.0.4",

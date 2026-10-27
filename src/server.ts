@@ -16,15 +16,159 @@ import {
   Tool,
 } from '@modelcontextprotocol/sdk/types.js';
 import { VManageApiService } from './services/vmanageApi.js';
+import { ApiCatalog, shapeResponse } from './services/apiCatalog.js';
 import { loadConfig } from './utils/config.js';
+
+const MAX_RESPONSE_CHARS = 200_000;
+
+/** Serializes a result within MAX_RESPONSE_CHARS, dropping list rows rather than breaking the JSON. */
+function toLimitedJson(result: unknown): string {
+  // Compact JSON: roughly half the size of indented output, so faster for clients and fewer model tokens.
+  const text = JSON.stringify(result) ?? '';
+  if (text.length <= MAX_RESPONSE_CHARS) return text;
+
+  const obj = result as { data?: unknown[]; items?: unknown[]; truncated?: { total?: number } };
+  const key = Array.isArray(obj?.data) ? 'data' : Array.isArray(obj?.items) ? 'items' : null;
+  if (key) {
+    const rows = obj[key] as unknown[];
+    const total = obj.truncated?.total ?? rows.length;
+    let keep = Math.floor(rows.length * (MAX_RESPONSE_CHARS / text.length) * 0.9);
+    while (keep > 0) {
+      const trimmed = JSON.stringify({
+        ...obj,
+        [key]: rows.slice(0, keep),
+        truncated: { returned: keep, total, reason: 'response size limit; filter the query to see more' },
+      });
+      if (trimmed.length <= MAX_RESPONSE_CHARS) return trimmed;
+      keep = Math.floor(keep * 0.8);
+    }
+  }
+  return JSON.stringify({
+    truncated: true,
+    reason: `Response is ${text.length} characters (limit ${MAX_RESPONSE_CHARS}); narrow the query.`,
+    preview: text.slice(0, MAX_RESPONSE_CHARS / 2),
+  });
+}
+
+interface DeviceRow {
+  'system-ip'?: string;
+  'host-name'?: string;
+  uuid?: string;
+  'board-serial'?: string;
+}
+
+interface UxGroup {
+  id: string;
+  name: string;
+  [key: string]: unknown;
+}
+
+const DEVICE_INDEX_TTL_MS = 60_000;
+const GROUP_LIST_TTL_MS = 30_000;
+const IPV4 = /^\d{1,3}(\.\d{1,3}){3}$/;
+const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+/** Lines only in the running config (removed) and only in the rendered config (added), order preserved. */
+function lineDiff(existing: string, rendered: string) {
+  const count = (lines: string[]) => {
+    const m = new Map<string, number>();
+    for (const l of lines) m.set(l, (m.get(l) ?? 0) + 1);
+    return m;
+  };
+  const oldLines = existing.split('\n').map((l) => l.trimEnd()).filter((l) => l.trim());
+  const newLines = rendered.split('\n').map((l) => l.trimEnd()).filter((l) => l.trim());
+  const oldCount = count(oldLines);
+  const newCount = count(newLines);
+  const only = (lines: string[], own: Map<string, number>, other: Map<string, number>) => {
+    const budget = new Map<string, number>();
+    for (const [l, n] of own) budget.set(l, Math.max(0, n - (other.get(l) ?? 0)));
+    return lines.filter((l) => {
+      const left = budget.get(l) ?? 0;
+      if (left <= 0) return false;
+      budget.set(l, left - 1);
+      return true;
+    });
+  };
+  const removed = only(oldLines, oldCount, newCount);
+  const added = only(newLines, newCount, oldCount);
+  return {
+    inSync: removed.length === 0 && added.length === 0,
+    summary: { existingLines: oldLines.length, renderedLines: newLines.length, added: added.length, removed: removed.length },
+    added,
+    removed,
+  };
+}
+
+/** Compact view of a configuration / policy / topology group. */
+function summarizeGroup(g: UxGroup) {
+  const profiles = Array.isArray(g.profiles)
+    ? (g.profiles as Array<Record<string, unknown>>).map((p) => ({ id: p.id, name: p.name, type: p.type }))
+    : undefined;
+  return {
+    id: g.id,
+    name: g.name,
+    description: g.description,
+    solution: g.solution,
+    state: g.state,
+    version: g.version,
+    devices: g.numberOfDevices,
+    devicesUpToDate: g.numberOfDevicesUpToDate,
+    devicesFailed: g.numberOfDevicesFailed,
+    devicesInProgress: g.numberOfDevicesInProgress,
+    profiles,
+    lastUpdatedBy: g.lastUpdatedBy,
+    lastUpdatedOn: g.lastUpdatedOn,
+  };
+}
+
+function summarizeProfile(p: Record<string, unknown>) {
+  return {
+    profileId: p.profileId,
+    profileName: p.profileName,
+    profileType: p.profileType,
+    description: p.description,
+    lastUpdatedBy: p.lastUpdatedBy,
+    lastUpdatedOn: p.lastUpdatedOn,
+  };
+}
+
+// Typed list/definition endpoints published by the vManage 26.2 OpenAPI spec.
+const POLICY_LIST_TYPES = [
+  'app', 'appprobe', 'aspath', 'class', 'color', 'community', 'dataipv6prefix', 'dataprefix', 'dataprefixall',
+  'dataprefixfqdn', 'expandedcommunity', 'extcommunity', 'faxprotocol', 'fqdn', 'geolocation', 'identity',
+  'ipprefixall', 'ipssignature', 'ipv6prefix', 'localapp', 'localdomain', 'mediaprofile', 'mirror',
+  'modempassthrough', 'policer', 'port', 'preferredcolorgroup', 'prefix', 'protocolname', 'region',
+  'scalablegrouptag', 'site', 'sla', 'supervisorydisc', 'tgapikey', 'tloc', 'translationprofile',
+  'translationrules', 'trunkgroup', 'umbrelladata', 'urlblacklist', 'urlwhitelist', 'vpn', 'zone',
+];
+const POLICY_DEFINITION_TYPES = [
+  'acl', 'aclv6', 'advancedMalwareProtection', 'advancedinspectionprofile', 'approute', 'cflowd', 'control', 'data',
+  'deviceaccesspolicy', 'deviceaccesspolicyv6', 'dialpeer', 'dnssecurity', 'fxoport', 'fxsdidport', 'fxsport',
+  'hubandspoke', 'intrusionprevention', 'mesh', 'priisdnport', 'qosmap', 'rewriterule', 'ruleset', 'securitygroup',
+  'srstphoneprofile', 'ssldecryption', 'sslutdprofile', 'urlfiltering', 'vedgeroute', 'vpnmembershipgroup',
+  'vpnqosmap', 'zonebasedfw',
+];
+
+/** Keeps only rows whose fields equal every provided filter value. */
+function filterRows(result: unknown, filters: Record<string, unknown>): unknown {
+  const active = Object.entries(filters).filter(([, v]) => v !== undefined && v !== null && v !== '');
+  const data = (result as { data?: unknown })?.data;
+  if (!active.length || !Array.isArray(data)) return result;
+  const rows = data.filter((row) =>
+    active.every(([k, v]) => String((row as Record<string, unknown>)[k]) === String(v))
+  );
+  return { ...(result as object), data: rows };
+}
 
 export class CatalystSdwanMCPServer {
   private server: Server;
   private apiService: VManageApiService;
+  private catalog: ApiCatalog;
 
   constructor() {
     const config = loadConfig();
     this.apiService = new VManageApiService(config);
+    this.catalog = new ApiCatalog(this.apiService, config.allowWrite);
 
     this.server = new Server(
       {
@@ -51,7 +195,7 @@ export class CatalystSdwanMCPServer {
       try {
         const result = await this.handleToolCall(name, args || {});
         return {
-          content: [{ type: 'text', text: JSON.stringify(result, null, 2) }],
+          content: [{ type: 'text', text: toLimitedJson(shapeResponse(result, Number.MAX_SAFE_INTEGER)) }],
         };
       } catch (error: unknown) {
         const message = error instanceof Error ? error.message : String(error);
@@ -65,6 +209,62 @@ export class CatalystSdwanMCPServer {
 
   private getAllTools(): Tool[] {
     return [
+      // === Full vManage API (spec-driven, covers every 26.x operation) ===
+      {
+        name: 'list_api_categories',
+        description:
+          'List all vManage API categories (from the connected vManage OpenAPI spec) with counts of read, write and blocked operations. Start here to explore APIs not covered by a dedicated tool.',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            filter: { type: 'string', description: 'Only categories containing this text (e.g. "Monitoring", "Feature Profile")' },
+          },
+        },
+      },
+      {
+        name: 'search_api_operations',
+        description:
+          'Search every vManage API operation by keywords (matched against path, operationId, category and summary). Returns operation_id values for describe_api_operation / call_api_operation.',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            query: { type: 'string', description: 'Space-separated keywords, all must match (e.g. "ospf neighbor", "config-group")' },
+            category: { type: 'string', description: 'Filter by category name (substring)' },
+            method: { type: 'string', enum: ['GET', 'POST', 'PUT', 'DELETE'], description: 'Filter by HTTP method' },
+            access: { type: 'string', enum: ['read', 'write', 'blocked'], description: 'Filter by access level' },
+            limit: { type: 'number', description: 'Max results (default 25, max 100)' },
+          },
+        },
+      },
+      {
+        name: 'describe_api_operation',
+        description:
+          'Show the documented parameters, request body schema/example, access level and description for one vManage API operation.',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            operation_id: { type: 'string', description: 'operationId from search_api_operations' },
+          },
+          required: ['operation_id'],
+        },
+      },
+      {
+        name: 'call_api_operation',
+        description:
+          'Call any vManage API operation by operation_id. Parameters and body are validated against the vManage OpenAPI spec. Read operations run directly; write operations require VMANAGE_ALLOW_WRITE=true on the server and confirm: true (only after the user approves the change).',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            operation_id: { type: 'string', description: 'operationId from search_api_operations' },
+            path_params: { type: 'object', description: 'Values for {placeholders} in the path', additionalProperties: true },
+            query: { type: 'object', description: 'Query parameters (names exactly as documented)', additionalProperties: true },
+            body: { description: 'Request body for POST/PUT operations (JSON)' },
+            confirm: { type: 'boolean', description: 'Must be true for write operations, after explicit user approval' },
+            max_items: { type: 'number', description: 'Max rows returned from list responses (default 200)' },
+          },
+          required: ['operation_id'],
+        },
+      },
       // === Device Management ===
       {
         name: 'list_devices',
@@ -72,7 +272,7 @@ export class CatalystSdwanMCPServer {
         inputSchema: {
           type: 'object',
           properties: {
-            model: { type: 'string', description: 'Filter by device model (e.g., vedge-cloud)' },
+            model: { type: 'string', description: 'Filter by device model (e.g., vedge-C8000V, vsmart)' },
           },
         },
       },
@@ -106,9 +306,116 @@ export class CatalystSdwanMCPServer {
           type: 'object',
           properties: {
             device_id: { type: 'string', description: 'Device ID or system-ip' },
+            peer_type: { type: 'string', enum: ['vedge', 'vsmart', 'vmanage', 'vbond'], description: 'Only connections to this peer type' },
+            system_ip: { type: 'string', description: 'Only connections to this peer system-ip' },
+            synced: { type: 'boolean', description: 'Return vManage cached (synced) data instead of querying the device in real time' },
           },
           required: ['device_id'],
         },
+      },
+      {
+        name: 'get_control_connections_history',
+        description: 'Get control connection history for a device (past connection attempts, errors, and down reasons).',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            device_id: { type: 'string', description: 'Device ID or system-ip' },
+          },
+          required: ['device_id'],
+        },
+      },
+      {
+        name: 'get_control_local_properties',
+        description: 'Get control plane local properties for a device (system-ip, site-id, org name, certificate status, vBond address, max controllers).',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            device_id: { type: 'string', description: 'Device ID or system-ip' },
+            synced: { type: 'boolean', description: 'Return vManage cached (synced) data instead of querying the device in real time' },
+          },
+          required: ['device_id'],
+        },
+      },
+      {
+        name: 'get_control_wan_interfaces',
+        description: 'Get control plane WAN interface (TLOC) state for a device: color, public/private IP and port, control connection counts.',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            device_id: { type: 'string', description: 'Device ID or system-ip' },
+            synced: { type: 'boolean', description: 'Return vManage cached (synced) data instead of querying the device in real time' },
+          },
+          required: ['device_id'],
+        },
+      },
+      {
+        name: 'get_control_valid_devices',
+        description: 'Get the authorized device lists held by a Controller (vSmart). Use a controller system-ip.',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            device_id: { type: 'string', description: 'Controller (vSmart) system-ip' },
+            list: {
+              type: 'string',
+              enum: ['devices', 'vsmarts', 'vmanage_id'],
+              description: 'Which list to return (default: devices)',
+            },
+          },
+          required: ['device_id'],
+        },
+      },
+      {
+        name: 'get_control_affinity',
+        description: 'Get controller group affinity configuration or status for a device.',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            device_id: { type: 'string', description: 'Device ID or system-ip' },
+            type: { type: 'string', enum: ['config', 'status'], description: 'Affinity config or status (default: status)' },
+          },
+          required: ['device_id'],
+        },
+      },
+      {
+        name: 'get_control_links',
+        description: 'Fabric-wide: list control connection links between all devices in the given state.',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            state: { type: 'string', enum: ['up', 'down'], description: 'Link state' },
+          },
+          required: ['state'],
+        },
+      },
+      {
+        name: 'get_control_status',
+        description: 'Fabric-wide: control connection up/down status counts (dashboard view).',
+        inputSchema: { type: 'object', properties: {} },
+      },
+      {
+        name: 'get_control_count',
+        description: 'Get fabric-wide control connection counts, optionally for one site.',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            site_id: { type: 'string', description: 'Optional site ID' },
+          },
+        },
+      },
+      {
+        name: 'get_control_network_summary',
+        description: 'Fabric-wide: per-device control plane summary (control connections, OMP peers, vSmart peers, reachability).',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            state: { type: 'string', enum: ['up', 'down'], description: 'Filter by control state' },
+          },
+        },
+      },
+      {
+        name: 'get_network_connections_summary',
+        description: 'Fabric-wide: reachable/unreachable counts per device class (vSmart, WAN Edge, vBond, vManage).',
+        inputSchema: { type: 'object', properties: {} },
       },
       {
         name: 'get_control_summary',
@@ -141,13 +448,41 @@ export class CatalystSdwanMCPServer {
           type: 'object',
           properties: {
             device_id: { type: 'string', description: 'Device ID or system-ip' },
+            synced: { type: 'boolean', description: 'Return vManage cached (synced) data instead of querying the device in real time' },
           },
           required: ['device_id'],
         },
       },
       {
         name: 'get_omp_routes',
-        description: 'Get OMP routes advertised/received by a device.',
+        description: 'Get OMP routes received or advertised by a device. Filter by VPN and/or prefix to limit output.',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            device_id: { type: 'string', description: 'Device ID or system-ip' },
+            direction: { type: 'string', enum: ['received', 'advertised'], description: 'Route direction (default: received)' },
+            vpn_id: { type: 'string', description: 'Filter by service VPN ID (e.g. 10)' },
+            prefix: { type: 'string', description: 'Filter by exact prefix (e.g. 10.10.116.1/32)' },
+          },
+          required: ['device_id'],
+        },
+      },
+      {
+        name: 'get_omp_tlocs',
+        description: 'Get OMP TLOC routes received or advertised by a device.',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            device_id: { type: 'string', description: 'Device ID or system-ip' },
+            direction: { type: 'string', enum: ['received', 'advertised'], description: 'TLOC direction (default: received)' },
+            color: { type: 'string', description: 'Filter by TLOC color (e.g. mpls, biz-internet)' },
+          },
+          required: ['device_id'],
+        },
+      },
+      {
+        name: 'get_omp_services',
+        description: 'Get OMP service routes (VPN, firewall, IDS, etc.) known to a device.',
         inputSchema: {
           type: 'object',
           properties: {
@@ -155,6 +490,46 @@ export class CatalystSdwanMCPServer {
           },
           required: ['device_id'],
         },
+      },
+      {
+        name: 'get_omp_multicast',
+        description: 'Get OMP multicast routes or multicast auto-discovery entries for a device.',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            device_id: { type: 'string', description: 'Device ID or system-ip' },
+            type: { type: 'string', enum: ['routes', 'autodiscover'], description: 'Multicast routes or auto-discovery (default: routes)' },
+            direction: { type: 'string', enum: ['received', 'advertised'], description: 'Direction (default: received)' },
+          },
+          required: ['device_id'],
+        },
+      },
+      {
+        name: 'get_omp_cloudx',
+        description: 'Get OMP Cloud OnRamp (CloudExpress) routes for a device.',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            device_id: { type: 'string', description: 'Device ID or system-ip' },
+          },
+          required: ['device_id'],
+        },
+      },
+      {
+        name: 'get_omp_links',
+        description: 'Fabric-wide: list OMP peering links between all devices in the given state.',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            state: { type: 'string', enum: ['up', 'down'], description: 'Link state' },
+          },
+          required: ['state'],
+        },
+      },
+      {
+        name: 'get_omp_status',
+        description: 'Fabric-wide: OMP peering up/down status counts (dashboard view).',
+        inputSchema: { type: 'object', properties: {} },
       },
       {
         name: 'get_omp_summary',
@@ -163,6 +538,80 @@ export class CatalystSdwanMCPServer {
           type: 'object',
           properties: {
             device_id: { type: 'string', description: 'Device ID or system-ip' },
+          },
+          required: ['device_id'],
+        },
+      },
+
+      // === Real-time Monitoring - Validator (vBond / orchestrator) ===
+      {
+        name: 'get_validator_connections',
+        description: 'Get connections on a Validator (vBond), current or history. Use the validator system-ip.',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            device_id: { type: 'string', description: 'Validator (vBond) system-ip' },
+            history: { type: 'boolean', description: 'Return connection history instead of current connections' },
+          },
+          required: ['device_id'],
+        },
+      },
+      {
+        name: 'get_validator_summary',
+        description: 'Get Validator (vBond) connection summary.',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            device_id: { type: 'string', description: 'Validator (vBond) system-ip' },
+          },
+          required: ['device_id'],
+        },
+      },
+      {
+        name: 'get_validator_statistics',
+        description: 'Get Validator (vBond) DTLS/control packet statistics.',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            device_id: { type: 'string', description: 'Validator (vBond) system-ip' },
+          },
+          required: ['device_id'],
+        },
+      },
+      {
+        name: 'get_validator_local_properties',
+        description: 'Get Validator (vBond) local properties (org name, certificate state, system-ip).',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            device_id: { type: 'string', description: 'Validator (vBond) system-ip' },
+          },
+          required: ['device_id'],
+        },
+      },
+      {
+        name: 'get_validator_valid_devices',
+        description: 'Get the authorized device lists held by a Validator (vBond).',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            device_id: { type: 'string', description: 'Validator (vBond) system-ip' },
+            list: {
+              type: 'string',
+              enum: ['vedges', 'vsmarts', 'vmanage_id'],
+              description: 'Which list to return (default: vedges)',
+            },
+          },
+          required: ['device_id'],
+        },
+      },
+      {
+        name: 'get_validator_proxy_mapping',
+        description: 'Get Validator (vBond) NAT/proxy mapping table.',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            device_id: { type: 'string', description: 'Validator (vBond) system-ip' },
           },
           required: ['device_id'],
         },
@@ -358,11 +807,154 @@ export class CatalystSdwanMCPServer {
         },
       },
 
+      // === UX 2.0 configuration (configuration groups, feature profiles, policy & topology groups) ===
+      {
+        name: 'get_ux2_overview',
+        description:
+          'UX 2.0 configuration overview in one call: configuration groups, policy groups and topology groups with device counts and deployment state (up-to-date / failed / in progress), plus feature profile counts per type.',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            solution: { type: 'string', description: 'Solution family (default: sdwan). Others: sd-routing, nfvirtual, mobility' },
+          },
+        },
+      },
+      {
+        name: 'list_config_groups',
+        description: 'List UX 2.0 configuration groups with their feature profiles, device counts and deployment state.',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            solution: { type: 'string', description: 'Filter by solution (e.g. sdwan, sd-routing)' },
+            name: { type: 'string', description: 'Exact configuration group name' },
+          },
+        },
+      },
+      {
+        name: 'get_config_group',
+        description: 'Get one configuration group (by ID or exact name) with its feature profiles and associated devices.',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            config_group: { type: 'string', description: 'Configuration group ID or exact name' },
+          },
+          required: ['config_group'],
+        },
+      },
+      {
+        name: 'get_config_group_device_variables',
+        description: 'Get device-specific variable values of a configuration group (all devices, or one device).',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            config_group: { type: 'string', description: 'Configuration group ID or exact name' },
+            device: { type: 'string', description: 'Optional device: hostname, system-ip, UUID or chassis number' },
+          },
+          required: ['config_group'],
+        },
+      },
+      {
+        name: 'preview_config_group_device_config',
+        description:
+          'Read-only: render the configuration a configuration group would push to one device, compared with its running configuration. Shows a line diff by default. Nothing is deployed.',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            config_group: { type: 'string', description: 'Configuration group ID or exact name' },
+            device: { type: 'string', description: 'Device hostname, system-ip, UUID or chassis number (must be associated with the group)' },
+            view: { type: 'string', enum: ['diff', 'new', 'existing', 'both'], description: 'What to return (default: diff)' },
+          },
+          required: ['config_group', 'device'],
+        },
+      },
+      {
+        name: 'list_policy_groups',
+        description: 'List UX 2.0 policy groups with their profiles, device counts and deployment state.',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            solution: { type: 'string', description: 'Filter by solution (e.g. sdwan)' },
+          },
+        },
+      },
+      {
+        name: 'get_policy_group',
+        description: 'Get one policy group (by ID or exact name) with its profiles and associated devices.',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            policy_group: { type: 'string', description: 'Policy group ID or exact name' },
+          },
+          required: ['policy_group'],
+        },
+      },
+      {
+        name: 'list_topology_groups',
+        description: 'List UX 2.0 topology groups (hub-and-spoke / mesh topologies) with device counts and state.',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            solution: { type: 'string', description: 'Filter by solution (e.g. sdwan)' },
+          },
+        },
+      },
+      {
+        name: 'get_topology_group',
+        description: 'Get one topology group (by ID or exact name) with its topology profiles.',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            topology_group: { type: 'string', description: 'Topology group ID or exact name' },
+          },
+          required: ['topology_group'],
+        },
+      },
+      {
+        name: 'list_feature_profiles',
+        description:
+          'List UX 2.0 feature profiles. Without profile_type, returns every profile type of the solution (system, transport, service, cli, policy-object, application-priority, embedded-security, ...).',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            solution: { type: 'string', description: 'Solution family (default: sdwan). Others: sd-routing, nfvirtual, mobility' },
+            profile_type: { type: 'string', description: 'Profile type, e.g. system, transport, service, cli, policy-object, application-priority' },
+          },
+        },
+      },
+      {
+        name: 'get_feature_profile',
+        description:
+          'Get one UX 2.0 feature profile with its features (parcels): e.g. system (AAA, banner, logging, NTP...), transport (WAN VPN, interfaces, routing), service (LAN VPNs, interfaces, routing).',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            profile_type: { type: 'string', description: 'Profile type, e.g. system, transport, service, cli' },
+            profile: { type: 'string', description: 'Profile ID or exact profile name' },
+            solution: { type: 'string', description: 'Solution family (default: sdwan)' },
+          },
+          required: ['profile_type', 'profile'],
+        },
+      },
+      {
+        name: 'get_network_hierarchy',
+        description: 'Get the UX 2.0 network hierarchy (global, regions, areas and sites) used by configuration groups and policies.',
+        inputSchema: { type: 'object', properties: {} },
+      },
+
       // === Templates ===
       {
         name: 'list_device_templates',
-        description: 'List all device templates (master templates) in vManage.',
-        inputSchema: { type: 'object', properties: {} },
+        description: 'List device templates (master templates) in vManage.',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            feature: {
+              type: 'string',
+              enum: ['all', 'lawful-interception', 'cloud-dock', 'network-design', 'vmanage-default'],
+              description: 'Template feature filter (default: all)',
+            },
+          },
+        },
       },
       {
         name: 'list_feature_templates',
@@ -406,28 +998,34 @@ export class CatalystSdwanMCPServer {
           properties: {
             list_type: {
               type: 'string',
-              description: 'Filter by list type: app, aspath, color, community, dataipv6prefix, dataipv4prefix, policer, prefix, site, slaclass, tloc, vpn, etc.',
+              description: 'List type, e.g. app, aspath, color, community, dataprefix, dataipv6prefix, policer, prefix, site, sla, tloc, vpn, zone (omit for all lists)',
             },
           },
         },
       },
       {
         name: 'list_policy_definitions',
-        description: 'List policy definitions (ACL, app-route, data, control, etc.).',
+        description: 'List policy definitions of one type (ACL, app-route, data, control, etc.).',
         inputSchema: {
           type: 'object',
           properties: {
             definition_type: {
               type: 'string',
-              description: 'Filter by definition type: acl, approute, data, control, etc.',
+              description: 'Definition type, e.g. acl, aclv6, approute, cflowd, control, data, hubandspoke, mesh, qosmap, vedgeroute, zonebasedfw',
             },
           },
+          required: ['definition_type'],
         },
       },
       {
         name: 'list_policies',
-        description: 'List configured policies (security, vedge, vsmart, voice assemblies).',
-        inputSchema: { type: 'object', properties: {} },
+        description: 'List centralized (vsmart), localized (vedge) and security policies.',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            policy_type: { type: 'string', enum: ['vsmart', 'vedge', 'security'], description: 'Only this policy type (default: all three)' },
+          },
+        },
       },
 
       // === CloudExpress / Cloud OnRamp ===
@@ -460,6 +1058,7 @@ export class CatalystSdwanMCPServer {
           type: 'object',
           properties: {
             limit: { type: 'number', description: 'Max number of alarms to return (default 100)' },
+            site_id: { type: 'string', description: 'Only alarms for this site ID' },
           },
         },
       },
@@ -470,12 +1069,12 @@ export class CatalystSdwanMCPServer {
       },
       {
         name: 'list_vedge_inventory',
-        description: 'List vEdge device inventory with sync status.',
+        description: 'List WAN edge inventory (authorized device list) with certificate and validity status.',
         inputSchema: { type: 'object', properties: {} },
       },
       {
         name: 'get_cluster_status',
-        description: 'Get vManage cluster status (if clustered).',
+        description: 'Get vManage cluster health status per node.',
         inputSchema: { type: 'object', properties: {} },
       },
 
@@ -528,41 +1127,176 @@ export class CatalystSdwanMCPServer {
   }
 
   private async handleToolCall(name: string, args: Record<string, unknown>): Promise<unknown> {
-    const deviceId = args.device_id as string | undefined;
+    const rawDevice = args.device_id;
+    const deviceId =
+      typeof rawDevice === 'string' || typeof rawDevice === 'number' ? await this.resolveDevice(String(rawDevice)) : undefined;
     const addDeviceId = (path: string) =>
       deviceId ? `${path}?deviceId=${encodeURIComponent(deviceId)}` : path;
+    const deviceGet = (path: string, filters: Record<string, unknown> = {}) => {
+      if (!deviceId) throw new Error('device_id is required');
+      const params: Record<string, string> = { deviceId };
+      for (const [k, v] of Object.entries(filters)) {
+        if (v !== undefined && v !== null && v !== '') params[k] = String(v);
+      }
+      return this.apiService.get(path, params);
+    };
+    const pick = (arg: string, allowed: Record<string, string>, fallback: string) => {
+      const value = (args[arg] as string | undefined) ?? fallback;
+      if (!Object.hasOwn(allowed, value)) {
+        throw new Error(`${arg} must be one of: ${Object.keys(allowed).join(', ')}`);
+      }
+      return allowed[value];
+    };
+    const stateParams = () => {
+      const state = args.state as string | undefined;
+      if (state === undefined) return undefined;
+      if (state !== 'up' && state !== 'down') throw new Error('state must be up or down');
+      return { state };
+    };
+    const requiredState = () => {
+      if (args.state === undefined) throw new Error('state is required (up or down)');
+      return stateParams();
+    };
+    const synced = args.synced === true;
 
     switch (name) {
+      case 'list_api_categories':
+        return this.catalog.categories(args.filter as string | undefined);
+      case 'search_api_operations':
+        return this.catalog.search({
+          query: args.query as string | undefined,
+          category: args.category as string | undefined,
+          method: args.method as string | undefined,
+          access: args.access as string | undefined,
+          limit: args.limit as number | undefined,
+        });
+      case 'describe_api_operation':
+        return this.catalog.describe(args.operation_id as string);
+      case 'call_api_operation': {
+        const asObject = (v: unknown, field: string) => {
+          if (v === undefined || v === null) return undefined;
+          if (typeof v !== 'object' || Array.isArray(v)) throw new Error(`${field} must be an object`);
+          return v as Record<string, unknown>;
+        };
+        return this.catalog.call({
+          operationId: args.operation_id as string,
+          pathParams: asObject(args.path_params, 'path_params'),
+          query: asObject(args.query, 'query'),
+          body: args.body,
+          confirm: args.confirm === true,
+          maxItems: typeof args.max_items === 'number' ? args.max_items : undefined,
+        });
+      }
       case 'list_devices': {
-        const params = args.model ? { model: args.model as string } : undefined;
+        const params = args.model ? { 'device-model': String(args.model) } : undefined;
         return this.apiService.get('/dataservice/device', params);
       }
       case 'get_device_details': {
         if (!deviceId) throw new Error('device_id is required');
-        const devices = await this.apiService.get<{ data?: Array<{ uuid?: string; 'system-ip'?: string }> }>('/dataservice/device');
-        const found = (devices.data || []).find(
-          (d) => d.uuid === deviceId || d['system-ip'] === deviceId
-        );
-        return found ?? { error: 'Device not found', device_id: deviceId };
+        const devices = await this.apiService.get<{ data?: DeviceRow[] }>('/dataservice/device', { 'system-ip': deviceId });
+        return devices.data?.[0] ?? { error: 'Device not found', device_id: deviceId };
       }
       case 'list_reachable_devices':
         return this.apiService.get('/dataservice/device/reachable');
       case 'list_controllers':
         return this.apiService.get('/dataservice/system/device/controllers');
 
-      case 'get_control_connections':
-        return this.apiService.get(addDeviceId('/dataservice/device/control/connections'));
+      case 'get_control_connections': {
+        const filters: Record<string, unknown> = { 'system-ip': args.system_ip };
+        if (args.peer_type !== undefined) {
+          filters['peer-type'] = pick('peer_type', { vedge: 'vedge', vsmart: 'vsmart', vmanage: 'vmanage', vbond: 'vbond' }, 'vedge');
+        }
+        return deviceGet(`/dataservice/device/control/${synced ? 'synced/' : ''}connections`, filters);
+      }
+      case 'get_control_connections_history':
+        return deviceGet('/dataservice/device/control/connectionshistory');
       case 'get_control_summary':
         return this.apiService.get(addDeviceId('/dataservice/device/control/summary'));
       case 'get_control_statistics':
         return this.apiService.get(addDeviceId('/dataservice/device/control/statistics'));
+      case 'get_control_local_properties':
+        return deviceGet(`/dataservice/device/control/${synced ? 'synced/' : ''}localproperties`);
+      case 'get_control_wan_interfaces':
+        return deviceGet(`/dataservice/device/control/${synced ? 'synced/' : ''}waninterface`);
+      case 'get_control_valid_devices':
+        return deviceGet(
+          `/dataservice/device/control/${pick('list', { devices: 'validdevices', vsmarts: 'validvsmarts', vmanage_id: 'validvmanageid' }, 'devices')}`
+        );
+      case 'get_control_affinity':
+        return deviceGet(
+          `/dataservice/device/control/affinity/${pick('type', { config: 'config', status: 'status' }, 'status')}`
+        );
+      case 'get_control_links':
+        return this.apiService.get('/dataservice/device/control/links', requiredState());
+      case 'get_control_status':
+        return this.apiService.get('/dataservice/device/control/status');
+      case 'get_control_count': {
+        const params: Record<string, string> = { isCached: 'true' };
+        if (args.site_id !== undefined) params['site-id'] = String(args.site_id);
+        return this.apiService.get('/dataservice/device/control/count', params);
+      }
+      case 'get_control_network_summary': {
+        const state = stateParams();
+        if (state) return this.apiService.get('/dataservice/device/control/networksummary', state);
+        // Without a state filter vManage returns no rows, so merge both states.
+        const [up, down] = await Promise.all(
+          ['up', 'down'].map((s) =>
+            this.apiService.get<{ data?: unknown[] }>('/dataservice/device/control/networksummary', { state: s })
+          )
+        );
+        return { ...up, data: [...(up.data ?? []), ...(down.data ?? [])] };
+      }
+      case 'get_network_connections_summary':
+        return this.apiService.get('/dataservice/network/connectionssummary');
 
       case 'get_omp_peers':
-        return this.apiService.get(addDeviceId('/dataservice/device/omp/peers'));
+        return deviceGet(`/dataservice/device/omp/${synced ? 'synced/' : ''}peers`);
       case 'get_omp_routes':
-        return this.apiService.get(addDeviceId('/dataservice/device/omp/routes'));
+        return filterRows(
+          await deviceGet(
+            `/dataservice/device/omp/routes/${pick('direction', { received: 'received', advertised: 'advertised' }, 'received')}`
+          ),
+          { 'vpn-id': args.vpn_id, prefix: args.prefix }
+        );
+      case 'get_omp_tlocs':
+        return filterRows(
+          await deviceGet(
+            `/dataservice/device/omp/tlocs/${pick('direction', { received: 'received', advertised: 'advertised' }, 'received')}`
+          ),
+          { color: args.color }
+        );
+      case 'get_omp_services':
+        return deviceGet('/dataservice/device/omp/services');
+      case 'get_omp_multicast': {
+        const prefix = pick('type', { routes: 'mcastroutes', autodiscover: 'mcastautodiscover' }, 'routes');
+        const suffix = pick('direction', { received: 'recv', advertised: 'advt' }, 'received');
+        return deviceGet(`/dataservice/device/omp/${prefix}${suffix}`);
+      }
+      case 'get_omp_cloudx':
+        return deviceGet('/dataservice/device/omp/cloudx');
+      case 'get_omp_links':
+        return this.apiService.get('/dataservice/device/omp/links', requiredState());
+      case 'get_omp_status':
+        return this.apiService.get('/dataservice/device/omp/status');
       case 'get_omp_summary':
         return this.apiService.get(addDeviceId('/dataservice/device/omp/summary'));
+
+      case 'get_validator_connections':
+        return deviceGet(
+          `/dataservice/device/orchestrator/${args.history === true ? 'connectionshistory' : 'connections'}`
+        );
+      case 'get_validator_summary':
+        return deviceGet('/dataservice/device/orchestrator/summary');
+      case 'get_validator_statistics':
+        return deviceGet('/dataservice/device/orchestrator/statistics');
+      case 'get_validator_local_properties':
+        return deviceGet('/dataservice/device/orchestrator/localproperties');
+      case 'get_validator_valid_devices':
+        return deviceGet(
+          `/dataservice/device/orchestrator/${pick('list', { vedges: 'validvedges', vsmarts: 'validvsmarts', vmanage_id: 'validvmanageid' }, 'vedges')}`
+        );
+      case 'get_validator_proxy_mapping':
+        return deviceGet('/dataservice/device/orchestrator/proxymapping');
 
       case 'get_bfd_sessions':
         return this.apiService.get(addDeviceId('/dataservice/device/bfd/sessions'));
@@ -604,7 +1338,19 @@ export class CatalystSdwanMCPServer {
         return this.apiService.get(addDeviceId('/dataservice/device/sdwan-stats'));
 
       case 'list_device_templates':
-        return this.apiService.get('/dataservice/template/device');
+        return this.apiService.get('/dataservice/template/device', {
+          feature: pick(
+            'feature',
+            {
+              all: 'all',
+              'lawful-interception': 'lawful-interception',
+              'cloud-dock': 'cloud-dock',
+              'network-design': 'network-design',
+              'vmanage-default': 'vmanage-default',
+            },
+            'all'
+          ),
+        });
       case 'list_feature_templates':
         return this.apiService.get('/dataservice/template/feature');
       case 'get_attached_devices': {
@@ -627,20 +1373,31 @@ export class CatalystSdwanMCPServer {
 
       case 'list_policy_lists': {
         const listType = args.list_type as string | undefined;
-        const path = listType
-          ? `/dataservice/template/policy/list/${encodeURIComponent(listType)}`
-          : '/dataservice/template/policy/list';
-        return this.apiService.get(path);
+        if (!listType) return this.apiService.get('/dataservice/template/policy/list');
+        if (!POLICY_LIST_TYPES.includes(listType)) {
+          throw new Error(`list_type must be one of: ${POLICY_LIST_TYPES.join(', ')}`);
+        }
+        return this.apiService.get(`/dataservice/template/policy/list/${listType}`);
       }
       case 'list_policy_definitions': {
         const defType = args.definition_type as string | undefined;
-        const path = defType
-          ? `/dataservice/template/policy/definition/${encodeURIComponent(defType)}`
-          : '/dataservice/template/policy/definition';
-        return this.apiService.get(path);
+        if (!defType || !POLICY_DEFINITION_TYPES.includes(defType)) {
+          throw new Error(`definition_type is required and must be one of: ${POLICY_DEFINITION_TYPES.join(', ')}`);
+        }
+        return this.apiService.get(`/dataservice/template/policy/definition/${defType}`);
       }
-      case 'list_policies':
-        return this.apiService.get('/dataservice/template/policy');
+      case 'list_policies': {
+        const types = ['vsmart', 'vedge', 'security'];
+        const policyType = args.policy_type as string | undefined;
+        if (policyType && !types.includes(policyType)) {
+          throw new Error(`policy_type must be one of: ${types.join(', ')}`);
+        }
+        const selected = policyType ? [policyType] : types;
+        const results = await Promise.all(
+          selected.map((t) => this.apiService.get<{ data?: unknown }>(`/dataservice/template/policy/${t}`))
+        );
+        return Object.fromEntries(selected.map((t, i) => [t, results[i].data ?? results[i]]));
+      }
 
       case 'get_cloudx_status':
         return this.apiService.get('/dataservice/template/cloudx');
@@ -652,15 +1409,20 @@ export class CatalystSdwanMCPServer {
         return this.apiService.get('/dataservice/template/cloudx/manage/apps');
 
       case 'list_alarms': {
-        const limit = (args.limit as number) || 100;
-        return this.apiService.get(`/dataservice/alarms?limit=${limit}`);
+        const limit = Math.min(Math.max(Number(args.limit) || 100, 1), 1000);
+        const params = args.site_id !== undefined ? { 'site-id': String(args.site_id) } : undefined;
+        const result = await this.apiService.get<{ data?: unknown[] }>('/dataservice/alarms', params);
+        if (Array.isArray(result.data) && result.data.length > limit) {
+          return { ...result, data: result.data.slice(0, limit), truncated: { returned: limit, total: result.data.length } };
+        }
+        return result;
       }
       case 'get_certificate_summary':
         return this.apiService.get('/dataservice/certificate/stats/summary');
       case 'list_vedge_inventory':
-        return this.apiService.get('/dataservice/device/vedgeinventory');
+        return this.apiService.get('/dataservice/device/vedgeinventory/detail');
       case 'get_cluster_status':
-        return this.apiService.get('/dataservice/clusterManagement/clusterStatus');
+        return this.apiService.get('/dataservice/clusterManagement/health/status');
 
       case 'list_custom_apps':
         return this.apiService.get('/dataservice/template/policy/customapp');
@@ -672,14 +1434,193 @@ export class CatalystSdwanMCPServer {
       case 'get_bridge_table':
         return this.apiService.get(addDeviceId('/dataservice/device/bridge/table'));
 
+      case 'get_ux2_overview': {
+        const solution = String(args.solution ?? 'sdwan');
+        const types = await this.featureProfileTypesFor(solution);
+        const [configGroups, policyGroups, topologyGroups, ...profileLists] = await Promise.all([
+          this.listGroups('config-group', solution),
+          this.listGroups('policy-group', solution),
+          this.listGroups('topology-group', solution),
+          ...types.map((t) =>
+            this.apiService
+              .get<unknown[]>(`/dataservice/v1/feature-profile/${solution}/${t}`, undefined, GROUP_LIST_TTL_MS)
+              .then((r) => (Array.isArray(r) ? r.length : 0))
+              .catch(() => null)
+          ),
+        ]);
+        return {
+          solution,
+          configGroups: configGroups.map(summarizeGroup),
+          policyGroups: policyGroups.map(summarizeGroup),
+          topologyGroups: topologyGroups.map(summarizeGroup),
+          featureProfileCounts: Object.fromEntries(types.map((t, i) => [t, profileLists[i]])),
+        };
+      }
+      case 'list_config_groups':
+      case 'list_policy_groups':
+      case 'list_topology_groups': {
+        const kind = name === 'list_config_groups' ? 'config-group' : name === 'list_policy_groups' ? 'policy-group' : 'topology-group';
+        const groups = await this.listGroups(kind, args.solution as string | undefined, args.name as string | undefined);
+        return groups.map(summarizeGroup);
+      }
+      case 'get_config_group':
+      case 'get_policy_group': {
+        const kind = name === 'get_config_group' ? 'config-group' : 'policy-group';
+        const group = await this.findGroup(kind, args[kind === 'config-group' ? 'config_group' : 'policy_group']);
+        const base = `/dataservice/v1/${kind}/${encodeURIComponent(group.id)}`;
+        const [detail, association] = await Promise.all([
+          this.apiService.get<Record<string, unknown>>(base),
+          this.apiService.get<Record<string, unknown>>(`${base}/device/associate`).catch((e: Error) => ({ error: e.message })),
+        ]);
+        return { ...detail, associatedDevices: (association as { devices?: unknown }).devices ?? association };
+      }
+      case 'get_config_group_device_variables': {
+        const group = await this.findGroup('config-group', args.config_group);
+        const query: Record<string, string> = {};
+        if (args.device !== undefined) query['device-id'] = await this.resolveDeviceUuid(String(args.device));
+        return this.apiService.get(`/dataservice/v1/config-group/${encodeURIComponent(group.id)}/device/variables`, query);
+      }
+      case 'preview_config_group_device_config': {
+        const view = pick('view', { diff: 'diff', new: 'new', existing: 'existing', both: 'both' }, 'diff');
+        const group = await this.findGroup('config-group', args.config_group);
+        const uuid = await this.resolveDeviceUuid(String(args.device ?? ''));
+        // Read-only render on vManage (POST with an empty body); it does not deploy anything.
+        const preview = (
+          await this.apiService.request(
+            'POST',
+            `/dataservice/v1/config-group/${encodeURIComponent(group.id)}/device/${encodeURIComponent(uuid)}/preview`,
+            { body: {} }
+          )
+        ).body as { newConfig?: string; existingConfig?: string; [key: string]: unknown };
+        const { newConfig = '', existingConfig = '', ...meta } = preview ?? {};
+        if (view === 'new') return { configGroup: group.name, device: uuid, ...meta, newConfig };
+        if (view === 'existing') return { configGroup: group.name, device: uuid, ...meta, existingConfig };
+        if (view === 'both') return { configGroup: group.name, device: uuid, ...meta, newConfig, existingConfig };
+        return { configGroup: group.name, device: uuid, ...meta, ...lineDiff(existingConfig, newConfig) };
+      }
+      case 'get_topology_group': {
+        const group = await this.findGroup('topology-group', args.topology_group);
+        return this.apiService.get(`/dataservice/v1/topology-group/${encodeURIComponent(group.id)}`);
+      }
+      case 'list_feature_profiles': {
+        const solution = String(args.solution ?? 'sdwan');
+        const types = await this.featureProfileTypesFor(solution);
+        const selected = args.profile_type === undefined ? types : [this.checkProfileType(types, solution, args.profile_type)];
+        const lists = await Promise.all(
+          selected.map((t) =>
+            this.apiService
+              .get<Array<Record<string, unknown>>>(`/dataservice/v1/feature-profile/${solution}/${t}`, undefined, GROUP_LIST_TTL_MS)
+              .then((rows) => (Array.isArray(rows) ? rows.map(summarizeProfile) : rows))
+              .catch((e: Error) => ({ error: e.message }))
+          )
+        );
+        return Object.fromEntries(selected.map((t, i) => [t, lists[i]]));
+      }
+      case 'get_feature_profile': {
+        const solution = String(args.solution ?? 'sdwan');
+        const type = this.checkProfileType(await this.featureProfileTypesFor(solution), solution, args.profile_type);
+        const listPath = `/dataservice/v1/feature-profile/${solution}/${type}`;
+        const ref = String(args.profile ?? '').trim();
+        if (!ref) throw new Error('profile is required (profile ID or name)');
+        let profileId = ref;
+        if (!UUID.test(ref)) {
+          const rows = await this.apiService.get<Array<Record<string, unknown>>>(listPath, undefined, GROUP_LIST_TTL_MS);
+          const match = rows.find((p) => String(p.profileName).toLowerCase() === ref.toLowerCase());
+          if (!match) {
+            throw new Error(`No ${solution} ${type} profile named "${ref}". Available: ${rows.map((p) => p.profileName).join(', ') || 'none'}`);
+          }
+          profileId = String(match.profileId);
+        }
+        const withDetails = await this.catalog.hasQueryParam(`/v1/feature-profile/${solution}/${type}/{id}`, 'details');
+        return this.apiService.get(`${listPath}/${encodeURIComponent(profileId)}`, withDetails ? { details: 'true' } : undefined);
+      }
+      case 'get_network_hierarchy':
+        return this.apiService.get('/dataservice/v1/network-hierarchy');
+
       default:
         throw new Error(`Unknown tool: ${name}`);
     }
+  }
+
+  private async deviceIndex(): Promise<DeviceRow[]> {
+    const body = await this.apiService.get<{ data?: DeviceRow[] }>('/dataservice/device', undefined, DEVICE_INDEX_TTL_MS);
+    return body.data ?? [];
+  }
+
+  private async findDevice(input: string): Promise<DeviceRow> {
+    const value = input.trim();
+    const lower = value.toLowerCase();
+    const rows = await this.deviceIndex();
+    const hit = rows.find(
+      (d) => d['system-ip'] === value || d['host-name']?.toLowerCase() === lower || d.uuid === value || d['board-serial'] === value
+    );
+    if (hit) return hit;
+    const similar = rows
+      .filter((d) => d['host-name']?.toLowerCase().includes(lower))
+      .slice(0, 5)
+      .map((d) => `${d['host-name']} (${d['system-ip']})`);
+    throw new Error(
+      `Unknown device "${input}".${similar.length ? ` Did you mean: ${similar.join(', ')}?` : ' Use list_devices to see hostnames and system IPs.'}`
+    );
+  }
+
+  /** Accepts a system IP, hostname, UUID or serial number and returns the system IP that vManage expects. */
+  private async resolveDevice(input: string): Promise<string> {
+    const value = input.trim();
+    if (IPV4.test(value)) return value;
+    const device = await this.findDevice(value);
+    if (!device['system-ip']) throw new Error(`Device "${input}" has no system IP yet`);
+    return device['system-ip'];
+  }
+
+  /** UX 2.0 APIs identify devices by UUID (chassis number). */
+  private async resolveDeviceUuid(input: string): Promise<string> {
+    const device = await this.findDevice(input);
+    if (!device.uuid) throw new Error(`Device "${input}" has no UUID`);
+    return device.uuid;
+  }
+
+  private async listGroups(kind: 'config-group' | 'policy-group' | 'topology-group', solution?: string, groupName?: string): Promise<UxGroup[]> {
+    const query: Record<string, string> = {};
+    if (solution) query.solution = solution;
+    if (groupName && kind === 'config-group') query.name = groupName;
+    const rows = await this.apiService.get<UxGroup[]>(`/dataservice/v1/${kind}`, query, GROUP_LIST_TTL_MS);
+    return Array.isArray(rows) ? rows : [];
+  }
+
+  private async findGroup(kind: 'config-group' | 'policy-group' | 'topology-group', ref: unknown): Promise<UxGroup> {
+    const value = String(ref ?? '').trim();
+    if (!value) throw new Error(`${kind.replace('-', '_')} is required (ID or name)`);
+    const groups = await this.listGroups(kind);
+    const match = groups.find((g) => g.id === value || g.name?.toLowerCase() === value.toLowerCase());
+    if (!match) {
+      throw new Error(`No ${kind} "${value}". Available: ${groups.map((g) => g.name).join(', ') || 'none'}`);
+    }
+    return match;
+  }
+
+  private async featureProfileTypesFor(solution: string): Promise<string[]> {
+    const types = await this.catalog.featureProfileTypes(solution);
+    if (!types.length) {
+      const solutions = await this.catalog.featureProfileSolutions();
+      throw new Error(`Unknown solution "${solution}". Available: ${solutions.join(', ')}`);
+    }
+    return types;
+  }
+
+  private checkProfileType(types: string[], solution: string, value: unknown): string {
+    const type = String(value ?? '').trim();
+    if (!types.includes(type)) {
+      throw new Error(`profile_type must be one of (${solution}): ${types.join(', ')}`);
+    }
+    return type;
   }
 
   async run(): Promise<void> {
     const transport = new StdioServerTransport();
     await this.server.connect(transport);
     console.error('Cisco Catalyst SD-WAN MCP Server running on stdio');
+    // Warm the API catalog in the background so the first spec-driven call is fast.
+    this.catalog.load().catch((err) => console.error(`API catalog preload failed: ${err instanceof Error ? err.message : err}`));
   }
 }

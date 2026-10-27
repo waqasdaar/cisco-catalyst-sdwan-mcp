@@ -1,5 +1,5 @@
-# Dependencies
-node_modules/
+# Dependencies (may be a symlink to a copy outside cloud-synced folders)
+node_modules
 
 # Build output
 build/

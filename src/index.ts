@@ -1,16 +1,16 @@
+#!/usr/bin/env node
 /**
  * Copyright 2026 Cisco Systems, Inc. and its affiliates
  * * SPDX-License-Identifier: Apache-2.0
  */
-
-#!/usr/bin/env node
 
 import dotenv from 'dotenv';
 import path from 'path';
 import { fileURLToPath } from 'url';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
-dotenv.config({ path: path.resolve(__dirname, '../.env') });
+// quiet: dotenv 17 otherwise logs to stdout, which is reserved for MCP protocol messages.
+dotenv.config({ path: path.resolve(__dirname, '../.env'), quiet: true });
 
 /*
  * MIT License
