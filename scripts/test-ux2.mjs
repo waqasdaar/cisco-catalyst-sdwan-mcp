@@ -126,9 +126,48 @@ await call(
 );
 await call('list_api_categories', { filter: 'Monitoring' }, { check: (v) => (v && !v.selection ? null : 'catalog filter changed') });
 
+console.log('\nFabric-wide tools:');
+const edgeRow = allDevices?.data?.find((d) => d['host-name'] === EDGE);
+await call('get_fabric_health', {}, { check: (v) => (v?.devices?.total === allDevices?.data?.length ? null : `device total ${v?.devices?.total} != ${allDevices?.data?.length}`) });
+const fabricBfd = await call('get_fabric_bfd_status', {}, { check: (v) => (v?.summary?.edgesQueried > 0 && Array.isArray(v.devices) ? null : 'no edges queried') });
+const edgeBfd = await call('get_bfd_sessions', { device_id: EDGE });
+const fabricEdgeBfd = fabricBfd?.devices?.find((d) => d['host-name'] === EDGE);
+const bfdMatch = fabricEdgeBfd?.sessions === edgeBfd?.data?.length;
+console.log(`${bfdMatch ? 'PASS' : 'FAIL'}  consistency: ${EDGE} fabric BFD sessions=${fabricEdgeBfd?.sessions}, get_bfd_sessions rows=${edgeBfd?.data?.length}`);
+if (!bfdMatch) failures++;
+await call('get_fabric_bfd_status', { devices: [EDGE], synced: false }, {
+  check: (v) => (v?.summary?.edgesQueried === 1 && v.summary.source === 'real-time device query' ? null : 'real-time mode not applied'),
+});
+const fabricTlocs = await call('get_fabric_tlocs', {}, { check: (v) => (v?.summary?.tlocs > 0 ? null : 'no TLOCs') });
+const edgeTlocs = await call('get_control_wan_interfaces', { device_id: EDGE });
+const fabricEdgeTlocs = fabricTlocs?.devices?.find((d) => d['host-name'] === EDGE);
+const tlocMatch = fabricEdgeTlocs?.tlocCount === edgeTlocs?.data?.length;
+console.log(`${tlocMatch ? 'PASS' : 'FAIL'}  consistency: ${EDGE} fabric TLOCs=${fabricEdgeTlocs?.tlocCount}, get_control_wan_interfaces rows=${edgeTlocs?.data?.length}`);
+if (!tlocMatch) failures++;
+await call('get_fabric_tlocs', { devices: [EDGE] }, { check: (v) => (v?.summary?.edgesQueried === 1 ? null : 'device scope not applied') });
+if (edgeRow) {
+  await call('get_fabric_tlocs', { site_id: edgeRow['site-id'] }, {
+    check: (v) => (v?.devices?.length && v.devices.every((d) => String(d['site-id']) === String(edgeRow['site-id'])) ? null : 'site scope not applied'),
+  });
+}
+
+console.log('\nBefore/after: one fabric call vs. one cached-data call per WAN edge (as an assistant would do without fabric tools):');
+const edges = (allDevices?.data ?? []).filter((d) => d['device-type'] === 'vedge' && d.reachability === 'reachable');
+let t1 = Date.now();
+for (const d of edges) {
+  await client.callTool({ name: 'get_bfd_sessions', arguments: { device_id: d['system-ip'], synced: true } }, undefined, { timeout: 180_000 });
+}
+const sequentialMs = Date.now() - t1;
+t1 = Date.now();
+await client.callTool({ name: 'get_fabric_bfd_status', arguments: {} }, undefined, { timeout: 180_000 });
+const fabricMs = Date.now() - t1;
+console.log(`      ${edges.length} x get_bfd_sessions (synced) one after another: ${sequentialMs} ms   |   1 x get_fabric_bfd_status: ${fabricMs} ms`);
+
 console.log('\nValidation (expected errors):');
 await call('list_devices', { fields: 'host-name' }, { expectError: true });
 await call('list_devices', { filter: ['up'] }, { expectError: true });
+await call('get_fabric_tlocs', { devices: 'not-an-array' }, { expectError: true });
+await call('get_fabric_bfd_status', { devices: ['no-such-device'] }, { expectError: true });
 await call('get_omp_routes', { device_id: 'no-such-device' }, { expectError: true });
 await call('get_config_group', { config_group: 'no-such-group' }, { expectError: true });
 await call('get_feature_profile', { profile_type: 'bogus', profile: 'x' }, { expectError: true });

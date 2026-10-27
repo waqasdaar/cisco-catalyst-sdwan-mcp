@@ -4,7 +4,7 @@ A [Model Context Protocol (MCP)](https://modelcontextprotocol.io/) server for **
 
 All requests go through vManage. The server never connects to routers directly.
 
-- **83 MCP tools**: 79 purpose-built tools, including UX 2.0 configuration groups, feature profiles and policy and topology groups, plus 4 general tools that reach **every operation in the vManage OpenAPI spec** (4,128 operations on 26.2).
+- **86 MCP tools**: 82 purpose-built tools, including fabric-wide health, BFD and TLOC checks in a single call, UX 2.0 configuration groups, feature profiles and policy and topology groups, plus 4 general tools that reach **every operation in the vManage OpenAPI spec** (4,128 operations on 26.2).
 - **Read-only by default.** Operations that change configuration or state are disabled unless you enable them, and each call then needs explicit confirmation.
 - **Validated against the spec.** Calls through the general tools are checked against the OpenAPI spec published by *your* vManage before they are sent.
 - **Secrets are protected.** Endpoints that issue tokens, passwords, OTPs or credentials are blocked. Session IDs and CSRF tokens are redacted from responses.
@@ -63,10 +63,10 @@ Ask questions about your SD-WAN fabric in plain language and get answers built f
 
 | Use case | Example questions | Main tools |
 |---|---|---|
-| **Inventory and health** | "How many devices are in the fabric, and are they all reachable?" | `list_devices`, `list_reachable_devices`, `get_network_connections_summary` |
+| **Inventory and health** | "Is my fabric healthy?" "How many devices are in the fabric, and are they all reachable?" | `get_fabric_health`, `list_devices`, `list_reachable_devices` |
 | **Control-plane troubleshooting** | "Why is this edge missing control connections? Show the history." | `get_control_connections`, `get_control_connections_history`, `get_control_local_properties` |
 | **Overlay routing (OMP)** | "Which TLOCs and routes does this site advertise in VPN 10?" | `get_omp_routes`, `get_omp_tlocs`, `get_omp_peers` |
-| **Data plane and transport** | "Are all BFD sessions up? How many TLOCs does site 100 have?" | `get_bfd_sessions`, `get_control_wan_interfaces`, `get_device_tloc` |
+| **Data plane and transport** | "Are all BFD sessions in the fabric up? How many TLOCs does site 100 have?" | `get_fabric_bfd_status`, `get_fabric_tlocs`, `get_bfd_sessions`, `get_control_wan_interfaces` |
 | **Application-aware routing** | "Show tunnel loss/latency/jitter and SLA classes." | `get_app_route_statistics`, `get_app_route_sla_class` |
 | **Configuration audit (UX 2.0)** | "Which configuration group configures the branch sites? What would a deploy change?" | `list_config_groups`, `get_config_group`, `preview_config_group_device_config` |
 | **Templates and policies (UX 1.0)** | "Which device templates and centralized policies are in use?" | `list_device_templates`, `get_attached_devices`, `list_policies` |
@@ -159,6 +159,18 @@ Parameters marked `*` are required; all others are optional. Every `device_id` /
 ```json
 { "name": "list_devices", "arguments": { "fields": ["host-name", "system-ip"], "filter": { "device-type": "vedge" } } }
 ```
+
+#### Fabric-wide (3)
+
+One call answers a fabric-wide question. The server queries every selected WAN edge in parallel (bounded by `VMANAGE_MAX_CONCURRENCY`) and returns a summary plus per-device detail, instead of the assistant calling a per-device tool once per edge. Unreachable edges are listed under `skippedUnreachable` rather than queried, and a device that fails is reported with an `error` without failing the whole call.
+
+| Tool | Description | Key parameters | Example prompt |
+|---|---|---|---|
+| `get_fabric_health` | Device counts per type with unreachable devices, control-connection and OMP status, reachability per device class, active alarms by severity, certificate status and Manager cluster health | – | "Is my SD-WAN fabric healthy?" |
+| `get_fabric_bfd_status` | BFD sessions of every WAN edge: per-device counts, the sessions that are not up, and fabric totals | `site_id`, `devices` (hostnames or system IPs), `synced` (default `true`) | "Are all BFD sessions in the fabric up?" |
+| `get_fabric_tlocs` | TLOCs of every WAN edge: color, interface, state and IPs per device, totals per color and TLOCs that are not up | `site_id`, `devices`, `synced` (default `true`) | "How many TLOCs does each branch have, and are any down?" |
+
+The fabric BFD and TLOC tools use vManage's cached (synced) data by default. Set `synced: false` for a real-time query of every device; vManage processes many real-time device queries slowly, so combine it with `site_id` or `devices`.
 
 #### Devices and inventory (5)
 
@@ -735,7 +747,7 @@ Results on Catalyst SD-WAN Manager 26.2.1:
 | Read operations live-tested | 1,261 |
 | Returned data | 1,113 |
 | Errors from Manager or lab (feature not configured, query body required, provider-only role) | 148 |
-| Dedicated tools verified live | 83 / 83 |
+| Dedicated tools verified live | 86 / 86 (83 by `verify:api`; the 3 fabric-wide tools by `test:ux2`) |
 
 To try individual tools interactively, use the MCP Inspector:
 
