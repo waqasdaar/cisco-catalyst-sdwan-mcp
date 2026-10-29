@@ -37,6 +37,14 @@ const tlocs = () => [
 
 const stats = { logins: 0, sessionLogins: 0, logouts: 0, ompStatusCalls: 0, ompSummaryCalls: 0, deviceIds: [] };
 const tokens = new Set();
+// Large-fabric mode for the fan-out tests: extra healthy edges, slow or overloaded BFD queries.
+const mock = { extraEdges: 0, bfdDelayMs: 0, bfdStatus: 200, bfdCalls: 0, bfdInFlight: 0, bfdMaxInFlight: 0 };
+const allDevices = () => [
+  ...DEVICES,
+  ...Array.from({ length: mock.extraEdges }, (_, i) => ({
+    'host-name': `Edge-${i}`, 'system-ip': `10.255.${Math.floor(i / 250)}.${(i % 250) + 1}`, 'device-type': 'vedge', reachability: 'reachable', 'site-id': '900', uuid: `x-${i}`,
+  })),
+];
 
 function handler(req, res) {
   const url = new URL(req.url, 'https://localhost');
@@ -72,10 +80,18 @@ function handler(req, res) {
     if (deviceId) stats.deviceIds.push(deviceId);
     switch (p) {
       case '/dataservice/device':
-        return send(200, { data: DEVICES });
+        return send(200, { data: allDevices() });
       case '/dataservice/device/bfd/sessions':
-      case '/dataservice/device/bfd/synced/sessions':
-        return send(200, { data: bfd(deviceId) });
+      case '/dataservice/device/bfd/synced/sessions': {
+        mock.bfdCalls++;
+        mock.bfdMaxInFlight = Math.max(mock.bfdMaxInFlight, ++mock.bfdInFlight);
+        const reply = () => {
+          mock.bfdInFlight--;
+          if (mock.bfdStatus !== 200) send(mock.bfdStatus, { error: 'busy' });
+          else send(200, { data: bfd(deviceId) });
+        };
+        return mock.bfdDelayMs ? setTimeout(reply, mock.bfdDelayMs) : reply();
+      }
       case '/dataservice/device/control/waninterface':
       case '/dataservice/device/control/synced/waninterface':
         return send(200, { data: tlocs() });
@@ -249,6 +265,72 @@ check('session-cookie login', r.value?.data?.length === 6 && stats.sessionLogins
 await sess.close();
 for (let i = 0; i < 30 && stats.logouts === 0; i++) await new Promise((res) => setTimeout(res, 100));
 check('session logged out on disconnect', stats.logouts === 1);
+
+// Large fabric: bounded fan-out, compact output, time budget with resume, overload breaker.
+mock.extraEdges = 120;
+mock.bfdDelayMs = 20;
+let big = await connect();
+mock.bfdMaxInFlight = 0;
+r = await tool(big, 'get_fabric_bfd_status');
+check(
+  'large fabric: concurrency capped, problems-only listing',
+  r.value?.summary?.edgesQueried === 122 && mock.bfdMaxInFlight <= 6 && r.value.devices.length === 1 && /problems/.test(r.value.devicesListed),
+  `queried=${r.value?.summary?.edgesQueried} maxInFlight=${mock.bfdMaxInFlight} listed=${r.value?.devices?.length}`
+);
+await big.close();
+
+mock.bfdDelayMs = 300;
+big = await connect();
+t = Date.now();
+r = await tool(big, 'get_fabric_bfd_status', { max_wait_seconds: 0.5 });
+const partialMs = Date.now() - t;
+check('time budget returns partial result', r.value?.incomplete?.notQueried > 0 && partialMs < 1500, `${partialMs} ms, notQueried=${r.value?.incomplete?.notQueried}`);
+await new Promise((res) => setTimeout(res, 400));
+const callsBefore = mock.bfdCalls;
+r = await tool(big, 'get_fabric_bfd_status', { max_wait_seconds: 30 });
+check(
+  'second call resumes from cached results',
+  !r.value?.incomplete && r.value?.summary?.edgesQueried === 122 && mock.bfdCalls - callsBefore < 122,
+  `new queries=${mock.bfdCalls - callsBefore}`
+);
+await big.close();
+
+mock.bfdDelayMs = 0;
+mock.bfdStatus = 503;
+big = await connect();
+const overloadBefore = mock.bfdCalls;
+r = await tool(big, 'get_fabric_bfd_status');
+check(
+  'overload breaker stops the sweep',
+  /overload/.test(r.value?.incomplete?.reason ?? '') && mock.bfdCalls - overloadBefore < 60,
+  `requests=${mock.bfdCalls - overloadBefore}`
+);
+await big.close();
+mock.bfdStatus = 200;
+mock.extraEdges = 0;
+
+// Large inventory: summary fields, count_by, paging, and a truncation cursor that continues where it stopped.
+mock.extraEdges = 3000;
+big = await connect();
+r = await tool(big, 'list_devices', { count_by: 'reachability' });
+check(
+  'count_by aggregates the inventory',
+  r.value?.data?.[0]?.reachability === 'reachable' && r.value.data[0].count === 3005 && r.value.countBy?.rows === 3006,
+  JSON.stringify(r.value?.data)
+);
+r = await tool(big, 'list_devices', { filter: { 'site-id': '900' }, offset: 10, limit: 5 });
+check(
+  'offset/limit paging',
+  r.value?.data?.length === 5 && r.value.data[0]['host-name'] === 'Edge-10' && r.value.page?.nextOffset === 15 && r.value.page.total === 3000,
+  JSON.stringify(r.value?.page)
+);
+r = await tool(big, 'list_devices', { all_fields: true });
+const cursor = r.value?.truncated?.nextOffset;
+check('truncated response returns nextOffset', cursor > 0 && cursor < 3006 && r.value.data.length === cursor, JSON.stringify(r.value?.truncated));
+r = await tool(big, 'list_devices', { all_fields: true, offset: cursor });
+check('nextOffset continues the listing', r.value?.data?.[0]?.['host-name'] === `Edge-${cursor - 6}`, r.value?.data?.[0]?.['host-name']);
+await big.close();
+mock.extraEdges = 0;
 
 server.close();
 rmSync(certDir, { recursive: true, force: true });

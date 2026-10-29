@@ -17,7 +17,7 @@ import {
 } from '@modelcontextprotocol/sdk/types.js';
 import { VManageApiService } from './services/vmanageApi.js';
 import { ApiCatalog, shapeResponse } from './services/apiCatalog.js';
-import { loadConfig } from './utils/config.js';
+import { loadConfig, type VManageConfig } from './utils/config.js';
 
 const MAX_RESPONSE_CHARS = 200_000;
 
@@ -27,20 +27,34 @@ function toLimitedJson(result: unknown): string {
   const text = JSON.stringify(result) ?? '';
   if (text.length <= MAX_RESPONSE_CHARS) return text;
 
-  const obj = result as { data?: unknown[]; items?: unknown[]; truncated?: { total?: number } };
+  const obj = (Array.isArray(result) ? { items: result } : result) as Record<string, unknown>;
   const key = Array.isArray(obj?.data) ? 'data' : Array.isArray(obj?.items) ? 'items' : null;
   if (key) {
-    const rows = obj[key] as unknown[];
-    const total = obj.truncated?.total ?? rows.length;
-    let keep = Math.floor(rows.length * (MAX_RESPONSE_CHARS / text.length) * 0.9);
-    while (keep > 0) {
-      const trimmed = JSON.stringify({
-        ...obj,
-        [key]: rows.slice(0, keep),
-        truncated: { returned: keep, total, reason: 'response size limit; filter the query to see more' },
+    const { [key]: rows, page, truncated, ...rest } = obj;
+    const list = rows as unknown[];
+    const offset = (page as { offset?: number } | undefined)?.offset ?? 0;
+    const total = (page as { total?: number } | undefined)?.total ?? (truncated as { total?: number } | undefined)?.total ?? offset + list.length;
+    // One pass: serialize each row once and stop when the budget is used.
+    const budget = MAX_RESPONSE_CHARS - JSON.stringify(rest).length - 300;
+    const parts: string[] = [];
+    let size = 0;
+    for (const row of list) {
+      const s = JSON.stringify(row) ?? 'null';
+      if (size + s.length + 1 > budget) break;
+      parts.push(s);
+      size += s.length + 1;
+    }
+    if (parts.length) {
+      const head = JSON.stringify({
+        ...rest,
+        truncated: {
+          returned: parts.length,
+          total,
+          nextOffset: offset + parts.length,
+          reason: 'response size limit: call again with offset set to nextOffset, or narrow with filter, fields or count_by',
+        },
       });
-      if (trimmed.length <= MAX_RESPONSE_CHARS) return trimmed;
-      keep = Math.floor(keep * 0.8);
+      return `${head.slice(0, -1)},"${key}":[${parts.join(',')}]}`;
     }
   }
   return JSON.stringify({
@@ -69,7 +83,26 @@ interface UxGroup {
 const DEVICE_INDEX_TTL_MS = 60_000;
 const DEVICE_INDEX_STALE_MS = 10 * 60_000;
 const GROUP_LIST_TTL_MS = 30_000;
-const MAX_FABRIC_DEVICES = 200;
+const INVENTORY_TTL_MS = 60_000;
+const INVENTORY_STALE_MS = 10 * 60_000;
+const REACHABLE_TTL_MS = 30_000;
+// Device rows carry ~50 fields; list_devices returns these unless fields or all_fields is given.
+const DEVICE_SUMMARY_FIELDS = [
+  'host-name', 'system-ip', 'site-id', 'device-type', 'device-model', 'reachability', 'status', 'version', 'uuid', 'board-serial',
+];
+// Real-time queries are proxied to every device, so a fabric-wide real-time sweep stays capped.
+const MAX_REALTIME_FABRIC_DEVICES = 200;
+// Per-device results are reused briefly, so a repeated or resumed fabric call only queries what is missing.
+const FABRIC_SYNCED_TTL_MS = 60_000;
+const FABRIC_REALTIME_TTL_MS = 15_000;
+const FABRIC_HEALTH_TTL_MS = 15_000;
+// Consecutive overload errors (429/5xx/timeouts) after which a sweep stops sending requests.
+const FABRIC_BREAKER_FAILURES = 5;
+// Above this many edges, only devices with problems are listed unless detail: "all".
+const FABRIC_FULL_DETAIL_MAX = 50;
+const FABRIC_LIST_CAP = 200;
+const FABRIC_MAX_WAIT_CAP_S = 600;
+const OVERLOAD_STATUS = new Set([429, 502, 503, 504]);
 const IPV4 = /^\d{1,3}(\.\d{1,3}){3}$/;
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
@@ -185,6 +218,12 @@ const ROW_OPTIONS = {
     additionalProperties: true,
     description: 'Return only rows whose fields match these values (case-insensitive; an array value matches any of its items), e.g. state: down',
   },
+  count_by: {
+    type: 'string',
+    description: 'Return row counts per value of this field instead of rows (after filter), e.g. reachability, device-model, version, site-id. Fastest way to summarize large lists.',
+  },
+  offset: { type: 'integer', minimum: 0, description: 'Skip this many rows (after filter). Use nextOffset from a truncated or paged response to continue.' },
+  limit: { type: 'integer', minimum: 1, description: 'Return at most this many rows (after filter and offset)' },
 };
 const SYNCED_OPTION = {
   type: 'boolean',
@@ -198,6 +237,21 @@ const FABRIC_SCOPE = {
     description:
       'Default true: use vManage cached (synced) data, which is fast. false queries every device in real time, which vManage processes slowly when many devices are queried at once.',
   },
+  max_wait_seconds: {
+    type: 'number',
+    description:
+      'Time budget for the sweep (default VMANAGE_FABRIC_DEADLINE_MS, 25 s). Devices not reached in time are listed under incomplete; call again to continue, since finished devices are reused.',
+  },
+  detail: {
+    type: 'string',
+    enum: ['auto', 'all', 'problems'],
+    description: `Which devices to list: all, only those with problems or errors, or auto (all up to ${FABRIC_FULL_DETAIL_MAX} edges, otherwise problems only). Summary totals always cover every queried device.`,
+  },
+};
+
+const isOverload = (err: unknown) => {
+  const status = (err as { status?: number })?.status;
+  return (status !== undefined && OVERLOAD_STATUS.has(status)) || /did not respond within|Cannot reach vManage/.test(errorMessage(err));
 };
 
 const dataOf = (body: unknown) => (body as { data?: unknown })?.data ?? body;
@@ -218,15 +272,19 @@ function summarizeDevices(rows: DeviceRow[]) {
   return { total: rows.length, byType, unreachable };
 }
 
-/** Applies the optional `filter` and `fields` arguments to list rows (`data`, `items` or a top-level array). */
-function selectRows(result: unknown, fields: unknown, filter: unknown): unknown {
-  if (fields === undefined && filter === undefined) return result;
+/** Applies the optional filter, count_by, fields, offset and limit arguments to list rows (`data`, `items` or a top-level array). */
+function selectRows(result: unknown, options: Record<string, unknown>): unknown {
+  const { fields, filter, offset, limit, count_by: countBy } = options;
+  if ([fields, filter, offset, limit, countBy].every((v) => v === undefined)) return result;
   if (fields !== undefined && (!Array.isArray(fields) || fields.some((f) => typeof f !== 'string'))) {
     throw new Error('fields must be an array of field names');
   }
   if (filter !== undefined && (filter === null || typeof filter !== 'object' || Array.isArray(filter))) {
     throw new Error('filter must be an object of field/value pairs');
   }
+  if (offset !== undefined && !(Number.isInteger(offset) && (offset as number) >= 0)) throw new Error('offset must be a non-negative integer');
+  if (limit !== undefined && !(Number.isInteger(limit) && (limit as number) > 0)) throw new Error('limit must be a positive integer');
+  if (countBy !== undefined && (typeof countBy !== 'string' || !countBy)) throw new Error('count_by must be a field name');
   const container = result as Record<string, unknown>;
   const key = Array.isArray(result) ? null : Array.isArray(container?.data) ? 'data' : Array.isArray(container?.items) ? 'items' : undefined;
   if (key === undefined) return result;
@@ -240,7 +298,16 @@ function selectRows(result: unknown, fields: unknown, filter: unknown): unknown 
         return conditions.every(([k, v]) => k in r && (Array.isArray(v) ? v.some((x) => norm(x) === norm(r[k])) : norm(v) === norm(r[k])));
       })
     : rows;
-  if (fields) {
+  const meta: Record<string, unknown> = conditions.length ? { selection: { matched: selected.length, of: rows.length } } : {};
+  if (countBy) {
+    const counts = new Map<string, number>();
+    for (const row of selected) {
+      const value = String((row as Record<string, unknown> | null)?.[countBy as string] ?? '(none)');
+      counts.set(value, (counts.get(value) ?? 0) + 1);
+    }
+    selected = [...counts].sort((a, b) => b[1] - a[1]).map(([value, count]) => ({ [countBy as string]: value, count }));
+    meta.countBy = { field: countBy, rows: [...counts.values()].reduce((n, c) => n + c, 0), groups: counts.size };
+  } else if (fields) {
     const wanted = fields as string[];
     selected = selected.map((row) =>
       row && typeof row === 'object'
@@ -248,17 +315,25 @@ function selectRows(result: unknown, fields: unknown, filter: unknown): unknown 
         : row
     );
   }
-  if (key === null) return selected;
-  return { ...container, [key]: selected, ...(conditions.length ? { selection: { matched: selected.length, of: rows.length } } : {}) };
+  if (offset !== undefined || limit !== undefined) {
+    const start = (offset as number | undefined) ?? 0;
+    const total = selected.length;
+    selected = selected.slice(start, limit !== undefined ? start + (limit as number) : undefined);
+    meta.page = { offset: start, returned: selected.length, total, ...(start + selected.length < total ? { nextOffset: start + selected.length } : {}) };
+  }
+  if (key === null) return meta.page || meta.countBy ? { ...meta, items: selected } : selected;
+  return { ...container, ...meta, [key]: selected };
 }
 
 export class CatalystSdwanMCPServer {
   private server: Server;
+  private config: VManageConfig;
   private apiService: VManageApiService;
   private catalog: ApiCatalog;
 
   constructor() {
     const config = loadConfig();
+    this.config = config;
     this.apiService = new VManageApiService(config);
     this.catalog = new ApiCatalog(this.apiService, config.allowWrite);
 
@@ -285,10 +360,11 @@ export class CatalystSdwanMCPServer {
     this.server.setRequestHandler(CallToolRequestSchema, async (request) => {
       const { name, arguments: args } = request.params;
       try {
-        const { fields, filter, ...toolArgs } = args ?? {};
+        const { fields, filter, offset, limit, count_by, ...toolArgs } = args ?? {};
+        const defaultFields = name === 'list_devices' && fields === undefined && toolArgs.all_fields !== true ? DEVICE_SUMMARY_FIELDS : fields;
         const result = NO_ROW_OPTIONS.has(name)
           ? await this.handleToolCall(name, args || {})
-          : selectRows(await this.handleToolCall(name, toolArgs), fields, filter);
+          : selectRows(await this.handleToolCall(name, toolArgs), { fields: defaultFields, filter, offset, limit, count_by });
         return {
           content: [{ type: 'text', text: toLimitedJson(shapeResponse(result, Number.MAX_SAFE_INTEGER)) }],
         };
@@ -385,24 +461,26 @@ export class CatalystSdwanMCPServer {
       {
         name: 'get_fabric_bfd_status',
         description:
-          'BFD sessions of every reachable WAN edge (or one site / selected devices) in one call, queried in parallel: per-device session counts and the sessions that are not up, plus fabric totals. Prefer this over calling get_bfd_sessions per device.',
+          'BFD sessions of every reachable WAN edge (or one site / selected devices) in one call, queried in parallel within a time budget: per-device session counts and the sessions that are not up, plus fabric totals. Prefer this over calling get_bfd_sessions per device. On large fabrics, scope with site_id/devices; if the result has incomplete, call again to continue.',
         inputSchema: { type: 'object', properties: { ...FABRIC_SCOPE } },
       },
       {
         name: 'get_fabric_tlocs',
         description:
-          'TLOCs (WAN transports) of every reachable WAN edge (or one site / selected devices) in one call, queried in parallel: per-device TLOC color, interface, state and public/private IP, plus totals per color and TLOCs that are not up.',
+          'TLOCs (WAN transports) of every reachable WAN edge (or one site / selected devices) in one call, queried in parallel within a time budget: per-device TLOC color, interface, state and public/private IP, plus totals per color and TLOCs that are not up. If the result has incomplete, call again to continue.',
         inputSchema: { type: 'object', properties: { ...FABRIC_SCOPE } },
       },
 
       // === Device Management ===
       {
         name: 'list_devices',
-        description: 'List all devices in the SD-WAN fabric (vEdges, vSmarts, vBonds, vManage). Returns hostname, system-ip, device-type, status, site-id, version.',
+        description:
+          'List all devices in the SD-WAN fabric (vEdges, vSmarts, vBonds, vManage) from a cached inventory (refreshed every 60 s). Returns hostname, system-ip, site-id, device-type, model, reachability, status, version. On large fabrics use count_by for summaries (e.g. count_by: reachability), filter to select, and offset/limit to page.',
         inputSchema: {
           type: 'object',
           properties: {
             model: { type: 'string', description: 'Filter by device model (e.g., vedge-C8000V, vsmart)' },
+            all_fields: { type: 'boolean', description: 'Return every field of each device instead of the summary fields (much larger)' },
           },
         },
       },
@@ -1322,8 +1400,9 @@ export class CatalystSdwanMCPServer {
         });
       }
       case 'list_devices': {
-        const params = args.model ? { 'device-model': String(args.model) } : undefined;
-        return this.apiService.get('/dataservice/device', params);
+        const rows = await this.deviceIndex();
+        const model = args.model === undefined ? undefined : String(args.model).toLowerCase();
+        return { data: model === undefined ? rows : rows.filter((d) => String((d as Record<string, unknown>)['device-model']).toLowerCase() === model) };
       }
       case 'get_device_details': {
         if (!deviceId) throw new Error('device_id is required');
@@ -1331,9 +1410,9 @@ export class CatalystSdwanMCPServer {
         return devices.data?.[0] ?? { error: 'Device not found', device_id: deviceId };
       }
       case 'list_reachable_devices':
-        return this.apiService.get('/dataservice/device/reachable');
+        return this.apiService.get('/dataservice/device/reachable', undefined, REACHABLE_TTL_MS);
       case 'list_controllers':
-        return this.apiService.get('/dataservice/system/device/controllers');
+        return this.apiService.get('/dataservice/system/device/controllers', undefined, INVENTORY_TTL_MS, INVENTORY_STALE_MS);
 
       case 'get_control_connections': {
         const filters: Record<string, unknown> = { 'system-ip': args.system_ip };
@@ -1560,7 +1639,7 @@ export class CatalystSdwanMCPServer {
       case 'get_certificate_summary':
         return this.apiService.get('/dataservice/certificate/stats/summary');
       case 'list_vedge_inventory':
-        return this.apiService.get('/dataservice/device/vedgeinventory/detail');
+        return this.apiService.get('/dataservice/device/vedgeinventory/detail', undefined, INVENTORY_TTL_MS, INVENTORY_STALE_MS);
       case 'get_cluster_status':
         return this.apiService.get('/dataservice/clusterManagement/health/status');
 
@@ -1678,19 +1757,20 @@ export class CatalystSdwanMCPServer {
         return this.apiService.get('/dataservice/v1/network-hierarchy');
 
       case 'get_fabric_health': {
+        const get = (path: string) => this.apiService.get(path, undefined, FABRIC_HEALTH_TTL_MS);
         const sections: Record<string, Promise<unknown>> = {
-          devices: this.apiService.get<{ data?: DeviceRow[] }>('/dataservice/device').then((b) => summarizeDevices(b.data ?? [])),
-          controlConnections: this.apiService.get('/dataservice/device/control/status').then(dataOf),
-          ompPeers: this.apiService.get('/dataservice/device/omp/status').then(dataOf),
-          reachabilityByClass: this.apiService.get('/dataservice/network/connectionssummary').then(dataOf),
-          alarms: this.apiService.get<{ data?: Array<Record<string, unknown>> }>('/dataservice/alarms').then((b) => {
+          devices: this.deviceIndex().then(summarizeDevices),
+          controlConnections: get('/dataservice/device/control/status').then(dataOf),
+          ompPeers: get('/dataservice/device/omp/status').then(dataOf),
+          reachabilityByClass: get('/dataservice/network/connectionssummary').then(dataOf),
+          alarms: (get('/dataservice/alarms') as Promise<{ data?: Array<Record<string, unknown>> }>).then((b) => {
             const rows = b.data ?? [];
             const bySeverity: Record<string, number> = {};
             for (const a of rows) bySeverity[String(a.severity ?? 'unknown')] = (bySeverity[String(a.severity ?? 'unknown')] ?? 0) + 1;
             return { total: rows.length, bySeverity };
           }),
-          certificates: this.apiService.get('/dataservice/certificate/stats/summary').then(dataOf),
-          cluster: this.apiService.get('/dataservice/clusterManagement/health/status').then(dataOf),
+          certificates: get('/dataservice/certificate/stats/summary').then(dataOf),
+          cluster: get('/dataservice/clusterManagement/health/status').then(dataOf),
         };
         const names = Object.keys(sections);
         const settled = await Promise.allSettled(Object.values(sections));
@@ -1704,8 +1784,9 @@ export class CatalystSdwanMCPServer {
         return Object.keys(errors).length ? { ...health, errors } : health;
       }
       case 'get_fabric_bfd_status': {
-        const { edges, skipped } = await this.fabricEdges(args);
-        const devices = await this.perEdge(edges, `/dataservice/device/bfd/${args.synced !== false ? 'synced/' : ''}sessions`, (rows) => {
+        const scope = await this.fabricEdges(args);
+        const realTime = args.synced === false;
+        const { devices, incomplete } = await this.perEdge(scope.edges, `/dataservice/device/bfd/${realTime ? '' : 'synced/'}sessions`, realTime, args, (rows) => {
           const notUp = rows.filter((r) => String(r.state).toLowerCase() !== 'up');
           return {
             sessions: rows.length,
@@ -1721,23 +1802,28 @@ export class CatalystSdwanMCPServer {
           };
         });
         const sum = (key: string) => devices.reduce((n, d) => n + (Number(d[key]) || 0), 0);
+        const edgesNotUp = devices.filter((d) => Number(d.notUp) > 0).map((d) => d['host-name']);
         return {
           summary: {
-            source: args.synced !== false ? 'vManage cached (synced) data' : 'real-time device query',
-            edgesQueried: edges.length,
+            source: realTime ? 'real-time device query' : 'vManage cached (synced) data',
+            edgesSelected: scope.edges.length,
+            edgesQueried: devices.length,
             sessions: sum('sessions'),
             up: sum('up'),
             notUp: sum('notUp'),
-            edgesWithSessionsNotUp: devices.filter((d) => Number(d.notUp) > 0).map((d) => d['host-name']),
+            edgesWithSessionsNotUpCount: edgesNotUp.length,
+            edgesWithSessionsNotUp: edgesNotUp.slice(0, FABRIC_LIST_CAP),
             edgesWithErrors: devices.filter((d) => d.error).length,
           },
-          skippedUnreachable: skipped,
-          devices,
+          ...(incomplete ? { incomplete } : {}),
+          ...scope.skippedView,
+          ...this.fabricDetail(devices, args, (d) => Number(d.notUp) > 0),
         };
       }
       case 'get_fabric_tlocs': {
-        const { edges, skipped } = await this.fabricEdges(args);
-        const devices = await this.perEdge(edges, `/dataservice/device/control/${args.synced !== false ? 'synced/' : ''}waninterface`, (rows) => ({
+        const scope = await this.fabricEdges(args);
+        const realTime = args.synced === false;
+        const { devices, incomplete } = await this.perEdge(scope.edges, `/dataservice/device/control/${realTime ? '' : 'synced/'}waninterface`, realTime, args, (rows) => ({
           tlocCount: rows.length,
           tlocs: rows.map((r) => ({
             color: r.color,
@@ -1761,15 +1847,20 @@ export class CatalystSdwanMCPServer {
         }
         return {
           summary: {
-            source: args.synced !== false ? 'vManage cached (synced) data' : 'real-time device query',
-            edgesQueried: edges.length,
+            source: realTime ? 'real-time device query' : 'vManage cached (synced) data',
+            edgesSelected: scope.edges.length,
+            edgesQueried: devices.length,
             tlocs: devices.reduce((n, d) => n + (Number(d.tlocCount) || 0), 0),
             byColor,
-            notUp,
+            notUpCount: notUp.length,
+            notUp: notUp.slice(0, FABRIC_LIST_CAP),
             edgesWithErrors: devices.filter((d) => d.error).length,
           },
-          skippedUnreachable: skipped,
-          devices,
+          ...(incomplete ? { incomplete } : {}),
+          ...scope.skippedView,
+          ...this.fabricDetail(devices, args, (d) =>
+            ((d.tlocs as Array<Record<string, unknown>> | undefined) ?? []).some((t) => String(t.state).toLowerCase() !== 'up')
+          ),
         };
       }
 
@@ -1790,8 +1881,14 @@ export class CatalystSdwanMCPServer {
   }
 
   /** WAN edges selected by site_id / devices; unreachable ones are reported instead of queried. */
-  private async fabricEdges(args: Record<string, unknown>): Promise<{ edges: DeviceRow[]; skipped: DeviceRow[] }> {
-    let rows = (await this.deviceIndex()).filter((d) => d['device-type'] === 'vedge');
+  private async fabricEdges(args: Record<string, unknown>): Promise<{ edges: DeviceRow[]; skippedView: Record<string, unknown> }> {
+    if (args.detail !== undefined && !['auto', 'all', 'problems'].includes(String(args.detail))) {
+      throw new Error('detail must be one of: auto, all, problems');
+    }
+    if (args.max_wait_seconds !== undefined && !(Number(args.max_wait_seconds) > 0)) {
+      throw new Error('max_wait_seconds must be a positive number');
+    }
+    let rows = (await this.deviceIndex(true)).filter((d) => d['device-type'] === 'vedge');
     if (args.site_id !== undefined) rows = rows.filter((d) => String(d['site-id']) === String(args.site_id));
     if (args.devices !== undefined) {
       const list = args.devices;
@@ -1801,30 +1898,93 @@ export class CatalystSdwanMCPServer {
       const wanted = new Set((await Promise.all(list.map((d: string) => this.findDevice(d)))).map((d) => d['system-ip']));
       rows = rows.filter((d) => wanted.has(d['system-ip']));
     }
-    if (rows.length > MAX_FABRIC_DEVICES) {
-      throw new Error(`${rows.length} WAN edges selected (limit ${MAX_FABRIC_DEVICES}); narrow the query with site_id or devices`);
-    }
     const edges = rows.filter((d) => d.reachability === 'reachable' && d['system-ip']);
+    const limit = args.synced === false ? Math.min(MAX_REALTIME_FABRIC_DEVICES, this.config.fabricMaxDevices) : this.config.fabricMaxDevices;
+    if (edges.length > limit) {
+      throw new Error(
+        `${edges.length} reachable WAN edges selected (limit ${limit}${args.synced === false ? ' for real-time queries; use synced data or' : ';'} narrow the query with site_id or devices)`
+      );
+    }
     const skipped = rows
       .filter((d) => !edges.includes(d))
       .map((d) => ({ 'host-name': d['host-name'], 'system-ip': d['system-ip'], 'site-id': d['site-id'], reachability: d.reachability }));
-    return { edges, skipped };
+    const skippedView: Record<string, unknown> = { skippedUnreachable: skipped.slice(0, FABRIC_LIST_CAP) };
+    if (skipped.length > FABRIC_LIST_CAP) skippedView.skippedUnreachableCount = skipped.length;
+    return { edges, skippedView };
   }
 
-  /** Runs one device query per edge in parallel (bounded by the client's concurrency limit); a failing device doesn't fail the call. */
+  /** Lists every device on small selections, otherwise only those with problems or errors. */
+  private fabricDetail(
+    devices: Array<Record<string, unknown>>,
+    args: Record<string, unknown>,
+    hasProblem: (d: Record<string, unknown>) => boolean
+  ): { devicesListed: string; devices: Array<Record<string, unknown>> } {
+    const detail = String(args.detail ?? 'auto');
+    const all = detail === 'all' || (detail === 'auto' && devices.length <= FABRIC_FULL_DETAIL_MAX);
+    return all
+      ? { devicesListed: 'all', devices }
+      : { devicesListed: 'with problems or errors only (detail: "all" lists every device)', devices: devices.filter((d) => d.error || hasProblem(d)) };
+  }
+
+  /**
+   * Queries every edge through a fixed pool of workers, within a time budget. Devices not reached in time are
+   * reported under `incomplete`; results are cached briefly, so calling again continues where this call stopped.
+   * A run of overload errors stops the sweep instead of adding load to a struggling Manager.
+   */
   private async perEdge(
     edges: DeviceRow[],
     path: string,
+    realTime: boolean,
+    args: Record<string, unknown>,
     summarize: (rows: Array<Record<string, unknown>>) => Record<string, unknown>
-  ): Promise<Array<Record<string, unknown>>> {
-    const results = await Promise.allSettled(
-      edges.map((d) => this.apiService.get<{ data?: Array<Record<string, unknown>> }>(path, { deviceId: d['system-ip'] as string }))
-    );
-    return edges.map((d, i) => {
-      const base = { 'host-name': d['host-name'], 'system-ip': d['system-ip'], 'site-id': d['site-id'] };
-      const r = results[i];
-      return r.status === 'fulfilled' ? { ...base, ...summarize(r.value.data ?? []) } : { ...base, error: errorMessage(r.reason) };
-    });
+  ): Promise<{ devices: Array<Record<string, unknown>>; incomplete?: Record<string, unknown> }> {
+    const budgetMs =
+      args.max_wait_seconds !== undefined ? Math.min(Number(args.max_wait_seconds), FABRIC_MAX_WAIT_CAP_S) * 1000 : this.config.fabricDeadlineMs;
+    const deadline = Date.now() + budgetMs;
+    const ttl = realTime ? FABRIC_REALTIME_TTL_MS : FABRIC_SYNCED_TTL_MS;
+    const base = (d: DeviceRow) => ({ 'host-name': d['host-name'], 'system-ip': d['system-ip'], 'site-id': d['site-id'] });
+    const results: Array<Record<string, unknown> | undefined> = new Array(edges.length);
+    let next = 0;
+    let overloadStreak = 0;
+    let stopReason: string | undefined;
+
+    const worker = async () => {
+      while (!stopReason && next < edges.length && Date.now() < deadline) {
+        const i = next++;
+        const d = edges[i];
+        try {
+          const body = await this.apiService.get<{ data?: Array<Record<string, unknown>> }>(path, { deviceId: d['system-ip'] as string }, ttl);
+          results[i] = { ...base(d), ...summarize(body.data ?? []) };
+          overloadStreak = 0;
+        } catch (err) {
+          results[i] = { ...base(d), error: errorMessage(err) };
+          if (isOverload(err) && ++overloadStreak >= FABRIC_BREAKER_FAILURES) {
+            stopReason = `stopped after ${FABRIC_BREAKER_FAILURES} consecutive overload errors to protect vManage (${errorMessage(err)})`;
+          }
+        }
+      }
+    };
+    const width = Math.min(realTime ? this.config.fabricRealtimeConcurrency : this.config.fabricConcurrency, edges.length);
+    let timer: NodeJS.Timeout | undefined;
+    await Promise.race([
+      Promise.all(Array.from({ length: width }, worker)),
+      new Promise<void>((resolve) => (timer = setTimeout(resolve, budgetMs))),
+    ]);
+    clearTimeout(timer);
+
+    const done = results.slice();
+    const devices = done.filter((r): r is Record<string, unknown> => r !== undefined);
+    const missing = edges.filter((_, i) => done[i] === undefined).map(base);
+    if (!missing.length) return { devices };
+    return {
+      devices,
+      incomplete: {
+        notQueried: missing.length,
+        reason: stopReason ?? `time budget of ${budgetMs / 1000} s reached`,
+        hint: `Call again within ${ttl / 1000} s to continue: finished devices are reused, so only the remaining ones are queried. Or narrow with site_id/devices, or raise max_wait_seconds.`,
+        devices: missing.slice(0, FABRIC_LIST_CAP),
+      },
+    };
   }
 
   private async findDevice(input: string): Promise<DeviceRow> {

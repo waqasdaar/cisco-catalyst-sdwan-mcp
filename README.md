@@ -153,12 +153,16 @@ Operations count as **write** when their method is POST, PUT or DELETE, or when 
 
 Parameters marked `*` are required; all others are optional. Every `device_id` / `device` parameter accepts a **hostname** (e.g. `Branch-1`), **system IP**, UUID or serial number. Real-time device tools query the device through the Manager; tools with `synced` can return the Manager's cached copy instead, which is faster.
 
-**Response shaping (all tools except the three API catalog tools).** Two optional arguments trim list results before they reach the assistant, which means fewer tokens and faster answers:
+**Response shaping (all tools except the API catalog and fabric-wide tools).** Optional arguments trim list results before they reach the assistant, which means fewer tokens and faster answers:
 
 | Argument | Example | Effect |
 |---|---|---|
 | `fields` | `["host-name", "system-ip", "reachability"]` | Keep only these fields in each row |
 | `filter` | `{ "reachability": "unreachable" }` or `{ "color": ["mpls", "private1"] }` | Keep only matching rows (case-insensitive; an array matches any value). The response includes `selection: { matched, of }`. |
+| `count_by` | `"reachability"`, `"device-model"`, `"version"` | Return counts per value instead of rows (after `filter`). Summarizes thousands of rows in a few lines. |
+| `offset` / `limit` | `0` / `100` | Page through rows (after `filter`). The response includes `page: { offset, returned, total, nextOffset }`. |
+
+Responses stay under 200,000 characters. A larger list is cut at a row boundary and returns `truncated: { returned, total, nextOffset }`; calling again with `offset` set to `nextOffset` continues the list. `list_devices` reads a cached inventory (60 s), which is also preloaded at startup, and returns summary fields unless `fields` or `all_fields: true` is given.
 
 ```json
 { "name": "list_devices", "arguments": { "fields": ["host-name", "system-ip"], "filter": { "device-type": "vedge" } } }
@@ -166,7 +170,15 @@ Parameters marked `*` are required; all others are optional. Every `device_id` /
 
 #### Fabric-wide (3)
 
-One call answers a fabric-wide question. The server queries every selected WAN edge in parallel (bounded by `VMANAGE_MAX_CONCURRENCY`) and returns a summary plus per-device detail, instead of the assistant calling a per-device tool once per edge. Unreachable edges are listed under `skippedUnreachable` rather than queried, and a device that fails is reported with an `error` without failing the whole call.
+One call answers a fabric-wide question. The server queries every selected WAN edge in parallel and returns a summary plus per-device detail, instead of the assistant calling a per-device tool once per edge. Unreachable edges are listed under `skippedUnreachable` rather than queried, and a device that fails is reported with an `error` without failing the whole call.
+
+Built for large overlays:
+
+- **Bounded fan-out.** A fixed pool of workers (`VMANAGE_FABRIC_CONCURRENCY`, default 6) leaves request slots free for other tools. Real-time sweeps (`synced: false`) use a smaller pool (`VMANAGE_FABRIC_REALTIME_CONCURRENCY`, default 4) and are capped at 200 edges.
+- **Time budget.** A sweep returns within `VMANAGE_FABRIC_DEADLINE_MS` (default 25 s), or `max_wait_seconds` per call. Edges not reached in time are listed under `incomplete`.
+- **Resumable.** Per-device results are cached (60 s synced, 15 s real-time), so calling again continues with only the remaining edges.
+- **Overload breaker.** After 5 consecutive overload errors (429/5xx/timeouts), the sweep stops instead of adding load to the Manager.
+- **Compact output.** Above 50 edges only devices with problems or errors are listed (`detail: "all"` lists every device); summary totals always cover all queried edges.
 
 | Tool | Description | Key parameters | Example prompt |
 |---|---|---|---|
@@ -362,6 +374,10 @@ The server reads `.env` from the project (or deployed) root folder. You can also
 | `VMANAGE_TIMEOUT_MS` | No | `120000` | Timeout for real-time device queries (calls with a `deviceId`), which the Manager proxies to the device and can be slow. |
 | `VMANAGE_LIST_TIMEOUT_MS` | No | `60000` | Timeout for everything else: inventory, configuration, statistics and login. |
 | `VMANAGE_MAX_CONCURRENCY` | No | `8` | Maximum simultaneous requests sent to the Manager |
+| `VMANAGE_FABRIC_CONCURRENCY` | No | `VMANAGE_MAX_CONCURRENCY - 2` | Parallel per-edge queries in a fabric-wide sweep (synced data) |
+| `VMANAGE_FABRIC_REALTIME_CONCURRENCY` | No | `4` | Parallel per-edge queries in a real-time fabric sweep (`synced: false`) |
+| `VMANAGE_FABRIC_DEADLINE_MS` | No | `25000` | Time budget of a fabric-wide sweep; edges not reached are reported under `incomplete` |
+| `VMANAGE_FABRIC_MAX_DEVICES` | No | `5000` | Maximum reachable edges per synced sweep (real-time sweeps: 200) |
 | `VMANAGE_LOG_TIMING` | No | `false` | `true` logs each vManage call (path, status, duration, retries, cache hits) to stderr. Never logs credentials or response data. |
 
 The OpenAPI spec is cached in `~/.cache/catalyst-sdwan-mcp/` for 24 hours. If the Manager is unreachable, an older cached copy is used. Delete the file to force a refresh after an upgrade.
@@ -797,7 +813,7 @@ npx @modelcontextprotocol/inspector node /absolute/path/to/build/index.js
 | `... is disabled: write operations need VMANAGE_ALLOW_WRITE=true` | Expected in read-only mode. Enable deliberately, then `npm run deploy` and restart the client. |
 | `Unknown query parameter(s)` / `Missing required ...` | The call does not match the spec. Run `describe_api_operation` for the exact parameter names. |
 | `vManage API error 400 ... Empty query` | Statistics endpoints need a query body even when the spec marks it optional. See the statistics example above. |
-| `truncated` in a response | The response was larger than the limit. Filter (for example `vpn_id`, `site_id`) or lower `max_items`. For statistics `.../page` operations, `all_pages: true` follows the scroll pages up to `max_items` rows. |
+| `truncated` in a response | The response was larger than the limit. Continue with `offset` set to `truncated.nextOffset`, summarize with `count_by`, or filter (for example `vpn_id`, `site_id`, `filter`) or lower `max_items`. For statistics `.../page` operations, `all_pages: true` follows the scroll pages up to `max_items` rows. |
 | Node warns about `NODE_TLS_REJECT_UNAUTHORIZED` | Comes from your shell environment, not this server. Remove the variable if you don't need it. |
 
 ---
