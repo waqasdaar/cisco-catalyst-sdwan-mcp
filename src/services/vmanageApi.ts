@@ -5,6 +5,7 @@
  * Docs: https://developer.cisco.com/docs/sdwan/overview/
  */
 
+import { AsyncLocalStorage } from 'node:async_hooks';
 import { Agent, fetch, type Response } from 'undici';
 import type { VManageConfig } from '../utils/config.js';
 
@@ -31,6 +32,9 @@ const UNREACHABLE_HOLD_MS = 10_000;
 const JWT_REFRESH_AHEAD_S = 300;
 const CACHE_MAX_ENTRIES = 500;
 const LOGOUT_TIMEOUT_MS = 3_000;
+const TENANT_LIST_TTL_MS = 5 * 60_000;
+// Tenant management runs in the provider context, so these calls never carry a VSessionId.
+const TENANT_MGMT_PATH = /^\/dataservice\/tenant(status)?(\/|$|\?)/;
 
 interface JwtLoginResponse {
   token?: string;
@@ -51,6 +55,8 @@ export interface RequestOptions {
   cacheTtlMs?: number;
   /** GET only: after cacheTtlMs, keep answering from the old response for this long while it refreshes in the background. */
   staleMs?: number;
+  /** Set by request(): the tenant the call is scoped to. */
+  tenant?: string;
 }
 
 export interface ApiResponse {
@@ -124,6 +130,11 @@ export class VManageApiService {
   private readonly inFlightGets = new Map<string, Promise<ApiResponse>>();
   private readonly cache = new Map<string, { expires: number; value: ApiResponse }>();
   private unreachable: { until: number; message: string } | null = null;
+  private readonly tenantScope = new AsyncLocalStorage<{ tenant?: string }>();
+  private readonly vsessions = new Map<string, { id: string; authGeneration: number }>();
+  private readonly vsessionInFlight = new Map<string, Promise<string>>();
+  // Bumped on every login; a VSessionId belongs to the login that created it.
+  private authGeneration = 0;
 
   constructor(config: VManageConfig) {
     this.config = config;
@@ -133,6 +144,51 @@ export class VManageApiService {
 
   get host(): string {
     return this.config.host;
+  }
+
+  /** Runs fn with every vManage call scoped to this tenant (undefined: the configured default). */
+  runAsTenant<T>(tenant: string | undefined, fn: () => Promise<T>): Promise<T> {
+    return this.tenantScope.run({ tenant: tenant?.trim() || undefined }, fn);
+  }
+
+  private tenantFor(path: string): string | undefined {
+    if (!path.startsWith('/dataservice') || TENANT_MGMT_PATH.test(path)) return undefined;
+    return this.tenantScope.getStore()?.tenant ?? this.config.tenant;
+  }
+
+  /** Accepts a tenant ID, name, org name or subdomain. */
+  private async resolveTenantId(tenant: string): Promise<string> {
+    const res = await this.request('GET', '/dataservice/tenant', { cacheTtlMs: TENANT_LIST_TTL_MS });
+    const body = res.body as { data?: unknown } | unknown[];
+    const rows = (Array.isArray(body) ? body : Array.isArray(body?.data) ? body.data : []) as Array<Record<string, unknown>>;
+    const wanted = tenant.toLowerCase();
+    const hit = rows.find((t) => [t.tenantId, t.name, t.orgName, t.subDomain].some((v) => v !== undefined && String(v).toLowerCase() === wanted));
+    if (!hit?.tenantId) {
+      const names = rows.map((t) => t.name).filter(Boolean).join(', ');
+      throw new Error(`Unknown tenant "${tenant}". ${names ? `Available: ${names}` : 'No tenants visible: is this a multi-tenant Manager and a provider account?'}`);
+    }
+    return String(hit.tenantId);
+  }
+
+  /** VSessionId for the tenant, created once per login and shared by concurrent calls. */
+  private vsessionFor(tenant: string): Promise<string> {
+    const cached = this.vsessions.get(tenant);
+    if (cached && cached.authGeneration === this.authGeneration) return Promise.resolve(cached.id);
+    let pending = this.vsessionInFlight.get(tenant);
+    if (!pending) {
+      pending = (async () => {
+        const tenantId = await this.resolveTenantId(tenant);
+        const generation = this.authGeneration;
+        const res = await this.execute('POST', `/dataservice/tenant/${encodeURIComponent(tenantId)}/vsessionid`, {});
+        const id = (res.body as { VSessionId?: string })?.VSessionId;
+        if (!id) throw new Error(`vManage returned no VSessionId for tenant "${tenant}"`);
+        this.vsessions.set(tenant, { id, authGeneration: generation });
+        if (this.config.logTiming) console.error(`[vmanage] tenant session created for "${tenant}"`);
+        return id;
+      })().finally(() => this.vsessionInFlight.delete(tenant));
+      this.vsessionInFlight.set(tenant, pending);
+    }
+    return pending;
   }
 
   private isAuthenticated(): boolean {
@@ -222,6 +278,7 @@ export class VManageApiService {
     this.jwtToken = data.token;
     this.xsrfToken = data.csrf || null;
     this.tokenExpiry = data.exp || Math.floor(Date.now() / 1000) + 1800;
+    this.authGeneration++;
   }
 
   private async authenticateSession(): Promise<void> {
@@ -267,6 +324,7 @@ export class VManageApiService {
     if (tokenResponse.ok) {
       this.xsrfToken = (await tokenResponse.text()).replace(/"/g, '');
     }
+    this.authGeneration++;
   }
 
   async get<T = unknown>(path: string, params?: Record<string, string>, cacheTtlMs?: number, staleMs?: number): Promise<T> {
@@ -290,9 +348,11 @@ export class VManageApiService {
    * briefly (cacheTtlMs). GETs are retried on transient network errors and 429/502/503/504.
    */
   async request(method: HttpMethod, path: string, options: RequestOptions = {}): Promise<ApiResponse> {
+    options = { ...options, tenant: this.tenantFor(path) };
     if (method !== 'GET') return this.execute(method, path, options);
 
-    const key = `${path}|${JSON.stringify(options.query ?? {})}|${options.accept ?? ''}`;
+    // The tenant is part of the key, so cached data never crosses tenants.
+    const key = `${options.tenant ?? ''}|${path}|${JSON.stringify(options.query ?? {})}|${options.accept ?? ''}`;
     if (options.cacheTtlMs) {
       const cached = this.cache.get(key);
       const now = Date.now();
@@ -348,10 +408,12 @@ export class VManageApiService {
     const started = Date.now();
     const idempotent = method === 'GET';
     let reauthenticated = false;
+    let renewedVsession = false;
     for (let attempt = 0; ; attempt++) {
       try {
         await this.ensureAuthenticated();
-        const result = await this.limiter.run(() => this.sendOnce(method, path, options));
+        const vsession = options.tenant ? await this.vsessionFor(options.tenant) : undefined;
+        const result = await this.limiter.run(() => this.sendOnce(method, path, options, vsession));
         this.unreachable = null;
         this.logCall(method, path, String(result.status), started, attempt);
         return result;
@@ -363,6 +425,12 @@ export class VManageApiService {
           continue;
         }
         const { status, retryAfter } = err as { status?: number; retryAfter?: number };
+        if (status === 403 && options.tenant && !renewedVsession) {
+          // An expired VSessionId is rejected before the request is processed; get a new one once.
+          renewedVsession = true;
+          this.vsessions.delete(options.tenant);
+          continue;
+        }
         const retryable = idempotent && attempt < MAX_RETRIES && (isRetryable(err) || (status !== undefined && RETRY_STATUS.has(status)));
         if (retryable) {
           // Jitter keeps parallel calls from retrying in lockstep.
@@ -392,9 +460,9 @@ export class VManageApiService {
     return err;
   }
 
-  private async sendOnce(method: HttpMethod, path: string, options: RequestOptions): Promise<ApiResponse> {
+  private async sendOnce(method: HttpMethod, path: string, options: RequestOptions, vsession?: string): Promise<ApiResponse> {
     const signal = this.timeoutSignal(this.isRealTime(path, options));
-    const response = await this.send(method, path, options, signal);
+    const response = await this.send(method, path, options, signal, vsession);
     const contentType = response.headers.get('content-type') || '';
 
     if (response.status === 401) {
@@ -430,7 +498,7 @@ export class VManageApiService {
     return { status: response.status, contentType, body: text };
   }
 
-  private async send(method: HttpMethod, path: string, options: RequestOptions, signal: AbortSignal): Promise<Response> {
+  private async send(method: HttpMethod, path: string, options: RequestOptions, signal: AbortSignal, vsession?: string): Promise<Response> {
     const url = new URL(`${this.baseUrl}${path.startsWith('/') ? path : `/${path}`}`);
     for (const [key, value] of Object.entries(options.query ?? {})) {
       if (value === undefined || value === null) continue;
@@ -452,6 +520,9 @@ export class VManageApiService {
     }
     if (this.xsrfToken) {
       headers['X-XSRF-TOKEN'] = this.xsrfToken;
+    }
+    if (vsession) {
+      headers['VSessionId'] = vsession;
     }
 
     let body: string | undefined;

@@ -379,6 +379,16 @@ The server reads `.env` from the project (or deployed) root folder. You can also
 | `VMANAGE_FABRIC_DEADLINE_MS` | No | `25000` | Time budget of a fabric-wide sweep; edges not reached are reported under `incomplete` |
 | `VMANAGE_FABRIC_MAX_DEVICES` | No | `5000` | Maximum reachable edges per synced sweep (real-time sweeps: 200) |
 | `VMANAGE_LOG_TIMING` | No | `false` | `true` logs each vManage call (path, status, duration, retries, cache hits) to stderr. Never logs credentials or response data. |
+| `VMANAGE_TENANT` | No | | Multi-tenant Manager with a provider account: scope every call to this tenant (name, tenant ID, org name or subdomain) |
+| `VMANAGE_ALLOW_TENANT_SWITCH` | No | `false` | `true` adds a `tenant` argument to every tool so one server can query several tenants |
+
+### Multi-tenant Managers
+
+- **Tenant user:** set `VMANAGE_HOST` to the tenant's Manager URL and use the tenant's credentials. No other setting is needed.
+- **Provider user, one tenant:** set `VMANAGE_TENANT`. The server gets a `VSessionId` for that tenant after login (`POST /tenant/{tenantId}/vsessionid`), sends it on every call, and renews it after a re-login or when the Manager rejects it.
+- **Provider user, several tenants:** set `VMANAGE_ALLOW_TENANT_SWITCH=true` and pass `tenant` per call, e.g. "List unreachable devices for tenant Org A". Without `tenant`, calls use `VMANAGE_TENANT`, or the provider view if that is unset. Switching is off by default so an assistant cannot reach other tenants unless you allow it.
+
+Cached data (device inventory, fabric results, lists) is kept per tenant, so results never cross tenants, and parallel calls for different tenants are independent. Tenant management calls (`/tenant...`) always run in the provider context.
 
 The OpenAPI spec is cached in `~/.cache/catalyst-sdwan-mcp/` for 24 hours. If the Manager is unreachable, an older cached copy is used. Delete the file to force a refresh after an upgrade.
 

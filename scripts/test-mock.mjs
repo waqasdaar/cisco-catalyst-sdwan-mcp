@@ -39,6 +39,17 @@ const stats = { logins: 0, sessionLogins: 0, logouts: 0, ompStatusCalls: 0, ompS
 const tokens = new Set();
 // Large-fabric mode for the fan-out tests: extra healthy edges, slow or overloaded BFD queries.
 const mock = { extraEdges: 0, bfdDelayMs: 0, bfdStatus: 200, bfdCalls: 0, bfdInFlight: 0, bfdMaxInFlight: 0 };
+// Multi-tenant Manager: provider account switches tenants with a VSessionId header.
+const TENANTS = [
+  { tenantId: 't-1', name: 'Tenant-A', orgName: 'Org A', subDomain: 'a.example.com' },
+  { tenantId: 't-2', name: 'Tenant-B', orgName: 'Org B', subDomain: 'b.example.com' },
+];
+const TENANT_DEVICES = {
+  't-1': DEVICES.slice(3, 5).map((d) => ({ ...d, 'host-name': `A-${d['host-name']}` })),
+  't-2': DEVICES.slice(3, 4).map((d) => ({ ...d, 'host-name': `B-${d['host-name']}` })),
+};
+const vsessions = new Map(); // VSessionId -> tenantId
+const tenantStats = { vsessionCalls: 0 };
 const allDevices = () => [
   ...DEVICES,
   ...Array.from({ length: mock.extraEdges }, (_, i) => ({
@@ -76,11 +87,26 @@ function handler(req, res) {
     if (!authorized) return send(401, { error: 'unauthorized' });
     if (p === '/dataservice/client/token') return send(200, '"xsrf"');
 
+    if (p === '/dataservice/tenant' && req.method === 'GET') return send(200, { data: TENANTS });
+    const vsessionPath = /^\/dataservice\/tenant\/([^/]+)\/vsessionid$/.exec(p);
+    if (vsessionPath && req.method === 'POST') {
+      tenantStats.vsessionCalls++;
+      const id = `vs-${vsessionPath[1]}-${tenantStats.vsessionCalls}`;
+      vsessions.set(id, vsessionPath[1]);
+      return send(200, { VSessionId: id });
+    }
+    const vsessionHeader = req.headers.vsessionid;
+    if (vsessionHeader && !vsessions.has(vsessionHeader)) return send(403, { error: 'invalid VSessionId' });
+    const tenantId = vsessions.get(vsessionHeader);
+    if (tenantId && p === '/dataservice/device') return send(200, { data: TENANT_DEVICES[tenantId] });
+
     const deviceId = url.searchParams.get('deviceId');
     if (deviceId) stats.deviceIds.push(deviceId);
     switch (p) {
       case '/dataservice/device':
         return send(200, { data: allDevices() });
+      case '/dataservice/device/reachable':
+        return send(200, { data: allDevices().filter((d) => d.reachability === 'reachable') });
       case '/dataservice/device/bfd/sessions':
       case '/dataservice/device/bfd/synced/sessions': {
         mock.bfdCalls++;
@@ -331,6 +357,38 @@ r = await tool(big, 'list_devices', { all_fields: true, offset: cursor });
 check('nextOffset continues the listing', r.value?.data?.[0]?.['host-name'] === `Edge-${cursor - 6}`, r.value?.data?.[0]?.['host-name']);
 await big.close();
 mock.extraEdges = 0;
+
+// Multi-tenant: fixed tenant, per-call switching, cache isolation, expired VSessionId.
+const names = (res) => (res.value?.data ?? []).map((d) => d['host-name']).join(',');
+let mt = await connect({ VMANAGE_TENANT: 'org a' });
+r = await tool(mt, 'list_devices');
+check('VMANAGE_TENANT scopes calls to the tenant', names(r) === 'A-Branch-1,A-Branch-2', names(r) || r.error);
+const vsBefore = tenantStats.vsessionCalls;
+await tool(mt, 'get_fabric_tlocs');
+check('VSessionId is reused across calls', tenantStats.vsessionCalls === vsBefore);
+vsessions.clear();
+r = await tool(mt, 'list_reachable_devices');
+check('expired VSessionId is renewed', !r.error && tenantStats.vsessionCalls === vsBefore + 1, r.error ?? '');
+r = await tool(mt, 'list_devices', { tenant: 'Tenant-B' });
+check('per-call tenant disabled by default', /VMANAGE_ALLOW_TENANT_SWITCH/.test(r.error ?? ''));
+await mt.close();
+
+mt = await connect({ VMANAGE_ALLOW_TENANT_SWITCH: 'true' });
+const listed = await mt.listTools();
+check('tenant argument advertised when switching is enabled', listed.tools.every((t) => t.inputSchema.properties?.tenant));
+const [ra, rb, rp] = await Promise.all([
+  tool(mt, 'list_devices', { tenant: 'Tenant-A' }),
+  tool(mt, 'list_devices', { tenant: 't-2' }),
+  tool(mt, 'list_devices'),
+]);
+check(
+  'parallel calls stay isolated per tenant',
+  names(ra) === 'A-Branch-1,A-Branch-2' && names(rb) === 'B-Branch-1' && rp.value?.data?.length === 6,
+  `${names(ra)} | ${names(rb)} | ${rp.value?.data?.length}`
+);
+r = await tool(mt, 'list_devices', { tenant: 'Tenant-Z' });
+check('unknown tenant lists available tenants', /Unknown tenant.*Tenant-A, Tenant-B/.test(r.error ?? ''), r.error ?? '');
+await mt.close();
 
 server.close();
 rmSync(certDir, { recursive: true, force: true });

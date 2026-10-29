@@ -360,11 +360,18 @@ export class CatalystSdwanMCPServer {
     this.server.setRequestHandler(CallToolRequestSchema, async (request) => {
       const { name, arguments: args } = request.params;
       try {
-        const { fields, filter, offset, limit, count_by, ...toolArgs } = args ?? {};
+        const { tenant, ...callArgs } = args ?? {};
+        if (tenant !== undefined && (typeof tenant !== 'string' || !tenant.trim())) throw new Error('tenant must be a tenant name or ID');
+        if (tenant !== undefined && !this.config.allowTenantSwitch) {
+          throw new Error('Per-call tenant selection is disabled; set VMANAGE_ALLOW_TENANT_SWITCH=true or use VMANAGE_TENANT');
+        }
+        const { fields, filter, offset, limit, count_by, ...toolArgs } = callArgs;
         const defaultFields = name === 'list_devices' && fields === undefined && toolArgs.all_fields !== true ? DEVICE_SUMMARY_FIELDS : fields;
-        const result = NO_ROW_OPTIONS.has(name)
-          ? await this.handleToolCall(name, args || {})
-          : selectRows(await this.handleToolCall(name, toolArgs), { fields: defaultFields, filter, offset, limit, count_by });
+        const result = await this.apiService.runAsTenant(tenant as string | undefined, async () =>
+          NO_ROW_OPTIONS.has(name)
+            ? this.handleToolCall(name, callArgs)
+            : selectRows(await this.handleToolCall(name, toolArgs), { fields: defaultFields, filter, offset, limit, count_by })
+        );
         return {
           content: [{ type: 'text', text: toLimitedJson(shapeResponse(result, Number.MAX_SAFE_INTEGER)) }],
         };
@@ -381,11 +388,18 @@ export class CatalystSdwanMCPServer {
   private tools: Tool[] | null = null;
 
   private getAllTools(): Tool[] {
-    this.tools ??= this.baseTools().map((tool) =>
-      NO_ROW_OPTIONS.has(tool.name)
-        ? tool
-        : { ...tool, inputSchema: { ...tool.inputSchema, properties: { ...ROW_OPTIONS, ...(tool.inputSchema.properties ?? {}) } } }
-    );
+    const tenantOption: Record<string, object> = this.config.allowTenantSwitch
+      ? {
+          tenant: {
+            type: 'string',
+            description: `Tenant to query on a multi-tenant Manager (name, ID, org name or subdomain).${this.config.tenant ? ` Default: ${this.config.tenant}.` : ' Default: provider view.'}`,
+          },
+        }
+      : {};
+    this.tools ??= this.baseTools().map((tool) => {
+      const rowOptions = NO_ROW_OPTIONS.has(tool.name) ? {} : ROW_OPTIONS;
+      return { ...tool, inputSchema: { ...tool.inputSchema, properties: { ...rowOptions, ...tenantOption, ...(tool.inputSchema.properties ?? {}) } } };
+    });
     return this.tools;
   }
 

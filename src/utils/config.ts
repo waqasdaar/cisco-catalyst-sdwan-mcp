@@ -17,6 +17,9 @@ export interface VManageConfig {
   fabricRealtimeConcurrency: number;
   fabricDeadlineMs: number;
   fabricMaxDevices: number;
+  /** Multi-tenant Manager, provider account: tenant (name, ID, org name or subdomain) every call is scoped to. */
+  tenant?: string;
+  allowTenantSwitch: boolean;
   logTiming: boolean;
 }
 
@@ -74,6 +77,8 @@ export function loadConfig(): VManageConfig {
     fabricRealtimeConcurrency,
     fabricDeadlineMs,
     fabricMaxDevices,
+    tenant: process.env.VMANAGE_TENANT?.trim() || undefined,
+    allowTenantSwitch: process.env.VMANAGE_ALLOW_TENANT_SWITCH === 'true',
     logTiming: process.env.VMANAGE_LOG_TIMING === 'true',
   };
 }
