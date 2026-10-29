@@ -119,7 +119,7 @@ See [Installation](#installation), [Configuration](#configuration) and [Integrat
 | MCP server | **1.0.0** | `package.json` version, reported in the MCP `initialize` response |
 | Catalyst SD-WAN Manager | **Tested on 26.2.1** | Controllers 26.2.1, WAN edges Catalyst 8000V IOS XE 26.02.01 |
 | Catalyst SD-WAN Manager (auth) | 20.18.1+ for JWT | Older releases: set `VMANAGE_USE_JWT=false` (session cookie + XSRF token) |
-| Node.js | 18.17+ to run the server; 20.12+ for the live test/verification scripts | CI runs the offline tests on Node.js 18, 20 and 22; tested live on Node.js 26 |
+| Node.js | 20.12+ | CI runs the offline tests on Node.js 20, 22 and 24; tested live on Node.js 26 |
 | MCP TypeScript SDK | `@modelcontextprotocol/sdk` ^1.0.4 | Tested with 1.27.1 |
 | Transport | stdio | The client starts the server as a child process |
 | MCP clients tested | OpenChamber 2.5 (bundled OpenCode 2.0.32), OpenCode 1.19 | Other clients use their documented standard MCP config |
@@ -310,7 +310,7 @@ Anything without a dedicated tool, such as OSPF, EIGRP, NAT, IPsec/IKE, QoS, mul
 
 ## Installation
 
-Prerequisites: Node.js 18.17+ (20.12+ for the live test scripts), npm, and HTTPS access to Catalyst SD-WAN Manager.
+Prerequisites: Node.js 20.12+, npm, and HTTPS access to Catalyst SD-WAN Manager.
 
 ```bash
 git clone https://github.com/waqasdaar/cisco-catalyst-sdwan-mcp.git
@@ -817,7 +817,7 @@ scripts/
   test-control-plane.mjs    # live regression test
   test-ux2.mjs              # live UX 2.0 / fabric-wide tools test
   verify-api-coverage.mjs   # full coverage run and report
-.github/workflows/ci.yml    # build + offline tests on Node.js 18/20/22
+.github/workflows/ci.yml    # build + offline tests on Node.js 20/22/24
 .vscode/mcp.json            # VS Code MCP server registration
 API_COVERAGE.md, api_coverage.csv   # last coverage report
 Dockerfile, docker-compose.yml

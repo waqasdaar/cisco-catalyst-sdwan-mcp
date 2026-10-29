@@ -1,6 +1,6 @@
 # Cisco Catalyst SD-WAN MCP Server
-# Uses Node.js 18 Alpine for minimal footprint
-FROM node:18-alpine
+# Uses Node.js 24 Alpine for minimal footprint
+FROM node:24-alpine
 
 WORKDIR /app
 
