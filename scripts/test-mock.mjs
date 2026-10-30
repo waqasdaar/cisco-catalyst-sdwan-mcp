@@ -146,7 +146,19 @@ function handler(req, res) {
       case '/dataservice/certificate/stats/summary':
         return send(200, { data: [{ expired: 0, warning: 1 }] });
       case '/dataservice/clusterManagement/health/status':
-        return send(200, { data: [{ status: 'healthy' }] });
+        return send(200, { data: [{ deviceIP: '10.0.0.1' }, { deviceIP: '10.0.0.1', 'application-server': true, 'messaging-server': false }] });
+      case '/dataservice/clusterManagement/tenancy/mode':
+        return send(200, { data: { mode: 'SingleTenant', deploymentmode: 'Single Node' } });
+      case '/dataservice/clusterManagement/list':
+        return send(200, { data: [{ data: [{ vmanageID: '0', configJson: { 'host-name': 'Manager', deviceIP: '10.0.0.1', state: 'Ready', persona: 'COMPUTE_AND_DATA' } }] }] });
+      case '/dataservice/health/devices':
+        return send(200, {
+          total_devices: 2,
+          devices: [
+            { system_ip: '192.0.2.11', health: 'red', reason: null, cpu_load: 95.23, memory_utilization: 46.8, control_connections: 3, control_connections_up: 3, omp_peers: 2, omp_peers_up: 2, bfd_sessions: 2, bfd_sessions_up: 2, total_tloc_num: 2, up_tloc_num: 2 },
+            { system_ip: '192.0.2.12', health: 'green', cpu_load: 10, memory_utilization: 30, control_connections: 3, control_connections_up: 3, omp_peers: 2, omp_peers_up: 2, bfd_sessions: 1, bfd_sessions_up: 0, total_tloc_num: 2, up_tloc_num: 2 },
+          ],
+        });
       case '/dataservice/statistics/approute/page': {
         const page = Number(url.searchParams.get('scrollId') ?? 0);
         const rows = [1, 2].map((i) => ({ row: page * 2 + i })).filter((r) => r.row <= 5);
@@ -229,14 +241,38 @@ r = await tool(c, 'get_bfd_sessions', { device_id: 'no-such-device' });
 check('unknown device rejected', /Unknown device/.test(r.error ?? ''));
 
 r = await tool(c, 'get_fabric_health');
-check('get_fabric_health', r.value?.devices?.total === 6 && r.value.devices.unreachable.length === 1 && r.value.alarms?.bySeverity?.Major === 2);
+const healthRows = r.value?.devices?.rows ?? [];
+const row = (ip) => healthRows.find((d) => d['system-ip'] === ip);
+check(
+  'get_fabric_health: full device table',
+  r.value?.devices?.total === 6 && healthRows.length === 6 && r.value.devices.unreachableCount === 1 && r.value.alarms?.bySeverity?.Major === 2 &&
+    row('192.0.2.11')?.status === 'problem' && /health red \(CPU 95.2%, memory 46.8%\)/.test(row('192.0.2.11').problems.join()) &&
+    row('192.0.2.12')?.bfdSessions === '0/1' && row('192.0.2.2')?.status === 'ok' &&
+    r.value.status === 'degraded' && r.value.issues.some((i) => /unreachable/.test(i)),
+  JSON.stringify({ status: r.value?.status, issues: r.value?.issues, rows: healthRows })
+);
+check(
+  'get_fabric_health: Manager deployment detected',
+  r.value?.manager?.deployment === 'single-node' && r.value.manager.tenancy === 'single-tenant' &&
+    r.value.manager.nodes.length === 1 && r.value.manager.nodes[0].servicesDown.includes('messaging-server') &&
+    r.value.issues.some((i) => /^Manager Manager services down: messaging-server/.test(i)),
+  JSON.stringify(r.value?.manager)
+);
 
 r = await tool(c, 'get_fabric_bfd_status');
 const bfdSummary = r.value?.summary;
 check(
-  'get_fabric_bfd_status',
-  bfdSummary?.edgesQueried === 2 && bfdSummary.notUp === 1 && r.value.skippedUnreachable.length === 1 && bfdSummary.source.includes('cached'),
+  'get_fabric_bfd_status (small fabric: real time by default)',
+  bfdSummary?.edgesQueried === 2 && bfdSummary.notUp === 1 && r.value.skippedUnreachable.length === 1 && bfdSummary.source === 'real-time device query',
   JSON.stringify(bfdSummary)
+);
+
+r = await tool(c, 'get_fabric_bfd_status', { synced: true });
+check(
+  'get_fabric_bfd_status synced: problems re-checked live',
+  r.value?.summary?.notUp === 1 && /re-checked in real time/.test(r.value.summary.source) &&
+    r.value.devices.find((d) => d['system-ip'] === '192.0.2.12')?.verifiedLive === true,
+  JSON.stringify(r.value?.summary)
 );
 
 r = await tool(c, 'get_fabric_tlocs', { site_id: '100' });

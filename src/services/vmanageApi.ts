@@ -151,9 +151,14 @@ export class VManageApiService {
     return this.tenantScope.run({ tenant: tenant?.trim() || undefined }, fn);
   }
 
+  /** Tenant the current call is scoped to, if any. */
+  currentTenant(): string | undefined {
+    return this.tenantScope.getStore()?.tenant ?? this.config.tenant;
+  }
+
   private tenantFor(path: string): string | undefined {
     if (!path.startsWith('/dataservice') || TENANT_MGMT_PATH.test(path)) return undefined;
-    return this.tenantScope.getStore()?.tenant ?? this.config.tenant;
+    return this.currentTenant();
   }
 
   /** Accepts a tenant ID, name, org name or subdomain. */

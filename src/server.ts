@@ -72,6 +72,13 @@ interface DeviceRow {
   'device-type'?: string;
   reachability?: string;
   'site-id'?: string;
+  controlConnections?: string;
+  ompPeers?: string;
+  bfdSessions?: string;
+  bfdSessionsUp?: number;
+  health?: string;
+  state_description?: string;
+  lastupdated?: number;
 }
 
 interface UxGroup {
@@ -96,6 +103,8 @@ const MAX_REALTIME_FABRIC_DEVICES = 200;
 const FABRIC_SYNCED_TTL_MS = 60_000;
 const FABRIC_REALTIME_TTL_MS = 15_000;
 const FABRIC_HEALTH_TTL_MS = 15_000;
+// Selections up to this many edges are queried in real time unless synced is given; also caps live re-checks.
+const FABRIC_REALTIME_AUTO_MAX = 25;
 // Consecutive overload errors (429/5xx/timeouts) after which a sweep stops sending requests.
 const FABRIC_BREAKER_FAILURES = 5;
 // Above this many edges, only devices with problems are listed unless detail: "all".
@@ -234,8 +243,7 @@ const FABRIC_SCOPE = {
   devices: { type: 'array', items: { type: 'string' }, description: 'Only these WAN edges (hostnames or system IPs)' },
   synced: {
     type: 'boolean',
-    description:
-      'Default true: use vManage cached (synced) data, which is fast. false queries every device in real time, which vManage processes slowly when many devices are queried at once.',
+    description: `Default: real time for up to ${FABRIC_REALTIME_AUTO_MAX} edges, otherwise vManage cached (synced) data. true forces synced data (fast); false forces real-time queries, which vManage processes slowly when many devices are queried at once.`,
   },
   max_wait_seconds: {
     type: 'number',
@@ -257,7 +265,7 @@ const isOverload = (err: unknown) => {
 const dataOf = (body: unknown) => (body as { data?: unknown })?.data ?? body;
 const errorMessage = (err: unknown) => (err instanceof Error ? err.message : String(err));
 
-/** Device counts per type and reachability, plus the unreachable devices. */
+/** Device counts per type and reachability. */
 function summarizeDevices(rows: DeviceRow[]) {
   const byType: Record<string, { total: number; reachable: number; unreachable: number }> = {};
   for (const d of rows) {
@@ -266,10 +274,151 @@ function summarizeDevices(rows: DeviceRow[]) {
     if (d.reachability === 'reachable') t.reachable++;
     else t.unreachable++;
   }
-  const unreachable = rows
-    .filter((d) => d.reachability !== 'reachable')
-    .map((d) => ({ 'host-name': d['host-name'], 'system-ip': d['system-ip'], 'device-type': d['device-type'], 'site-id': d['site-id'] }));
-  return { total: rows.length, byType, unreachable };
+  return { total: rows.length, byType };
+}
+
+const TYPE_ORDER = ['vmanage', 'vsmart', 'vbond', 'vedge'];
+const pct = (v: unknown) => (v === null || v === undefined || v === '' ? undefined : Math.round(Number(v) * 10) / 10);
+
+/**
+ * One row per device: reachability, health with CPU/memory, and up/total counters for control connections,
+ * OMP peers, BFD sessions and TLOCs. Uses /health/devices when available, else the device inventory counters.
+ */
+function deviceHealthTable(inventory: DeviceRow[], healthRows: Array<Record<string, any>> | undefined) {
+  const bySystemIp = new Map((healthRows ?? []).map((h) => [String(h.system_ip), h]));
+  const totals = { controlConnections: [0, 0], ompPeers: [0, 0], bfdSessions: [0, 0], tlocs: [0, 0] };
+  const healthCounts: Record<string, number> = {};
+  const ratio = (key: keyof typeof totals, up: unknown, total: unknown) => {
+    if (total === undefined || total === null) return undefined;
+    const u = Number(up) || 0;
+    const t = Number(total) || 0;
+    totals[key][0] += u;
+    totals[key][1] += t;
+    return `${u}/${t}`;
+  };
+  const rows = inventory.map((d) => {
+    const h = bySystemIp.get(String(d['system-ip']));
+    const type = d['device-type'] ?? 'unknown';
+    const reachable = d.reachability === 'reachable';
+    const health = String(h?.health ?? d.health ?? 'unknown');
+    const cpu = pct(h?.cpu_load);
+    const mem = pct(h?.memory_utilization);
+    const control = h ? ratio('controlConnections', h.control_connections_up, h.control_connections) : ratio('controlConnections', d.controlConnections, d.controlConnections);
+    const omp = h ? ratio('ompPeers', h.omp_peers_up, h.omp_peers) : ratio('ompPeers', d.ompPeers, d.ompPeers);
+    const bfd = h ? ratio('bfdSessions', h.bfd_sessions_up, h.bfd_sessions) : ratio('bfdSessions', d.bfdSessionsUp, d.bfdSessions);
+    const tlocs = h ? ratio('tlocs', h.up_tloc_num, h.total_tloc_num) : undefined;
+    healthCounts[health] = (healthCounts[health] ?? 0) + 1;
+
+    const problems: string[] = [];
+    const down = (label: string, value: string | undefined) => {
+      const [u, t] = (value ?? '0/0').split('/').map(Number);
+      if (u < t) problems.push(`${t - u} of ${t} ${label} down`);
+    };
+    if (!reachable) problems.push('unreachable');
+    if (reachable && health !== 'green' && health !== 'unknown') {
+      const metrics = [cpu !== undefined ? `CPU ${cpu}%` : '', mem !== undefined ? `memory ${mem}%` : ''].filter(Boolean).join(', ');
+      problems.push(`health ${health}${h?.reason ? `: ${h.reason}` : ''}${metrics ? ` (${metrics})` : ''}`);
+    }
+    if (reachable) {
+      down('control connections', control);
+      down('OMP peers', omp);
+      down('BFD sessions', bfd);
+      down('TLOCs', tlocs);
+      if (h && Number(h.vsmart_control_connections) < Number(h.expected_vsmart_connections)) {
+        problems.push(`connected to ${h.vsmart_control_connections} of ${h.expected_vsmart_connections} expected Controllers`);
+      }
+      if (!h && d.controlConnections !== undefined && !Number(d.controlConnections)) problems.push('no control connections');
+      if (!h && d.ompPeers !== undefined && !Number(d.ompPeers) && (type === 'vedge' || type === 'vsmart')) problems.push('no OMP peers');
+    }
+    return {
+      'host-name': d['host-name'],
+      'system-ip': d['system-ip'],
+      'site-id': d['site-id'],
+      'device-type': type,
+      reachability: d.reachability,
+      health,
+      ...(cpu !== undefined ? { cpuLoad: cpu } : {}),
+      ...(mem !== undefined ? { memoryUtilization: mem } : {}),
+      ...(control ? { controlConnections: control } : {}),
+      ...(omp ? { ompPeers: omp } : {}),
+      ...(bfd ? { bfdSessions: bfd } : {}),
+      ...(tlocs ? { tlocs } : {}),
+      status: problems.length ? 'problem' : 'ok',
+      ...(problems.length ? { problems } : {}),
+    };
+  });
+  const rank = (t: string) => (TYPE_ORDER.indexOf(t) + 1 || TYPE_ORDER.length + 1);
+  rows.sort((a, b) => rank(a['device-type']) - rank(b['device-type']) || String(a['host-name']).localeCompare(String(b['host-name'])));
+  const asCounter = ([up, total]: number[]) => ({ up, total });
+  return {
+    source: healthRows ? 'vManage device health (/health/devices)' : 'vManage device inventory counters',
+    healthCounts,
+    totals: {
+      controlConnections: asCounter(totals.controlConnections),
+      ompPeers: asCounter(totals.ompPeers),
+      bfdSessions: asCounter(totals.bfdSessions),
+      ...(healthRows ? { tlocs: asCounter(totals.tlocs) } : {}),
+    },
+    rows,
+  };
+}
+
+/** Manager deployment (single node or cluster), tenancy, nodes and services that are down. */
+function summarizeManager(
+  mode: Record<string, unknown> | undefined,
+  nodeList: unknown,
+  serviceRows: unknown,
+  tenants: Array<Record<string, unknown>> | undefined,
+  tenantScope: string | undefined
+) {
+  const nodes = new Map<string, Record<string, unknown>>();
+  for (const group of (Array.isArray(nodeList) ? nodeList : []) as Array<Record<string, any>>) {
+    for (const n of (Array.isArray(group.data) ? group.data : []) as Array<Record<string, any>>) {
+      const c = n.configJson ?? {};
+      nodes.set(String(c.deviceIP), { 'host-name': c['host-name'], ip: c.deviceIP, state: c.state, persona: c.persona, servicesDown: [] });
+    }
+  }
+  for (const s of (Array.isArray(serviceRows) ? serviceRows : []) as Array<Record<string, unknown>>) {
+    const ip = String(s.deviceIP);
+    const node = nodes.get(ip) ?? nodes.set(ip, { ip, servicesDown: [] }).get(ip)!;
+    (node.servicesDown as string[]).push(...Object.entries(s).filter(([, v]) => v === false).map(([k]) => k));
+  }
+  const deploymentText = String(mode?.deploymentmode ?? '');
+  const deployment = /cluster/i.test(deploymentText) || nodes.size > 1 ? 'cluster' : nodes.size || /single/i.test(deploymentText) ? 'single-node' : 'unknown';
+  const tenancy = mode?.mode === undefined ? 'unknown' : /multi/i.test(String(mode.mode)) ? 'multi-tenant' : 'single-tenant';
+  return {
+    deployment,
+    tenancy,
+    ...(tenancy === 'multi-tenant'
+      ? {
+          view: tenantScope ? `tenant ${tenantScope}` : 'provider',
+          ...(tenants ? { tenants: { count: tenants.length, names: tenants.slice(0, FABRIC_LIST_CAP).map((t) => t.name) } } : {}),
+        }
+      : {}),
+    nodes: [...nodes.values()],
+  };
+}
+
+/** Plain-language list of problems found across the fabric health sections. */
+function healthIssues(health: Record<string, any>, errors: Record<string, string>): string[] {
+  const issues: string[] = [];
+  const unreachable = health.devices?.unreachableCount ?? 0;
+  if (unreachable) issues.push(`${unreachable} device(s) unreachable`);
+  const unhealthy = (health.devices?.withProblemsCount ?? 0) - unreachable;
+  if (unhealthy > 0) issues.push(`${unhealthy} reachable device(s) with health or connectivity problems`);
+  for (const [severity, n] of Object.entries((health.alarms?.bySeverity ?? {}) as Record<string, number>)) {
+    if (/critical|major/i.test(severity)) issues.push(`${n} ${severity} alarm(s)`);
+  }
+  for (const c of (Array.isArray(health.certificates) ? health.certificates : []) as Array<Record<string, unknown>>) {
+    for (const key of ['invalid', 'revoked', 'warning']) if (Number(c[key]) > 0) issues.push(`${c[key]} certificate(s) ${key}`);
+  }
+  const label = health.manager?.deployment === 'cluster' ? 'Manager cluster node' : 'Manager';
+  for (const node of (health.manager?.nodes ?? []) as Array<Record<string, any>>) {
+    if (node.state !== undefined && node.state !== 'Ready') issues.push(`${label} ${node['host-name'] ?? node.ip} is ${node.state}`);
+    if (node.servicesDown?.length) issues.push(`${label} ${node['host-name'] ?? node.ip} services down: ${node.servicesDown.join(', ')}`);
+  }
+  for (const section of Object.keys(errors)) issues.push(`${section} could not be checked`);
+  return issues;
 }
 
 /** Applies the optional filter, count_by, fields, offset and limit arguments to list rows (`data`, `items` or a top-level array). */
@@ -469,8 +618,17 @@ export class CatalystSdwanMCPServer {
       {
         name: 'get_fabric_health',
         description:
-          'One-call fabric health check: device counts per type with unreachable devices, control-connection and OMP up/down status, reachability per device class, active alarms by severity, certificate status and Manager cluster health. Use this first for "is my fabric healthy?".',
-        inputSchema: { type: 'object', properties: {} },
+          'One-call fabric health check with an overall status and list of issues: Manager deployment (single node or cluster, single- or multi-tenant) with node and service status, a table of every device (system IP, site, reachability, health with CPU/memory, up/total control connections, OMP peers, BFD sessions and TLOCs, and its problems), active alarms by severity and certificate status. Use this first for "is my fabric healthy?".',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            detail: {
+              type: 'string',
+              enum: ['auto', 'all', 'problems'],
+              description: `Which devices to list: all, only those with problems, or auto (all up to ${FABRIC_FULL_DETAIL_MAX} devices, otherwise problems only). Counts always cover every device.`,
+            },
+          },
+        },
       },
       {
         name: 'get_fabric_bfd_status',
@@ -1771,12 +1929,35 @@ export class CatalystSdwanMCPServer {
         return this.apiService.get('/dataservice/v1/network-hierarchy');
 
       case 'get_fabric_health': {
+        if (args.detail !== undefined && !['auto', 'all', 'problems'].includes(String(args.detail))) {
+          throw new Error('detail must be one of: auto, all, problems');
+        }
         const get = (path: string) => this.apiService.get(path, undefined, FABRIC_HEALTH_TTL_MS);
+        // The dashboard status widgets often report 0 up / 0 down, so counts come per device instead.
+        const inventory = this.deviceIndex();
+        const deviceHealth = (get('/dataservice/health/devices') as Promise<{ devices?: Array<Record<string, unknown>> }>)
+          .then((b) => (Array.isArray(b?.devices) ? b.devices : undefined))
+          .catch(() => undefined);
         const sections: Record<string, Promise<unknown>> = {
-          devices: this.deviceIndex().then(summarizeDevices),
-          controlConnections: get('/dataservice/device/control/status').then(dataOf),
-          ompPeers: get('/dataservice/device/omp/status').then(dataOf),
-          reachabilityByClass: get('/dataservice/network/connectionssummary').then(dataOf),
+          manager: this.managerDeployment(get),
+          devices: Promise.all([inventory, deviceHealth]).then(([inv, h]) => {
+            const { total, byType } = summarizeDevices(inv);
+            const { rows, ...table } = deviceHealthTable(inv, h);
+            const problems = rows.filter((r) => r.status === 'problem');
+            const detail = String(args.detail ?? 'auto');
+            const all = detail === 'all' || (detail === 'auto' && rows.length <= FABRIC_FULL_DETAIL_MAX);
+            const listed = (all ? rows : problems).slice(0, FABRIC_LIST_CAP);
+            return {
+              total,
+              byType,
+              ...table,
+              unreachableCount: rows.filter((r) => r.reachability !== 'reachable').length,
+              withProblemsCount: problems.length,
+              listed: all ? 'all devices' : 'devices with problems only (detail: "all" lists every device)',
+              ...(listed.length < (all ? rows : problems).length ? { listTruncatedAt: FABRIC_LIST_CAP } : {}),
+              rows: listed,
+            };
+          }),
           alarms: (get('/dataservice/alarms') as Promise<{ data?: Array<Record<string, unknown>> }>).then((b) => {
             const rows = b.data ?? [];
             const bySeverity: Record<string, number> = {};
@@ -1784,7 +1965,6 @@ export class CatalystSdwanMCPServer {
             return { total: rows.length, bySeverity };
           }),
           certificates: get('/dataservice/certificate/stats/summary').then(dataOf),
-          cluster: get('/dataservice/clusterManagement/health/status').then(dataOf),
         };
         const names = Object.keys(sections);
         const settled = await Promise.allSettled(Object.values(sections));
@@ -1795,14 +1975,17 @@ export class CatalystSdwanMCPServer {
           else errors[names[i]] = errorMessage(r.reason);
         });
         if (Object.keys(errors).length === names.length) throw new Error(`Fabric health unavailable: ${Object.values(errors)[0]}`);
-        return Object.keys(errors).length ? { ...health, errors } : health;
+        const issues = healthIssues(health, errors);
+        return { status: issues.length ? 'degraded' : 'healthy', issues, ...health, ...(Object.keys(errors).length ? { errors } : {}) };
       }
       case 'get_fabric_bfd_status': {
         const scope = await this.fabricEdges(args);
-        const realTime = args.synced === false;
-        const { devices, incomplete } = await this.perEdge(scope.edges, `/dataservice/device/bfd/${realTime ? '' : 'synced/'}sessions`, realTime, args, (rows) => {
+        const realTime = this.realTimeFor(args, scope.edges);
+        const summarize = (live: boolean) => (rows: Array<Record<string, unknown>>) => {
           const notUp = rows.filter((r) => String(r.state).toLowerCase() !== 'up');
+          const syncedAt = Math.max(0, ...rows.map((r) => Number(r.lastupdated) || 0));
           return {
+            ...(!live && syncedAt ? { syncedAt: new Date(syncedAt).toISOString() } : {}),
             sessions: rows.length,
             up: rows.length - notUp.length,
             notUp: notUp.length,
@@ -1814,12 +1997,31 @@ export class CatalystSdwanMCPServer {
               state: r.state,
             })),
           };
-        });
+        };
+        const path = '/dataservice/device/bfd/sessions';
+        const { devices, incomplete } = await this.perEdge(scope.edges, realTime ? path : path.replace('/sessions', '/synced/sessions'), realTime, args, summarize(realTime));
+        let rechecked = 0;
+        if (!realTime) {
+          // Cached sessions may lag the device, so problems are confirmed live before they are reported.
+          const suspect = new Set(devices.filter((d) => Number(d.notUp) > 0).map((d) => d['system-ip']));
+          if (suspect.size && suspect.size <= FABRIC_REALTIME_AUTO_MAX) {
+            const live = await this.perEdge(scope.edges.filter((e) => suspect.has(e['system-ip'])), path, true, args, summarize(true));
+            for (const l of live.devices) {
+              if (l.error) continue;
+              devices[devices.findIndex((d) => d['system-ip'] === l['system-ip'])] = { ...l, verifiedLive: true };
+              rechecked++;
+            }
+          }
+        }
+        const syncedTimes = devices.map((d) => Date.parse(String(d.syncedAt))).filter((t) => t > 0);
         const sum = (key: string) => devices.reduce((n, d) => n + (Number(d[key]) || 0), 0);
         const edgesNotUp = devices.filter((d) => Number(d.notUp) > 0).map((d) => d['host-name']);
         return {
           summary: {
-            source: realTime ? 'real-time device query' : 'vManage cached (synced) data',
+            source: realTime
+              ? 'real-time device query'
+              : `vManage cached (synced) data${rechecked ? `; ${rechecked} edge(s) with sessions not up re-checked in real time` : ''}`,
+            ...(syncedTimes.length ? { syncedDataAsOf: new Date(Math.min(...syncedTimes)).toISOString() } : {}),
             edgesSelected: scope.edges.length,
             edgesQueried: devices.length,
             sessions: sum('sessions'),
@@ -1836,7 +2038,7 @@ export class CatalystSdwanMCPServer {
       }
       case 'get_fabric_tlocs': {
         const scope = await this.fabricEdges(args);
-        const realTime = args.synced === false;
+        const realTime = this.realTimeFor(args, scope.edges);
         const { devices, incomplete } = await this.perEdge(scope.edges, `/dataservice/device/control/${realTime ? '' : 'synced/'}waninterface`, realTime, args, (rows) => ({
           tlocCount: rows.length,
           tlocs: rows.map((r) => ({
@@ -1892,6 +2094,32 @@ export class CatalystSdwanMCPServer {
       allowStale ? DEVICE_INDEX_STALE_MS : undefined
     );
     return body.data ?? [];
+  }
+
+  /** synced decides when given; otherwise small selections are queried in real time. */
+  private realTimeFor(args: Record<string, unknown>, edges: DeviceRow[]): boolean {
+    return args.synced === undefined ? edges.length <= FABRIC_REALTIME_AUTO_MAX : args.synced === false;
+  }
+
+  /** Detects single-node vs cluster and single- vs multi-tenant Manager, with node and service status. */
+  private async managerDeployment(get: (path: string) => Promise<unknown>) {
+    const [mode, list, services] = await Promise.allSettled([
+      get('/dataservice/clusterManagement/tenancy/mode').then(dataOf),
+      get('/dataservice/clusterManagement/list').then(dataOf),
+      get('/dataservice/clusterManagement/health/status').then(dataOf),
+    ]);
+    if (mode.status === 'rejected' && list.status === 'rejected' && services.status === 'rejected') throw mode.reason;
+    const value = <T>(r: PromiseSettledResult<unknown>) => (r.status === 'fulfilled' ? (r.value as T) : undefined);
+    const modeValue = value<Record<string, unknown>>(mode);
+    const tenantScope = this.apiService.currentTenant();
+    let tenants: Array<Record<string, unknown>> | undefined;
+    if (/multi/i.test(String(modeValue?.mode ?? '')) && !tenantScope) {
+      tenants = await get('/dataservice/tenant')
+        .then((b) => dataOf(b) as Array<Record<string, unknown>>)
+        .then((rows) => (Array.isArray(rows) ? rows : undefined))
+        .catch(() => undefined);
+    }
+    return summarizeManager(modeValue, value(list), value(services), tenants, tenantScope);
   }
 
   /** WAN edges selected by site_id / devices; unreachable ones are reported instead of queried. */

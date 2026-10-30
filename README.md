@@ -67,7 +67,7 @@ Ask questions about your SD-WAN fabric in plain language and get answers built f
 
 | Use case | Example questions | Main tools |
 |---|---|---|
-| **Inventory and health** | "Is my fabric healthy?" "How many devices are in the fabric, and are they all reachable?" | `get_fabric_health`, `list_devices`, `list_reachable_devices` |
+| **Inventory and health** | "Is my fabric healthy?" "Which edges have high CPU?" "Is the Manager a cluster or single node?" | `get_fabric_health`, `list_devices`, `list_reachable_devices` |
 | **Control-plane troubleshooting** | "Why is this edge missing control connections? Show the history." | `get_control_connections`, `get_control_connections_history`, `get_control_local_properties` |
 | **Overlay routing (OMP)** | "Which TLOCs and routes does this site advertise in VPN 10?" | `get_omp_routes`, `get_omp_tlocs`, `get_omp_peers` |
 | **Data plane and transport** | "Are all BFD sessions in the fabric up? How many TLOCs does site 100 have?" | `get_fabric_bfd_status`, `get_fabric_tlocs`, `get_bfd_sessions`, `get_control_wan_interfaces` |
@@ -174,7 +174,7 @@ One call answers a fabric-wide question. The server queries every selected WAN e
 
 Built for large overlays:
 
-- **Bounded fan-out.** A fixed pool of workers (`VMANAGE_FABRIC_CONCURRENCY`, default 6) leaves request slots free for other tools. Real-time sweeps (`synced: false`) use a smaller pool (`VMANAGE_FABRIC_REALTIME_CONCURRENCY`, default 4) and are capped at 200 edges.
+- **Bounded fan-out.** A fixed pool of workers (`VMANAGE_FABRIC_CONCURRENCY`, default 6) leaves request slots free for other tools. Real-time sweeps use a smaller pool (`VMANAGE_FABRIC_REALTIME_CONCURRENCY`, default 4) and are capped at 200 edges.
 - **Time budget.** A sweep returns within `VMANAGE_FABRIC_DEADLINE_MS` (default 25 s), or `max_wait_seconds` per call. Edges not reached in time are listed under `incomplete`.
 - **Resumable.** Per-device results are cached (60 s synced, 15 s real-time), so calling again continues with only the remaining edges.
 - **Overload breaker.** After 5 consecutive overload errors (429/5xx/timeouts), the sweep stops instead of adding load to the Manager.
@@ -182,11 +182,13 @@ Built for large overlays:
 
 | Tool | Description | Key parameters | Example prompt |
 |---|---|---|---|
-| `get_fabric_health` | Device counts per type with unreachable devices, control-connection and OMP status, reachability per device class, active alarms by severity, certificate status and Manager cluster health | – | "Is my SD-WAN fabric healthy?" |
-| `get_fabric_bfd_status` | BFD sessions of every WAN edge: per-device counts, the sessions that are not up, and fabric totals | `site_id`, `devices` (hostnames or system IPs), `synced` (default `true`) | "Are all BFD sessions in the fabric up?" |
-| `get_fabric_tlocs` | TLOCs of every WAN edge: color, interface, state and IPs per device, totals per color and TLOCs that are not up | `site_id`, `devices`, `synced` (default `true`) | "How many TLOCs does each branch have, and are any down?" |
+| `get_fabric_health` | Overall `status` (`healthy`/`degraded`) with a plain-language `issues` list; Manager deployment (single node or cluster, single- or multi-tenant, provider or tenant view) with node state and services down; a table of every device (system IP, site, reachability, health with CPU/memory, up/total control connections, OMP peers, BFD sessions and TLOCs, problems); fabric totals; active alarms by severity and certificate status | `detail` (`auto`/`all`/`problems`) | "Is my SD-WAN fabric healthy?" |
+| `get_fabric_bfd_status` | BFD sessions of every WAN edge: per-device counts, the sessions that are not up, and fabric totals | `site_id`, `devices` (hostnames or system IPs), `synced` | "Are all BFD sessions in the fabric up?" |
+| `get_fabric_tlocs` | TLOCs of every WAN edge: color, interface, state and IPs per device, totals per color and TLOCs that are not up | `site_id`, `devices`, `synced` | "How many TLOCs does each branch have, and are any down?" |
 
-The fabric BFD and TLOC tools use vManage's cached (synced) data by default. Set `synced: false` for a real-time query of every device; vManage processes many real-time device queries slowly, so combine it with `site_id` or `devices`.
+`get_fabric_health` takes per-device counters and health from `/health/devices` (falling back to the device inventory), not from the dashboard status widgets, which can report 0 up / 0 down. Unhealthy devices show the cause, e.g. `health red (CPU 96.4%, memory 45.5%)`. The Manager deployment comes from `/clusterManagement/tenancy/mode` and `/clusterManagement/list`; on a multi-tenant Manager in provider view the tenants are listed. Up to 50 devices are all listed; above that only devices with problems (`detail: "all"` lists every device).
+
+The fabric BFD and TLOC tools query devices in real time when 25 or fewer edges are selected, and use vManage's cached (synced) data otherwise; `synced: true` or `false` overrides this. With synced data, results include the time the data was last synced (`syncedDataAsOf`), and edges whose cached BFD sessions are not up are re-checked in real time (`verifiedLive`) before they are reported. vManage processes many real-time device queries slowly, so combine `synced: false` with `site_id` or `devices` on large fabrics.
 
 #### Devices and inventory (5)
 
