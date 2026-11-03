@@ -6,9 +6,10 @@ A [Model Context Protocol (MCP)](https://modelcontextprotocol.io/) server for **
 
 All requests go through vManage. The server never connects to routers directly.
 
-- **127 MCP tools**: 123 purpose-built tools, including fabric-wide health, BFD and TLOC checks in a single call, BGP, OSPF, OSPFv3 and EIGRP monitoring and configuration (UX 2.0 features and UX 1.0 templates), CLI add-on configuration (for example RIP/RIPng), UX 2.0 configuration groups, feature profiles and policy and topology groups, plus 4 general tools that reach **every operation in the vManage OpenAPI spec** (4,128 operations on 26.2).
+- **137 MCP tools**: 133 purpose-built tools, including fabric-wide health, BFD and TLOC checks in a single call, BGP, OSPF, OSPFv3, EIGRP and multicast (IGMP, PIM, MFIB) monitoring and configuration (UX 2.0 features and UX 1.0 templates), CLI add-on configuration (for example RIP/RIPng), UX 2.0 configuration groups, feature profiles and policy and topology groups, plus 4 general tools that reach **every operation in the vManage OpenAPI spec** (4,128 operations on 26.2).
 - **Read-only by default.** Operations that change configuration or state are disabled unless you enable them, and each call then needs explicit confirmation.
 - **BGP, OSPF, OSPFv3 and EIGRP end to end.** Real-time neighbors, routes, interfaces, topology and LSDB; UX 2.0 feature reads and writes for SD-WAN and SD-Routing profiles; UX 1.0 feature templates (list, read, schema, create, update, delete, clone). Every BGP, OSPF and EIGRP operation in the 26.2 spec has a dedicated tool.
+- **Multicast end to end.** IGMP, PIM, overlay multicast (topology, RPF, replicators, tunnels) and MFIB monitoring; UX 2.0 multicast features (read, schema, write); UX 1.0 IGMP, PIM and multicast templates. Every multicast operation in the 26.2 spec has a dedicated tool.
 - **CLI add-ons for everything else.** RIP and RIPng have no vManage API, so they are configured as raw IOS XE CLI. Dedicated tools find, read, create, change and delete CLI add-on features (UX 2.0) and CLI add-on templates (UX 1.0); `contains: "router rip"` finds where a protocol is configured.
 - **Validated against the spec.** Calls through the general tools are checked against the OpenAPI spec published by *your* vManage before they are sent.
 - **Secrets are protected.** Endpoints that issue tokens, passwords, OTPs or credentials are blocked. Session IDs and CSRF tokens are redacted from responses.
@@ -44,6 +45,7 @@ flowchart LR
   - [General API tools](#general-api-tools-full-vmanage-api)
   - [Dedicated tools (full reference)](#dedicated-tools)
   - [Routing protocols: BGP, OSPF, OSPFv3, EIGRP](#routing-protocols-at-a-glance)
+  - [Multicast (IGMP, PIM, MFIB)](#multicast-igmp-pim-overlay-multicast-mfib-10)
   - [CLI add-ons (RIP, RIPng, other CLI)](#cli-add-ons-rip-ripng-and-other-cli--ux-20-and-ux-10-10)
 - [Installation](#installation)
 - [Configuration](#configuration)
@@ -77,12 +79,13 @@ Ask questions about your SD-WAN fabric in plain language and get answers built f
 | **OSPF and OSPFv3** | "Is OSPF running on Branch-2? Show its OSPFv3 neighbors. Which service profiles configure OSPF?" | `get_ospf_interfaces`, `get_ospf_neighbors`, `get_ospf_config` |
 | **BGP** | "Which BGP neighbors does Hub-1 have in VPN 10? Which profiles configure BGP?" | `get_bgp_neighbors`, `get_bgp_routes`, `get_bgp_config` |
 | **EIGRP** | "Is EIGRP running on Branch-3? Show its topology table. Which service profiles configure EIGRP?" | `get_eigrp_interfaces`, `get_eigrp_topology`, `get_eigrp_config` |
+| **Multicast** | "Which IGMP groups has Branch-1 joined? Who are its PIM neighbors and RPs? Which service profiles configure multicast?" | `get_igmp_status`, `get_pim_status`, `get_mfib`, `get_multicast_config` |
 | **RIP, RIPng and other CLI** | "Which CLI add-ons configure RIP? Add an `ipv6 router rip` block to the Branch CLI profile." | `list_cli_addons`, `list_cli_templates`, `create_cli_addon`, `update_cli_addon` |
 | **Routing changes (opt-in)** | "Create a BGP feature for AS 65001 and attach it to VPN 10." "Clone the OSPF-Branch template." | `create_bgp_feature`, `associate_bgp_feature`, `update_ospf_feature`, `clone_routing_template`, ... |
 | **Data plane and transport** | "Are all BFD sessions in the fabric up? How many TLOCs does site 100 have?" | `get_fabric_bfd_status`, `get_fabric_tlocs`, `get_bfd_sessions`, `get_control_wan_interfaces` |
 | **Application-aware routing** | "Show tunnel loss/latency/jitter and SLA classes." | `get_app_route_statistics`, `get_app_route_sla_class` |
 | **Configuration audit (UX 2.0)** | "Which configuration group configures the branch sites? What would a deploy change?" | `list_config_groups`, `get_config_group`, `preview_config_group_device_config` |
-| **Templates and policies (UX 1.0)** | "Which device templates and centralized policies are in use? Which BGP, OSPF or EIGRP templates exist?" | `list_device_templates`, `get_attached_devices`, `list_policies`, `list_routing_templates` |
+| **Templates and policies (UX 1.0)** | "Which device templates and centralized policies are in use? Which BGP, OSPF, EIGRP or PIM templates exist?" | `list_device_templates`, `get_attached_devices`, `list_policies`, `list_routing_templates` |
 | **Operations** | "Any critical alarms? Certificates expiring? Is the Manager cluster healthy?" | `list_alarms`, `get_certificate_summary`, `get_cluster_status` |
 | **Anything else in the API** | "Show IPsec/IKE sessions", "audit log for today" | `search_api_operations` → `describe_api_operation` → `call_api_operation` |
 | **Controlled changes (opt-in)** | Any POST/PUT/DELETE operation, only after you approve it | The routing write tools, or `call_api_operation`, with `confirm: true` and `VMANAGE_ALLOW_WRITE=true` |
@@ -280,7 +283,7 @@ Every BGP, OSPF, OSPFv3 and EIGRP operation in the 26.2 spec has a dedicated too
 | UX 1.0 templates | `cisco_bgp`, `bgp` | `cisco_ospf`, `ospf` | `cisco_ospfv3` | `eigrp` |
 | Spec operations covered | 55 (25 read, 30 write) | 144 including OSPFv3 (63 read, 81 write) | 92 of the 144 (38 read, 54 write) | 23 (11 read, 12 write) |
 
-The UX 1.0 rows use the [routing template tools](#bgp-ospf-ospfv3-and-eigrp-feature-templates--ux-10-7), which work on all six template types.
+The UX 1.0 rows use the [routing and multicast template tools](#routing-and-multicast-feature-templates--ux-10-7), which work on all routing and multicast template types.
 
 **RIP and RIPng** have no API in vManage 26.2: no `/device/rip` monitoring, no UX 2.0 routing feature and no UX 1.0 template type. They are configured as IOS XE CLI through [CLI add-ons](#cli-add-ons-rip-ripng-and-other-cli--ux-20-and-ux-10-10).
 
@@ -392,19 +395,36 @@ The `solution` parameter selects `sdwan` (default), `sd-routing`, `nfvirtual` or
 | `list_policy_definitions` | Policy definitions of one type | `definition_type`\* (`acl`, `approute`, `control`, `data`, `hubandspoke`, `mesh`, `qosmap`, `zonebasedfw`, ...) | "List the app-route policy definitions." |
 | `list_policies` | Centralized (vSmart), localized (vEdge) and security policies | `policy_type` (`vsmart`/`vedge`/`security`) | "Which centralized policy is active?" |
 
-#### BGP, OSPF, OSPFv3 and EIGRP feature templates – UX 1.0 (7)
+#### Routing and multicast feature templates – UX 1.0 (7)
 
-These tools only act on the routing template types `cisco_bgp`, `cisco_ospf`, `cisco_ospfv3`, `eigrp` (IOS XE) and `bgp`, `ospf` (vEdge); other templates are refused. The write tools follow the same rules as the UX 2.0 write tools. Changing a template does not reconfigure devices until their device templates are pushed again, and vManage refuses to delete a template that a device template still uses.
+These tools only act on the routing and multicast template types: `cisco_bgp`, `cisco_ospf`, `cisco_ospfv3`, `eigrp`, `cedge_igmp`, `cedge_pim`, `cedge_multicast` (IOS XE) and `bgp`, `ospf`, `igmp`, `pim`, `multicast` (vEdge); other templates are refused. The write tools follow the same rules as the UX 2.0 write tools. Changing a template does not reconfigure devices until their device templates are pushed again, and vManage refuses to delete a template that a device template still uses.
 
 | Tool | Description | Key parameters | Example prompt |
 |---|---|---|---|
-| `list_routing_templates` | BGP, OSPF, OSPFv3 and EIGRP feature templates with attached device counts | `protocol` (`all` default/`bgp`/`ospf`/`ospfv3`/`eigrp`) | "Which OSPF feature templates exist?" |
+| `list_routing_templates` | Routing and multicast feature templates with attached device counts | `protocol` (`all` default/`bgp`/`ospf`/`ospfv3`/`eigrp`/`igmp`/`pim`/`multicast`) | "Which OSPF feature templates exist?" |
 | `get_routing_template` | One template's definition and the device templates using it | `template_id`\* | "Show the BGP-Hub template and where it is used." |
 | `get_routing_template_schema` | Field definition of a routing template type | `template_type`\*, `version` (default `15.0.0`) | "What fields does a Cisco OSPFv3 template have?" |
 | `create_routing_template` | **Write.** Create a routing feature template | `body`\* (`templateName`, `templateDescription`, `templateType`, `deviceType`, `templateMinVersion`, `templateDefinition`, `factoryDefault`), `confirm`\* | "Create a Cisco BGP template for AS 65001." |
 | `update_routing_template` | **Write.** Replace a routing template (type cannot change) | `template_id`\*, `body`\*, `confirm`\* | "Change the hello interval in the OSPF-Branch template." |
 | `delete_routing_template` | **Write.** Delete a routing template | `template_id`\*, `confirm`\* | "Delete the unused BGP-Lab template." |
 | `clone_routing_template` | **Write.** Copy a routing template under a new name; returns the new ID (not attached anywhere) | `template_id`\*, `name`\*, `description`, `confirm`\* | "Copy the BGP-Hub template as BGP-Hub-Lab." |
+
+#### Multicast: IGMP, PIM, overlay multicast, MFIB (10)
+
+The ten tools cover all 26 multicast operations in the 26.2 spec: 15 real-time monitoring endpoints (grouped by `view`), the multicast feature schema, and the 4 read and 6 write operations for multicast features. vManage has UX 2.0 multicast features only in **SD-WAN service** profiles (profile level and per LAN VPN), so `profile_type` accepts only `service` and `solution` only `sdwan`. UX 1.0 IGMP, PIM and multicast templates use the [routing and multicast template tools](#routing-and-multicast-feature-templates--ux-10-7). OMP multicast routes stay in `get_omp_multicast`. The write tools follow the same rules as the OSPF write tools.
+
+| Tool | Description | Key parameters | Example prompt |
+|---|---|---|---|
+| `get_igmp_status` | IGMP joined groups, interfaces, statistics or summary | `device_id`\*, `view` (`groups` default/`interface`/`statistics`/`summary`) | "Which multicast groups have receivers behind Branch-1?" |
+| `get_pim_status` | PIM neighbors, interfaces, RP mappings or statistics | `device_id`\*, `view` (`neighbor` default/`interface`/`rp-mapping`/`statistics`) | "Which RP does Branch-1 use for 239.1.1.1?" |
+| `get_multicast_status` | SD-WAN overlay multicast: topology, RPF, replicators or PIM tunnels | `device_id`\*, `view` (`topology` default/`rpf`/`replicator`/`tunnel`) | "Which replicator does Branch-2 use?" |
+| `get_mfib` | Multicast forwarding (MFIB): summary, outgoing interface lists or statistics | `device_id`\*, `view` (`summary` default/`oil`/`stats`) | "Is multicast traffic being forwarded on Hub-1?" |
+| `get_multicast_config` | Multicast features of a UX 2.0 service profile, optionally per LAN VPN feature or one feature | `profile_type`\* (`service`), `profile`\*, `vpn_feature_id`, `feature_id` | "Which multicast settings does Branch-Service configure?" |
+| `get_multicast_feature_schema` | JSON schema vManage expects for a multicast feature body | `schema_type` (`post` default/`put`) | "What fields does a multicast feature have?" |
+| `create_multicast_feature` | **Write.** Create a multicast feature in a service profile; returns its ID | `profile_type`\*, `profile`\*, `body`\*, `confirm`\* | "Create a multicast feature with a static RP of 10.1.1.1." |
+| `update_multicast_feature` | **Write.** Replace a feature (full definition); with `vpn_feature_id`, edits its LAN VPN association | `profile_type`\*, `profile`\*, `feature_id`\*, `body`\*, `confirm`\*, `vpn_feature_id` | "Enable SPT-only in the multicast feature." |
+| `delete_multicast_feature` | **Write.** Delete a feature; with `vpn_feature_id`, only removes its association with that LAN VPN | `profile_type`\*, `profile`\*, `feature_id`\*, `confirm`\*, `vpn_feature_id` | "Detach the multicast feature from VPN 10." |
+| `associate_multicast_feature` | **Write.** Attach an existing feature to a LAN VPN feature | `profile_type`\*, `profile`\*, `vpn_feature_id`\*, `feature_id`\*, `confirm`\* | "Attach the multicast feature to the VPN 10 feature." |
 
 #### CLI add-ons: RIP, RIPng and other CLI – UX 2.0 and UX 1.0 (10)
 
@@ -835,6 +855,9 @@ OSPF runs in service VPN 10 with one OSPFv2 neighbor on GigabitEthernet3. `get_o
 | "Which EIGRP features does *Branch-Service* contain, and which LAN VPNs use them?" | `get_eigrp_config` (with `vpn_feature_id`) |
 | "Create an EIGRP AS 100 feature in *Branch-Service* and attach it to the VPN 20 feature." *(writes enabled)* | `create_eigrp_feature`, `associate_eigrp_feature` |
 | "Which EIGRP feature templates exist, and what fields does one have?" | `list_routing_templates` (`protocol: "eigrp"`), `get_routing_template_schema` (`template_type: "eigrp"`) |
+| "Which IGMP groups has Branch-1 joined, and which PIM RP does it use?" | `get_igmp_status`, `get_pim_status` (`view: "rp-mapping"`) |
+| "Is multicast traffic forwarded on Hub-1, and through which replicator?" | `get_mfib` (`view: "oil"`), `get_multicast_status` (`view: "replicator"`) |
+| "Create a multicast feature in *Branch-Service* and attach it to VPN 10." *(writes enabled)* | `get_multicast_feature_schema`, `create_multicast_feature`, `associate_multicast_feature` |
 | "Is RIP or RIPng configured anywhere?" | `list_cli_addons` and `list_cli_templates` (`contains: "router rip"`) |
 | "Add RIPng to the *Branch-CLI* profile, redistributing connected routes." *(writes enabled)* | `create_cli_addon` |
 | "Which certificates expire soon, and are there active critical alarms?" | `get_certificate_summary`, `list_alarms` |
@@ -931,6 +954,20 @@ UX 2.0 routing features (write; `VMANAGE_ALLOW_WRITE=true` and user approval). C
   "name": "delete_ospf_feature",
   "arguments": { "profile_type": "service", "profile": "Branch-Service", "version": "ospfv3-ipv6", "vpn_feature_id": "<lan-vpn-feature-id>", "feature_id": "<ospfv3-feature-id>", "confirm": true }
 }
+```
+
+Multicast monitoring and configuration:
+
+```json
+{ "name": "get_pim_status", "arguments": { "device_id": "Branch-1", "view": "rp-mapping" } }
+```
+
+```json
+{ "name": "get_mfib", "arguments": { "device_id": "Hub-1", "view": "oil" } }
+```
+
+```json
+{ "name": "get_multicast_config", "arguments": { "profile_type": "service", "profile": "Branch-Service", "vpn_feature_id": "<lan-vpn-feature-id>" } }
 ```
 
 CLI add-ons (RIP and RIPng have no dedicated API, so they are configured as CLI). Find where RIP is configured, then add a RIPng block to a UX 2.0 CLI profile:
@@ -1086,7 +1123,7 @@ npm run verify:api -- <edge> <controller> <validator>   # full read-only coverag
 
 For the routing tools it also checks:
 
-- **Spec coverage:** every BGP, OSPF, OSPFv3 and EIGRP read and write operation, and every UX 2.0 CLI add-on operation, in the spec is reached by a dedicated tool, and those tools call nothing outside the spec.
+- **Spec coverage:** every BGP, OSPF, OSPFv3, EIGRP and multicast read and write operation, and every UX 2.0 CLI add-on operation, in the spec is reached by a dedicated tool, and those tools call nothing outside the spec.
 - **Requests:** each tool sends the right method, path, query and body, and BGP monitoring filters are passed through.
 - **Write protection:** writes are blocked by default and without `confirm`.
 - **Invalid input:** bad IDs, versions, scopes and template types are rejected before anything is sent.
@@ -1103,7 +1140,7 @@ Results on Catalyst SD-WAN Manager 26.2.1:
 | Read operations live-tested | 1,261 |
 | Returned data | 1,113 |
 | Errors from Manager or lab (feature not configured, query body required, provider-only role) | 148 |
-| Dedicated tools verified live | 86 / 86 (83 by `verify:api`; the 3 fabric-wide tools by `test:ux2`). The 10 OSPF tools, 6 new BGP tools, 8 EIGRP tools, 7 UX 1.0 routing template tools and 10 CLI add-on tools were added later and are covered by the offline tests. |
+| Dedicated tools verified live | 86 / 86 (83 by `verify:api`; the 3 fabric-wide tools by `test:ux2`). The 10 OSPF tools, 6 new BGP tools, 8 EIGRP tools, 7 UX 1.0 routing template tools, 10 CLI add-on tools and 10 multicast tools were added later and are covered by the offline tests. |
 
 To try individual tools interactively, use the MCP Inspector:
 
@@ -1131,7 +1168,8 @@ npx @modelcontextprotocol/inspector node /absolute/path/to/build/index.js
 | `Unknown query parameter(s)` / `Missing required ...` | The call does not match the spec. Run `describe_api_operation` for the exact parameter names. |
 | `get_ospf_process` returns no rows although OSPF is configured | Some IOS XE releases report nothing there for OSPF in a service VPN. Use `get_ospf_interfaces` or `get_ospf_neighbors`. |
 | BGP or OSPF calls on one edge take 30–60 s | Real-time queries are answered by the device itself; a busy edge (high CPU) answers slowly. Narrow with `vpn_id`, `prefix` or `peer_addr`, or raise `VMANAGE_TIMEOUT_MS`. |
-| `Template ... is a cisco_vpn template, not a BGP, OSPF, OSPFv3 or EIGRP template` | The routing template tools only act on `cisco_bgp`, `cisco_ospf`, `cisco_ospfv3`, `eigrp`, `bgp` and `ospf` templates. Use `list_routing_templates` to find their IDs. |
+| `Template ... is a cisco_vpn template, not a routing or multicast ... template` | The routing and multicast template tools only act on BGP, OSPF, OSPFv3, EIGRP, IGMP, PIM and multicast templates. Use `list_routing_templates` to find their IDs. |
+| `solution must be one of: sdwan` / `profile_type must be one of: service` on a multicast tool | vManage has UX 2.0 multicast features only in SD-WAN service profiles. |
 | `profile_type must be one of: service` on an EIGRP tool | vManage has EIGRP features only in service profiles. Use the service profile of the site. |
 | No RIP or RIPng tool | vManage 26.2 has no RIP/RIPng API. Configure them as CLI with `create_cli_addon` (UX 2.0) or `create_cli_template` (UX 1.0); find existing ones with `contains: "router rip"`. |
 | `Template ... is a cisco_bgp template, not a CLI add-on (cli-template) template` | The CLI template tools only act on `cli-template` templates; use `list_cli_templates` for their IDs. |

@@ -226,6 +226,10 @@ const NO_ROW_OPTIONS = new Set([
   'create_eigrp_feature',
   'update_eigrp_feature',
   'delete_eigrp_feature',
+  'create_multicast_feature',
+  'update_multicast_feature',
+  'delete_multicast_feature',
+  'associate_multicast_feature',
   'associate_eigrp_feature',
   'create_routing_template',
   'update_routing_template',
@@ -238,7 +242,7 @@ const NO_ROW_OPTIONS = new Set([
   'update_cli_template',
   'delete_cli_template',
 ]);
-// UX 1.0 feature template types for BGP, OSPF, OSPFv3 and EIGRP (cisco_* and eigrp for IOS XE, bgp/ospf for vEdge), by protocol.
+// UX 1.0 feature template types for routing and multicast (cisco_*/cedge_*/eigrp for IOS XE, plain names for vEdge), by protocol.
 const ROUTING_TEMPLATE_TYPES = new Map([
   ['cisco_bgp', 'bgp'],
   ['bgp', 'bgp'],
@@ -246,11 +250,18 @@ const ROUTING_TEMPLATE_TYPES = new Map([
   ['ospf', 'ospf'],
   ['cisco_ospfv3', 'ospfv3'],
   ['eigrp', 'eigrp'],
+  ['cedge_igmp', 'igmp'],
+  ['igmp', 'igmp'],
+  ['cedge_pim', 'pim'],
+  ['pim', 'pim'],
+  ['cedge_multicast', 'multicast'],
+  ['multicast', 'multicast'],
 ]);
 const ROUTING_TEMPLATE_TYPE = {
   type: 'string',
   enum: [...ROUTING_TEMPLATE_TYPES.keys()],
-  description: 'Template type: cisco_bgp, cisco_ospf, cisco_ospfv3, eigrp (IOS XE / cEdge) or bgp, ospf (vEdge)',
+  description:
+    'Template type: cisco_bgp, cisco_ospf, cisco_ospfv3, eigrp, cedge_igmp, cedge_pim, cedge_multicast (IOS XE / cEdge) or bgp, ospf, igmp, pim, multicast (vEdge)',
 };
 const ROUTING_PROFILE_SCOPE = {
   profile_type: { type: 'string', enum: ['service', 'transport'], description: 'Feature profile type' },
@@ -292,16 +303,20 @@ function cliText(config: unknown): string {
   return typeof value === 'string' ? value : '';
 }
 
-type RoutingProtocol = 'ospf' | 'bgp' | 'eigrp';
+type RoutingProtocol = 'ospf' | 'bgp' | 'eigrp' | 'multicast';
+// UX 2.0 features that vManage has only in service profiles, and only for the sdwan solution.
+const SERVICE_ONLY = new Set<RoutingProtocol>(['eigrp', 'multicast']);
+const SDWAN_ONLY = new Set<RoutingProtocol>(['multicast']);
 
 /** Read and write tools for the routing features (parcels) of UX 2.0 service and transport profiles. */
 function routingFeatureTools(protocol: RoutingProtocol): Tool[] {
-  const label = { ospf: 'OSPF / OSPFv3', bgp: 'BGP', eigrp: 'EIGRP' }[protocol];
-  const serviceOnly = protocol === 'eigrp'
-    ? { profile_type: { type: 'string', enum: ['service'], description: 'Feature profile type (EIGRP features exist only in service profiles)' } }
+  const label = { ospf: 'OSPF / OSPFv3', bgp: 'BGP', eigrp: 'EIGRP', multicast: 'multicast (IGMP / PIM)' }[protocol];
+  const serviceOnly = SERVICE_ONLY.has(protocol)
+    ? { profile_type: { type: 'string', enum: ['service'], description: `Feature profile type (${label} features exist only in service profiles)` } }
     : {};
-  const scope = { ...ROUTING_PROFILE_SCOPE, ...serviceOnly, ...(protocol === 'ospf' ? OSPF_VERSION : {}) };
-  const vpnScope = protocol === 'eigrp' ? { vpn_feature_id: VPN_SCOPE.vpn_feature_id } : VPN_SCOPE;
+  const sdwanOnly = SDWAN_ONLY.has(protocol) ? { solution: { type: 'string', enum: ['sdwan'], description: 'Solution family (only sdwan)' } } : {};
+  const scope = { ...ROUTING_PROFILE_SCOPE, ...serviceOnly, ...sdwanOnly, ...(protocol === 'ospf' ? OSPF_VERSION : {}) };
+  const vpnScope = SERVICE_ONLY.has(protocol) ? { vpn_feature_id: VPN_SCOPE.vpn_feature_id } : VPN_SCOPE;
   const featureId = (suffix = '') => ({ feature_id: { type: 'string', description: `${label} feature ID${suffix}` } });
   return [
     {
@@ -1387,6 +1402,66 @@ export class CatalystSdwanMCPServer {
       },
       ...routingFeatureTools('eigrp'),
 
+      // === Multicast: real-time monitoring, UX 2.0 features ===
+      {
+        name: 'get_igmp_status',
+        description: 'Get IGMP state of a device (real time): joined groups, IGMP interfaces, statistics or summary.',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            device_id: { type: 'string', description: 'Device ID or system-ip' },
+            view: { type: 'string', enum: ['groups', 'interface', 'statistics', 'summary'], description: 'What to return (default: groups)' },
+          },
+          required: ['device_id'],
+        },
+      },
+      {
+        name: 'get_pim_status',
+        description: 'Get PIM state of a device (real time): neighbors, PIM interfaces, RP mappings or statistics.',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            device_id: { type: 'string', description: 'Device ID or system-ip' },
+            view: { type: 'string', enum: ['neighbor', 'interface', 'rp-mapping', 'statistics'], description: 'What to return (default: neighbor)' },
+          },
+          required: ['device_id'],
+        },
+      },
+      {
+        name: 'get_multicast_status',
+        description: 'Get SD-WAN overlay multicast state of a device (real time): multicast topology, RPF, replicators or PIM tunnels.',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            device_id: { type: 'string', description: 'Device ID or system-ip' },
+            view: { type: 'string', enum: ['topology', 'rpf', 'replicator', 'tunnel'], description: 'What to return (default: topology)' },
+          },
+          required: ['device_id'],
+        },
+      },
+      {
+        name: 'get_mfib',
+        description: 'Get the multicast forwarding information base (MFIB) of a device (real time): summary, outgoing interface lists or statistics.',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            device_id: { type: 'string', description: 'Device ID or system-ip' },
+            view: { type: 'string', enum: ['summary', 'oil', 'stats'], description: 'What to return (default: summary)' },
+          },
+          required: ['device_id'],
+        },
+      },
+      ...routingFeatureTools('multicast'),
+      {
+        name: 'get_multicast_feature_schema',
+        description:
+          'Get the JSON schema vManage expects for an SD-WAN multicast feature body (create or update). Use it to build the body for create_multicast_feature / update_multicast_feature.',
+        inputSchema: {
+          type: 'object',
+          properties: { schema_type: { type: 'string', enum: ['post', 'put'], description: 'Schema for create (post, default) or update (put)' } },
+        },
+      },
+
       // === Real-time Monitoring - Cflowd ===
       {
         name: 'get_cflowd_flows',
@@ -1633,17 +1708,21 @@ export class CatalystSdwanMCPServer {
       // === BGP / OSPF / OSPFv3 feature templates (UX 1.0) ===
       {
         name: 'list_routing_templates',
-        description: 'List UX 1.0 feature templates for BGP, OSPF, OSPFv3 and EIGRP (cisco_bgp, cisco_ospf, cisco_ospfv3, eigrp, bgp, ospf), with the number of devices attached.',
+        description: 'List UX 1.0 routing and multicast feature templates (BGP, OSPF, OSPFv3, EIGRP, IGMP, PIM, multicast), with the number of devices attached.',
         inputSchema: {
           type: 'object',
           properties: {
-            protocol: { type: 'string', enum: ['all', 'bgp', 'ospf', 'ospfv3', 'eigrp'], description: 'Only this protocol (default: all)' },
+            protocol: {
+              type: 'string',
+              enum: ['all', 'bgp', 'ospf', 'ospfv3', 'eigrp', 'igmp', 'pim', 'multicast'],
+              description: 'Only this protocol (default: all)',
+            },
           },
         },
       },
       {
         name: 'get_routing_template',
-        description: 'Get one UX 1.0 BGP, OSPF, OSPFv3 or EIGRP feature template: its definition and the device templates that use it.',
+        description: 'Get one UX 1.0 routing or multicast feature template: its definition and the device templates that use it.',
         inputSchema: {
           type: 'object',
           properties: { template_id: { type: 'string', description: 'Feature template ID' } },
@@ -1653,7 +1732,7 @@ export class CatalystSdwanMCPServer {
       {
         name: 'get_routing_template_schema',
         description:
-          'Get the field definition vManage uses for a BGP, OSPF, OSPFv3 or EIGRP feature template type. Use it to build templateDefinition for create_routing_template / update_routing_template.',
+          'Get the field definition vManage uses for a routing or multicast feature template type. Use it to build templateDefinition for create_routing_template / update_routing_template.',
         inputSchema: {
           type: 'object',
           properties: {
@@ -1665,7 +1744,7 @@ export class CatalystSdwanMCPServer {
       },
       {
         name: 'create_routing_template',
-        description: `Create a UX 1.0 BGP, OSPF, OSPFv3 or EIGRP feature template. body.templateType must be one of the routing template types. ${WRITE_NOTE}`,
+        description: `Create a UX 1.0 routing or multicast feature template. body.templateType must be one of the routing / multicast template types. ${WRITE_NOTE}`,
         inputSchema: {
           type: 'object',
           properties: {
@@ -1681,7 +1760,7 @@ export class CatalystSdwanMCPServer {
       },
       {
         name: 'update_routing_template',
-        description: `Replace a UX 1.0 BGP, OSPF, OSPFv3 or EIGRP feature template (full definition; its template type cannot change). Devices using it are not updated until their device templates are pushed again. ${WRITE_NOTE}`,
+        description: `Replace a UX 1.0 routing or multicast feature template (full definition; its template type cannot change). Devices using it are not updated until their device templates are pushed again. ${WRITE_NOTE}`,
         inputSchema: {
           type: 'object',
           properties: {
@@ -1694,7 +1773,7 @@ export class CatalystSdwanMCPServer {
       },
       {
         name: 'delete_routing_template',
-        description: `Delete a UX 1.0 BGP, OSPF, OSPFv3 or EIGRP feature template. vManage refuses templates still used by a device template. ${WRITE_NOTE}`,
+        description: `Delete a UX 1.0 routing or multicast feature template. vManage refuses templates still used by a device template. ${WRITE_NOTE}`,
         inputSchema: {
           type: 'object',
           properties: { template_id: { type: 'string', description: 'Feature template ID' }, ...WRITE_CONFIRM },
@@ -1703,7 +1782,7 @@ export class CatalystSdwanMCPServer {
       },
       {
         name: 'clone_routing_template',
-        description: `Copy a UX 1.0 BGP, OSPF, OSPFv3 or EIGRP feature template under a new name. Returns the new template ID; the copy is not attached to any device template. ${WRITE_NOTE}`,
+        description: `Copy a UX 1.0 routing or multicast feature template under a new name. Returns the new template ID; the copy is not attached to any device template. ${WRITE_NOTE}`,
         inputSchema: {
           type: 'object',
           properties: {
@@ -1988,8 +2067,8 @@ export class CatalystSdwanMCPServer {
     const synced = args.synced === true;
     // Routing feature path up to /routing/<protocol>, shared by the OSPF and BGP configuration tools.
     const routingTarget = async (protocol: RoutingProtocol) => {
-      const solution = pick('solution', { sdwan: 'sdwan', 'sd-routing': 'sd-routing' }, 'sdwan');
-      const type = pick('profile_type', protocol === 'eigrp' ? { service: 'service' } : { service: 'service', transport: 'transport' }, '');
+      const solution = pick('solution', SDWAN_ONLY.has(protocol) ? { sdwan: 'sdwan' } : { sdwan: 'sdwan', 'sd-routing': 'sd-routing' }, 'sdwan');
+      const type = pick('profile_type', SERVICE_ONLY.has(protocol) ? { service: 'service' } : { service: 'service', transport: 'transport' }, '');
       const routing =
         protocol === 'ospf' ? pick('version', { ospf: 'ospf', 'ospfv3-ipv4': 'ospfv3/ipv4', 'ospfv3-ipv6': 'ospfv3/ipv6' }, 'ospf') : protocol;
       const featureIdArg = (arg: string) => {
@@ -2029,7 +2108,13 @@ export class CatalystSdwanMCPServer {
       const result = await this.catalog.call({ operationId: op.operationId, pathParams, query, body, confirm: args.confirm === true });
       return { operationId: op.operationId, method, path, result };
     };
-    const routingProtocol: RoutingProtocol = name.includes('_bgp_') ? 'bgp' : name.includes('_eigrp_') ? 'eigrp' : 'ospf';
+    const routingProtocol: RoutingProtocol = name.includes('_bgp_')
+      ? 'bgp'
+      : name.includes('_eigrp_')
+        ? 'eigrp'
+        : name.includes('_multicast_')
+          ? 'multicast'
+          : 'ospf';
     // A UX 1.0 feature template, refused unless its type is one the calling tool manages.
     const typedTemplate = async (allowed: (type: string) => boolean, kind: string) => {
       const id = String(args.template_id ?? '');
@@ -2040,7 +2125,8 @@ export class CatalystSdwanMCPServer {
       }
       return { id, template };
     };
-    const routingTemplate = () => typedTemplate((t) => ROUTING_TEMPLATE_TYPES.has(t), 'a BGP, OSPF, OSPFv3 or EIGRP');
+    const routingTemplate = () =>
+      typedTemplate((t) => ROUTING_TEMPLATE_TYPES.has(t), 'a routing or multicast (BGP, OSPF, OSPFv3, EIGRP, IGMP, PIM, multicast)');
     const cliTemplate = () => typedTemplate((t) => t === 'cli-template', 'a CLI add-on (cli-template)');
     const cliContains = () => {
       const text = String(args.contains ?? '').trim().toLowerCase();
@@ -2284,14 +2370,71 @@ export class CatalystSdwanMCPServer {
         return deviceGet('/dataservice/device/eigrp/route');
       case 'get_eigrp_topology':
         return deviceGet('/dataservice/device/eigrp/topology');
+      case 'get_igmp_status':
+        return deviceGet(
+          pick(
+            'view',
+            {
+              groups: '/dataservice/device/igmp/groups',
+              interface: '/dataservice/device/igmp/interface',
+              statistics: '/dataservice/device/igmp/statistics',
+              summary: '/dataservice/device/igmp/summary',
+            },
+            'groups'
+          )
+        );
+      case 'get_pim_status':
+        return deviceGet(
+          pick(
+            'view',
+            {
+              neighbor: '/dataservice/device/pim/neighbor',
+              interface: '/dataservice/device/pim/interface',
+              'rp-mapping': '/dataservice/device/pim/rp-mapping',
+              statistics: '/dataservice/device/pim/statistics',
+            },
+            'neighbor'
+          )
+        );
+      case 'get_multicast_status':
+        return deviceGet(
+          pick(
+            'view',
+            {
+              topology: '/dataservice/device/multicast/topology',
+              rpf: '/dataservice/device/multicast/rpf',
+              replicator: '/dataservice/device/multicast/replicator',
+              tunnel: '/dataservice/device/multicast/tunnel',
+            },
+            'topology'
+          )
+        );
+      case 'get_mfib':
+        return deviceGet(
+          pick(
+            'view',
+            {
+              summary: '/dataservice/device/ip/mfibsummary',
+              oil: '/dataservice/device/ip/mfiboil',
+              stats: '/dataservice/device/ip/mfibstats',
+            },
+            'summary'
+          )
+        );
+      case 'get_multicast_feature_schema':
+        return this.apiService.get('/dataservice/v1/feature-profile/sdwan/service/routing/multicast/schema', {
+          schemaType: pick('schema_type', { post: 'post', put: 'put' }, 'post'),
+        });
       case 'get_ospf_config':
       case 'get_eigrp_config':
+      case 'get_multicast_config':
       case 'get_bgp_config': {
         const { path, featureId } = await routingTarget(routingProtocol);
         return this.apiService.get(`${path}${featureId ? `/${featureId}` : ''}`);
       }
       case 'create_ospf_feature':
       case 'create_eigrp_feature':
+      case 'create_multicast_feature':
       case 'create_bgp_feature': {
         const { path, vpnId, featureId } = await routingTarget(routingProtocol);
         if (vpnId || featureId) {
@@ -2301,6 +2444,7 @@ export class CatalystSdwanMCPServer {
       }
       case 'update_ospf_feature':
       case 'update_eigrp_feature':
+      case 'update_multicast_feature':
       case 'update_bgp_feature': {
         const { path, featureId } = await routingTarget(routingProtocol);
         if (!featureId) throw new Error('feature_id is required');
@@ -2308,6 +2452,7 @@ export class CatalystSdwanMCPServer {
       }
       case 'delete_ospf_feature':
       case 'delete_eigrp_feature':
+      case 'delete_multicast_feature':
       case 'delete_bgp_feature': {
         const { path, featureId } = await routingTarget(routingProtocol);
         if (!featureId) throw new Error('feature_id is required');
@@ -2315,6 +2460,7 @@ export class CatalystSdwanMCPServer {
       }
       case 'associate_ospf_feature':
       case 'associate_eigrp_feature':
+      case 'associate_multicast_feature':
       case 'associate_bgp_feature': {
         const { path, vpnId, featureId } = await routingTarget(routingProtocol);
         if (!vpnId || !featureId) throw new Error('vpn_feature_id and feature_id are required');
@@ -2369,7 +2515,11 @@ export class CatalystSdwanMCPServer {
       }
 
       case 'list_routing_templates': {
-        const protocol = pick('protocol', { all: 'all', bgp: 'bgp', ospf: 'ospf', ospfv3: 'ospfv3', eigrp: 'eigrp' }, 'all');
+        const protocol = pick(
+          'protocol',
+          { all: 'all', bgp: 'bgp', ospf: 'ospf', ospfv3: 'ospfv3', eigrp: 'eigrp', igmp: 'igmp', pim: 'pim', multicast: 'multicast' },
+          'all'
+        );
         const list = await this.apiService.get<{ data?: Array<Record<string, unknown>> }>('/dataservice/template/feature');
         const rows = (list.data ?? []).filter((t) => {
           const p = ROUTING_TEMPLATE_TYPES.get(String(t.templateType));

@@ -35,7 +35,7 @@ const tlocs = () => [
   { color: 'biz-internet', interface: 'GigabitEthernet2', 'operation-state': 'up', 'admin-state': 'up', 'public-ip': '203.0.113.1', 'private-ip': '203.0.113.1' },
 ];
 
-const stats = { logins: 0, sessionLogins: 0, logouts: 0, ompStatusCalls: 0, ompSummaryCalls: 0, deviceIds: [], ospfPaths: [], ospfWrites: [], bgpPaths: [], bgpWrites: [], eigrpPaths: [], eigrpWrites: [], templateWrites: [], cliPaths: [], cliWrites: [] };
+const stats = { logins: 0, sessionLogins: 0, logouts: 0, ompStatusCalls: 0, ompSummaryCalls: 0, deviceIds: [], ospfPaths: [], ospfWrites: [], bgpPaths: [], bgpWrites: [], eigrpPaths: [], eigrpWrites: [], templateWrites: [], cliPaths: [], cliWrites: [], mcPaths: [], mcWrites: [] };
 const CLI_PROFILE_ID = 'cccccccc-cccc-4ccc-8ccc-cccccccccccc';
 const CLI_FEATURE = 'dddddddd-dddd-4ddd-8ddd-dddddddddddd';
 const CLI_TEMPLATE = 'eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee';
@@ -49,6 +49,7 @@ const FEATURE_TEMPLATES = [
   { templateId: OSPFV3_TEMPLATE, templateName: 'OSPFv3-Branch', templateType: 'cisco_ospfv3', devicesAttached: 0 },
   { templateId: VPN_TEMPLATE, templateName: 'VPN-10', templateType: 'cisco_vpn', devicesAttached: 4 },
   { templateId: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa', templateName: 'EIGRP-Branch', templateType: 'eigrp', devicesAttached: 1 },
+  { templateId: '13131313-1313-4131-8131-131313131313', templateName: 'PIM-Branch', templateType: 'cedge_pim', devicesAttached: 2 },
   {
     templateId: CLI_TEMPLATE, templateName: 'RIP-CLI', templateDescription: 'RIP add-on', templateType: 'cli-template', deviceType: ['vedge-C8000V'], templateMinVersion: '15.0.0', devicesAttached: 0,
     templateDefinition: { config: { vipObjectType: 'object', vipType: 'constant', vipValue: RIP_CLI } },
@@ -141,6 +142,14 @@ function handler(req, res) {
         return send(200, req.method === 'POST' ? { parcelId: '55555555-5555-4555-8555-555555555555' } : {});
       }
       stats.bgpPaths.push(p);
+      return send(200, { data: [{ path: p, query: Object.fromEntries(url.searchParams) }] });
+    }
+    if (/^\/dataservice\/device\/(igmp|pim|multicast|ip\/mfib)/.test(p) || (p.startsWith('/dataservice/v1/feature-profile/') && p.includes('/routing/multicast'))) {
+      if (req.method !== 'GET') {
+        stats.mcWrites.push({ method: req.method, path: p, body: raw ? JSON.parse(raw) : undefined });
+        return send(200, req.method === 'POST' ? { parcelId: '14141414-1414-4141-8141-141414141414' } : {});
+      }
+      stats.mcPaths.push(p);
       return send(200, { data: [{ path: p, query: Object.fromEntries(url.searchParams) }] });
     }
     if (p.startsWith('/dataservice/device/eigrp/') || (p.startsWith('/dataservice/v1/feature-profile/') && p.includes('/routing/eigrp'))) {
@@ -296,7 +305,7 @@ async function tool(client, name, args = {}) {
 // ---------- Tests ----------
 const c = await connect();
 const { tools } = await c.listTools();
-check('tool list', tools.length === 127, `${tools.length} tools`);
+check('tool list', tools.length === 137, `${tools.length} tools`);
 
 let t = Date.now();
 let r = await tool(c, 'get_omp_status');
@@ -649,7 +658,7 @@ await wb.close();
 mock.templateListDelayMs = 0;
 const ct = await connect();
 r = await tool(ct, 'list_routing_templates');
-check('list_routing_templates keeps only routing templates', r.value?.data?.map((t) => t.templateName).join() === 'BGP-Hub,OSPFv3-Branch,EIGRP-Branch', JSON.stringify(r.value ?? r.error));
+check('list_routing_templates keeps only routing templates', r.value?.data?.map((t) => t.templateName).join() === 'BGP-Hub,OSPFv3-Branch,EIGRP-Branch,PIM-Branch', JSON.stringify(r.value ?? r.error));
 r = await tool(ct, 'list_routing_templates', { protocol: 'ospfv3' });
 check('list_routing_templates protocol filter', r.value?.data?.map((t) => t.templateName).join() === 'OSPFv3-Branch', JSON.stringify(r.value ?? r.error));
 r = await tool(ct, 'list_routing_templates', { protocol: 'eigrp' });
@@ -661,7 +670,7 @@ check('get_routing_template with device templates', r.value?.templateType === 'c
 r = await tool(ct, 'get_routing_template_schema', { template_type: 'cisco_ospfv3' });
 check('get_routing_template_schema', r.value?.path === '/dataservice/template/feature/types/definition/cisco_ospfv3/15.0.0', JSON.stringify(r.value ?? r.error));
 for (const [label, name, args, pattern] of [
-  ['get_routing_template refuses non-routing templates', 'get_routing_template', { template_id: VPN_TEMPLATE }, /cisco_vpn template, not a BGP, OSPF, OSPFv3 or EIGRP/],
+  ['get_routing_template refuses non-routing templates', 'get_routing_template', { template_id: VPN_TEMPLATE }, /cisco_vpn template, not a routing or multicast/],
   ['get_routing_template rejects non-UUID ID', 'get_routing_template', { template_id: '../device/x' }, /must be a feature template ID/],
   ['get_routing_template_schema rejects other types', 'get_routing_template_schema', { template_type: 'cisco_vpn' }, /template_type must be one of/],
   ['get_routing_template_schema rejects bad version', 'get_routing_template_schema', { template_type: 'cisco_bgp', version: '../../x' }, /version must look like/],
@@ -712,10 +721,10 @@ check('clone_routing_template EIGRP', !r.error && lastTemplateWrite()?.query?.de
 for (const [label, name, args, pattern] of [
   ['create_routing_template refuses other template types', 'create_routing_template', { body: { ...TEMPLATE_BODY, templateType: 'cisco_vpn' }, confirm: true }, /body.templateType must be one of/],
   ['update_routing_template refuses a type change', 'update_routing_template', { template_id: BGP_TEMPLATE, body: { ...TEMPLATE_BODY, templateType: 'cisco_ospf' }, confirm: true }, /must stay cisco_bgp/],
-  ['update_routing_template refuses non-routing templates', 'update_routing_template', { template_id: VPN_TEMPLATE, body: TEMPLATE_BODY, confirm: true }, /not a BGP, OSPF, OSPFv3 or EIGRP/],
-  ['delete_routing_template refuses non-routing templates', 'delete_routing_template', { template_id: VPN_TEMPLATE, confirm: true }, /not a BGP, OSPF, OSPFv3 or EIGRP/],
+  ['update_routing_template refuses non-routing templates', 'update_routing_template', { template_id: VPN_TEMPLATE, body: TEMPLATE_BODY, confirm: true }, /not a routing or multicast/],
+  ['delete_routing_template refuses non-routing templates', 'delete_routing_template', { template_id: VPN_TEMPLATE, confirm: true }, /not a routing or multicast/],
   ['delete_routing_template needs confirm: true', 'delete_routing_template', { template_id: BGP_TEMPLATE }, /confirm: true/],
-  ['clone_routing_template refuses non-routing templates', 'clone_routing_template', { template_id: VPN_TEMPLATE, name: 'VPN-Copy', confirm: true }, /not a BGP, OSPF, OSPFv3 or EIGRP/],
+  ['clone_routing_template refuses non-routing templates', 'clone_routing_template', { template_id: VPN_TEMPLATE, name: 'VPN-Copy', confirm: true }, /not a routing or multicast/],
   ['clone_routing_template requires a name', 'clone_routing_template', { template_id: BGP_TEMPLATE, name: '  ', confirm: true }, /name is required/],
   ['clone_routing_template needs confirm: true', 'clone_routing_template', { template_id: BGP_TEMPLATE, name: 'BGP-Copy' }, /confirm: true/],
 ]) {
@@ -928,6 +937,108 @@ const missingCli = specCli.filter((op) => !cliReached.has(op));
 check(`all ${specCli.length} UX 2.0 CLI add-on operations (SD-WAN and SD-Routing) covered`, specCli.length === 10 && missingCli.length === 0, missingCli.join(', '));
 check('CLI add-on tools only call operations from the spec', [...cliReached].every((op) => specCli.includes(op)), [...cliReached].filter((op) => !specCli.includes(op)).join(', '));
 await wc.close();
+
+// Multicast: IGMP / PIM / overlay multicast / MFIB monitoring, UX 2.0 service features, UX 1.0 templates.
+const MC_RX = /multicast|\/pim|igmp|msdp|mroute|\/mfib/i;
+const specMc = (methods) =>
+  Object.entries(spec.paths)
+    .filter(([path]) => MC_RX.test(path))
+    .flatMap(([path, ops]) => methods.filter((m) => ops[m]).map((m) => `${m.toUpperCase()} ${template(path)}`));
+const MC_BODY = { name: 'Multicast-LAN', description: 'test', data: { basic: { sptOnly: { optionType: 'global', value: false } } } };
+const mcBase = `/dataservice/v1/feature-profile/sdwan/service/${OSPF_PROFILE}`;
+const MC_VIEWS = [
+  ['get_igmp_status', { groups: 'igmp/groups', interface: 'igmp/interface', statistics: 'igmp/statistics', summary: 'igmp/summary' }],
+  ['get_pim_status', { neighbor: 'pim/neighbor', interface: 'pim/interface', 'rp-mapping': 'pim/rp-mapping', statistics: 'pim/statistics' }],
+  ['get_multicast_status', { topology: 'multicast/topology', rpf: 'multicast/rpf', replicator: 'multicast/replicator', tunnel: 'multicast/tunnel' }],
+  ['get_mfib', { summary: 'ip/mfibsummary', oil: 'ip/mfiboil', stats: 'ip/mfibstats' }],
+];
+const cm = await connect();
+for (const [name, views] of MC_VIEWS) {
+  const [defaultView] = Object.values(views);
+  const row = (await tool(cm, name, { device_id: 'Branch-1' })).value?.data?.[0];
+  check(`${name} (default view)`, row?.path === `/dataservice/device/${defaultView}` && row.query.deviceId === '192.0.2.11', JSON.stringify(row));
+}
+r = await tool(cm, 'get_pim_status', { device_id: 'Branch-1', view: 'rp-mapping' });
+check('get_pim_status rp-mapping', r.value?.data?.[0]?.path === '/dataservice/device/pim/rp-mapping', JSON.stringify(r.value ?? r.error));
+r = await tool(cm, 'get_multicast_feature_schema', { schema_type: 'put' });
+check('get_multicast_feature_schema', r.value?.data?.[0]?.path === '/dataservice/v1/feature-profile/sdwan/service/routing/multicast/schema' && r.value.data[0].query.schemaType === 'put', JSON.stringify(r.value ?? r.error));
+r = await tool(cm, 'get_multicast_config', { profile_type: 'service', profile: 'Branch-Service' });
+check('get_multicast_config by profile name', r.value?.data?.[0]?.path === `${mcBase}/routing/multicast`, JSON.stringify(r.value ?? r.error));
+r = await tool(cm, 'list_routing_templates', { protocol: 'pim' });
+check('list_routing_templates PIM', r.value?.data?.map((t) => t.templateName).join() === 'PIM-Branch', JSON.stringify(r.value ?? r.error));
+r = await tool(cm, 'get_routing_template_schema', { template_type: 'cedge_multicast' });
+check('get_routing_template_schema multicast', r.value?.path === '/dataservice/template/feature/types/definition/cedge_multicast/15.0.0', JSON.stringify(r.value ?? r.error));
+
+const specMcGets = specMc(['get']);
+stats.mcPaths = [];
+for (const [name, views] of MC_VIEWS) for (const view of Object.keys(views)) await tool(cm, name, { device_id: 'Branch-1', view });
+for (const schema_type of ['post', 'put']) await tool(cm, 'get_multicast_feature_schema', { schema_type });
+for (const scope of [{}, { vpn_feature_id: VPN }]) {
+  for (const one of [{}, { feature_id: FEATURE }]) await tool(cm, 'get_multicast_config', { profile_type: 'service', profile: OSPF_PROFILE, ...scope, ...one });
+}
+const mcReached = new Set(stats.mcPaths.map((path) => `GET ${template(path)}`));
+const missingMcReads = specMcGets.filter((op) => !mcReached.has(op));
+check(`all ${specMcGets.length} multicast read operations in the spec covered`, specMcGets.length === 20 && missingMcReads.length === 0, missingMcReads.join(', '));
+check('multicast tools only call read paths from the spec', [...mcReached].every((op) => specMcGets.includes(op)), [...mcReached].filter((op) => !specMcGets.includes(op)).join(', '));
+
+for (const [label, name, args, pattern] of [
+  ['get_igmp_status rejects unknown view', 'get_igmp_status', { device_id: 'Branch-1', view: '../bgp' }, /view must be one of/],
+  ['get_mfib requires device_id', 'get_mfib', {}, /device_id is required/],
+  ['get_multicast_config rejects transport profiles', 'get_multicast_config', { profile_type: 'transport', profile: OSPF_PROFILE }, /profile_type must be one of: service$/],
+  ['get_multicast_config rejects sd-routing', 'get_multicast_config', { solution: 'sd-routing', profile_type: 'service', profile: OSPF_PROFILE }, /solution must be one of: sdwan$/],
+]) {
+  stats.mcPaths = [];
+  r = await tool(cm, name, args);
+  check(label, pattern.test(r.error ?? '') && stats.mcPaths.length === 0, r.error ?? 'not rejected');
+}
+r = await tool(cm, 'create_multicast_feature', { profile_type: 'service', profile: OSPF_PROFILE, body: MC_BODY, confirm: true });
+check('multicast writes disabled by default', /VMANAGE_ALLOW_WRITE=true/.test(r.error ?? '') && stats.mcWrites.length === 0, r.error ?? 'not rejected');
+await cm.close();
+
+const wm = await connect({ VMANAGE_ALLOW_WRITE: 'true' });
+const lastMcWrite = () => stats.mcWrites.at(-1);
+r = await tool(wm, 'create_multicast_feature', { profile_type: 'service', profile: 'Branch-Service', body: MC_BODY });
+check('create_multicast_feature needs confirm: true', /confirm: true/.test(r.error ?? '') && stats.mcWrites.length === 0, r.error ?? 'not rejected');
+r = await tool(wm, 'create_multicast_feature', { profile_type: 'service', profile: 'Branch-Service', body: MC_BODY, confirm: true });
+check(
+  'create_multicast_feature',
+  r.value?.operationId === 'CreateRoutingMulticastProfileParcelForService' && lastMcWrite()?.path === `${mcBase}/routing/multicast` &&
+    JSON.stringify(lastMcWrite().body) === JSON.stringify(MC_BODY),
+  JSON.stringify(r.value ?? r.error)
+);
+r = await tool(wm, 'associate_multicast_feature', { profile_type: 'service', profile: OSPF_PROFILE, vpn_feature_id: VPN, feature_id: FEATURE, confirm: true });
+check('associate_multicast_feature', !r.error && lastMcWrite()?.path === `${mcBase}/lan/vpn/${VPN}/routing/multicast` && lastMcWrite().body?.parcelId === FEATURE, JSON.stringify(lastMcWrite()));
+r = await tool(wm, 'update_multicast_feature', { profile_type: 'service', profile: OSPF_PROFILE, feature_id: FEATURE, body: MC_BODY, confirm: true });
+check('update_multicast_feature', !r.error && lastMcWrite()?.method === 'PUT' && lastMcWrite().path === `${mcBase}/routing/multicast/${FEATURE}`, JSON.stringify(lastMcWrite()));
+r = await tool(wm, 'delete_multicast_feature', { profile_type: 'service', profile: OSPF_PROFILE, vpn_feature_id: VPN, feature_id: FEATURE, confirm: true });
+check('delete_multicast_feature with VPN removes only the association', lastMcWrite()?.method === 'DELETE' && lastMcWrite().path === `${mcBase}/lan/vpn/${VPN}/routing/multicast/${FEATURE}`, JSON.stringify(lastMcWrite()));
+r = await tool(wm, 'create_routing_template', { body: { ...TEMPLATE_BODY, templateName: 'IGMP-New', templateType: 'cedge_igmp' }, confirm: true });
+check('create_routing_template IGMP', !r.error && lastTemplateWrite()?.body?.templateType === 'cedge_igmp', JSON.stringify(r.value ?? r.error));
+for (const [label, name, args, pattern] of [
+  ['create_multicast_feature rejects a VPN scope', 'create_multicast_feature', { profile_type: 'service', profile: OSPF_PROFILE, vpn_feature_id: VPN, body: MC_BODY, confirm: true }, /associate_multicast_feature/],
+  ['update_multicast_feature requires an object body', 'update_multicast_feature', { profile_type: 'service', profile: OSPF_PROFILE, feature_id: FEATURE, body: [], confirm: true }, /body must be an object/],
+  ['delete_multicast_feature needs confirm: true', 'delete_multicast_feature', { profile_type: 'service', profile: OSPF_PROFILE, feature_id: FEATURE }, /confirm: true/],
+  ['associate_multicast_feature requires vpn_feature_id', 'associate_multicast_feature', { profile_type: 'service', profile: OSPF_PROFILE, feature_id: FEATURE, confirm: true }, /vpn_feature_id and feature_id are required/],
+]) {
+  stats.mcWrites = [];
+  r = await tool(wm, name, args);
+  check(label, pattern.test(r.error ?? '') && stats.mcWrites.length === 0, r.error ?? 'not rejected');
+}
+
+const specMcWrites = specMc(['post', 'put', 'delete']);
+stats.mcWrites = [];
+const mcScope = { profile_type: 'service', profile: OSPF_PROFILE, confirm: true };
+await tool(wm, 'create_multicast_feature', { ...mcScope, body: MC_BODY });
+await tool(wm, 'associate_multicast_feature', { ...mcScope, vpn_feature_id: VPN, feature_id: FEATURE });
+for (const s of [{}, { vpn_feature_id: VPN }]) {
+  await tool(wm, 'update_multicast_feature', { ...mcScope, ...s, feature_id: FEATURE, body: MC_BODY });
+  await tool(wm, 'delete_multicast_feature', { ...mcScope, ...s, feature_id: FEATURE });
+}
+const mcWritten = new Set(stats.mcWrites.map((x) => `${x.method} ${template(x.path)}`));
+const missingMcWrites = specMcWrites.filter((op) => !mcWritten.has(op));
+check(`all ${specMcWrites.length} multicast write operations in the spec covered`, specMcWrites.length === 6 && missingMcWrites.length === 0, missingMcWrites.join(', '));
+check('multicast write tools only call operations from the spec', [...mcWritten].every((op) => specMcWrites.includes(op)));
+await wm.close();
 
 // Unreachable Manager: the first call fails, the next ones fail immediately.
 const closedPort = await new Promise((resolve) => {
