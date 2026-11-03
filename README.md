@@ -30,11 +30,67 @@ All requests go through vManage. The server never connects to routers directly.
 
 ```mermaid
 flowchart LR
-  U[User] -->|natural language| A[AI assistant<br/>Copilot / Claude / Cursor / OpenCode]
-  A -->|MCP over stdio| S[catalyst-sdwan MCP server]
-  S -->|HTTPS REST, JWT| M[SD-WAN Manager<br/>vManage]
-  M --> C[Controllers / Validators / WAN edges]
+  U(["User<br/>asks in plain language"])
+
+  subgraph CLIENT["AI client"]
+    A["GitHub Copilot · Claude · Cursor · OpenCode"]
+  end
+
+  subgraph MCP["catalyst-sdwan MCP server · Node.js"]
+    direction TB
+    T["Tool router<br/>156 dedicated + 4 general tools"]
+    R["Name resolution<br/>hostname · system IP · UUID<br/>group · profile · hierarchy node"]
+    G{"Write gate<br/>VMANAGE_ALLOW_WRITE<br/>+ confirm: true"}
+    C["API catalog<br/>checks each call against the OpenAPI spec"]
+    V["vManage client<br/>JWT login · cache · request dedupe<br/>retries · concurrency cap"]
+    S["Response shaping<br/>fields · filter · count_by · paging"]
+  end
+
+  subgraph SDWAN["Cisco Catalyst SD-WAN"]
+    M[("SD-WAN Manager<br/>vManage REST API")]
+    D["Controllers · Validators · WAN edges"]
+  end
+
+  U --> A
+  A -- "MCP over stdio" --> T
+  T --> R --> G
+  G -- "read or approved write" --> C --> V
+  G -. "write refused" .-> A
+  V == "HTTPS REST + JWT" ==> M
+  M <--> D
+  M -- "JSON" --> V --> S --> A
+  A -- "answer" --> U
+  M -. "OpenAPI spec, cached on disk" .-> C
+
+  classDef user fill:#f472b6,stroke:#be185d,stroke-width:3px,color:#fff
+  classDef client fill:#8b5cf6,stroke:#5b21b6,stroke-width:3px,color:#fff
+  classDef core fill:#06b6d4,stroke:#0e7490,stroke-width:2px,color:#fff
+  classDef gate fill:#facc15,stroke:#a16207,stroke-width:3px,color:#1f2937
+  classDef net fill:#22c55e,stroke:#15803d,stroke-width:2px,color:#fff
+  classDef mgr fill:#f97316,stroke:#c2410c,stroke-width:3px,color:#fff
+  classDef dev fill:#3b82f6,stroke:#1d4ed8,stroke-width:2px,color:#fff
+
+  class U user
+  class A client
+  class T,R,C,S core
+  class G gate
+  class V net
+  class M mgr
+  class D dev
+
+  style CLIENT fill:#f5f3ff,stroke:#8b5cf6,stroke-width:2px,stroke-dasharray:6 4
+  style MCP fill:#ecfeff,stroke:#06b6d4,stroke-width:2px
+  style SDWAN fill:#fff7ed,stroke:#f97316,stroke-width:2px,stroke-dasharray:6 4
+
+  linkStyle default stroke:#64748b,stroke-width:2px
+  linkStyle 1 stroke:#8b5cf6,stroke-width:3px
+  linkStyle 6 stroke:#ef4444,stroke-width:2px
+  linkStyle 7 stroke:#f97316,stroke-width:4px
+  linkStyle 9,10,11,12 stroke:#22c55e,stroke-width:3px
+  linkStyle 13 stroke:#06b6d4,stroke-width:2px
 ```
+
+A question goes from the AI client to the matching tool. The server resolves names to IDs, stops writes at the write gate unless they are enabled and confirmed, checks the call against the vManage API spec and sends it to SD-WAN Manager. The JSON reply is trimmed to the fields needed and returned to the assistant.
 
 ---
 
