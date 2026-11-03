@@ -9,7 +9,7 @@ A [Model Context Protocol (MCP)](https://modelcontextprotocol.io/) server for **
 All requests go through vManage. The server never connects to routers directly.
 
 - **160 MCP tools** (119 listed on a read-only server, 160 with writes enabled): 156 purpose-built tools, including fabric-wide health, BFD and TLOC checks in a single call, BGP, OSPF, OSPFv3, EIGRP, multicast (IGMP, PIM, MFIB) and IPv6 monitoring and configuration (UX 2.0 features and UX 1.0 templates/policy objects), CLI add-on configuration (for example RIP/RIPng), UX 2.0 configuration, policy and topology groups (read, preview, create, change, associate devices, set variables, deploy), feature profiles and the network hierarchy (regions, areas, sites and their Cyber Vision network settings), plus 4 general tools that reach **every operation in the vManage OpenAPI spec** (4,128 operations on 26.2).
-- **Lean tool list.** Write tools are listed only when `VMANAGE_ALLOW_WRITE=true`, so a read-only server offers 119 tools (under VS Code's 128-tool limit) in a tool list under 110 KB, about a third smaller than before. Assistants answer faster and spend fewer tokens on every request.
+- **Lean tool list.** Write tools are listed only when `VMANAGE_ALLOW_WRITE=true`, so a read-only server offers 121 tools (under VS Code's 128-tool limit) in a tool list under 110 KB, about a third smaller than before. Assistants answer faster and spend fewer tokens on every request.
 - **Read-only by default.** Operations that change configuration or state are disabled unless you enable them, and each call then needs explicit confirmation.
 - **BGP, OSPF, OSPFv3 and EIGRP end to end.** Real-time neighbors, routes, interfaces, topology and LSDB; UX 2.0 feature reads and writes for SD-WAN and SD-Routing profiles; UX 1.0 feature templates (list, read, schema, create, update, delete, clone). Every BGP, OSPF and EIGRP operation in the 26.2 spec has a dedicated tool.
 - **Multicast end to end.** IGMP, PIM, overlay multicast (topology, RPF, replicators, tunnels) and MFIB monitoring; UX 2.0 multicast features (read, schema, write); UX 1.0 IGMP, PIM and multicast templates. Every multicast operation in the 26.2 spec has a dedicated tool.
@@ -428,7 +428,7 @@ The eight tools cover all 23 EIGRP operations in the 26.2 spec: the 3 real-time 
 | `get_app_log_flow_count` | Number of logged flows | `device_id`\* | "How many flows are being logged on Branch-2?" |
 | `get_sdwan_stats` | SD-WAN statistics: ACL drops, data policy, device metrics | `device_id`\* | "Any data-policy drops on Branch-2?" |
 
-#### UX 2.0 configuration (24)
+#### UX 2.0 configuration (26)
 
 The `solution` parameter selects `sdwan` (default), `sd-routing`, `nfvirtual` or `mobility`. Groups and profiles can be passed by ID or exact name, and devices by hostname, system IP, UUID or chassis number. The dedicated tools cover all 40 configuration-group, policy-group and topology-group operations of the 26.2 spec.
 
@@ -438,7 +438,9 @@ The `solution` parameter selects `sdwan` (default), `sd-routing`, `nfvirtual` or
 | `list_config_groups` | Configuration groups with feature profiles, device counts and deployment state | `solution`, `name` | "How many configuration groups are on vManage?" |
 | `get_config_group` | One configuration group with its profiles and associated devices | `config_group`\* | "Which devices does configuration group Branch-CG configure?" |
 | `get_config_group_device_variables` | Device-specific variable values (all devices or one) | `config_group`\*, `device` | "Show the variables of Branch-1 in Branch-CG." |
-| `preview_config_group_device_config` | **Read-only** preview: configuration the group would push vs. running config. Nothing is deployed. | `config_group`\*, `device`\*, `view` (`diff` default/`new`/`existing`/`both`) | "What would Branch-CG change on Branch-1 if I deployed now?" |
+| `preview_config_group_device_config` | **Read-only** preview: configuration the group would push vs. running config, secrets masked. `review` sorts it into settings dropped, changed and added, and lists apart the SIG settings of the policy group of the group's name. Nothing is deployed. | `config_group`\*, `device`\*, `view` (`diff` default/`review`/`new`/`existing`/`both`) | "What would Branch-CG change on Branch-1 if I deployed now?" |
+| `plan_config_group_variables` | **Read-only.** For the devices attached to a device template, their values for the configuration group converted from it (and its SIG policy group), from their template values; reports missing and invalid values and template variables no group uses | `template`\*, `config_group` (default: the template's name) | "Plan the Branch-CG values of the devices on template Branch-CG." |
+| `find_config_group_conversion_defects` | **Read-only.** Defects the template-to-group conversion left, against the feature templates: services turned off, NAT lost, SIG settings reset to group defaults, stray tunnel settings; each with its fix | `config_group` (default: all) | "Did the conversion break anything in Branch-CG?" |
 | `list_policy_groups` | Policy groups with profiles, device counts and state | `solution` | "List the policy groups." |
 | `get_policy_group` | One policy group with profiles and devices | `policy_group`\* | "Which devices use policy group Branch-PG?" |
 | `list_topology_groups` | Topology groups (hub-and-spoke, mesh) | `solution` | "Which topology groups exist?" |
@@ -451,7 +453,7 @@ The `solution` parameter selects `sdwan` (default), `sd-routing`, `nfvirtual` or
 | `delete_hierarchy_cybervision` | **Write.** Remove a Cyber Vision center (by ID, or by name, which is looked up) | `node` (default Global), `center_id` or `center_name`, `confirm`\* | "Remove Cyber Vision center CV-1." |
 | `get_group_variables` | Device variables of a configuration or policy group: values (all devices or one, optionally with suggestions), the variables schema, or a vManage-side fetch | `group_type`\* (`config`/`policy`), `group`\*, `device`, `schema`, `suggestions`, `fetch_body` | "Which variables does EMEA-Policy-Group need per device?" |
 | `get_group_rules` | Automatic device-association rules of a configuration or policy group; bulk rule-association preview of a topology group | `group_type`\* (`config`/`policy`/`topology`), `group`\* | "Which rules add devices to Branch-CG?" |
-| `preview_group_device_config` | **Read-only** preview for a policy or topology group: configuration it would push vs. running config. Nothing is deployed. | `group_type`\* (`policy`/`topology`), `group`\*, `device`\*, `view` (`diff` default/`new`/`existing`/`both`) | "What would EMEA-Policy-Group change on EMEA-Paris?" |
+| `preview_group_device_config` | **Read-only** preview for a policy or topology group: configuration it would push vs. running config, secrets masked. Nothing is deployed. | `group_type`\* (`policy`/`topology`), `group`\*, `device`\*, `view` (`diff` default/`review`/`new`/`existing`/`both`) | "What would EMEA-Policy-Group change on EMEA-Paris?" |
 | `create_group` | **Write.** Create a configuration, policy or topology group; returns its ID | `group_type`\*, `body`\* (`{ name, description, solution, profiles: [{ id }] }`), `confirm`\* | "Create configuration group Lab-CG with the Lab profiles." |
 | `update_group` | **Write.** Replace a group definition (name, description, profiles). Devices change only on deploy. | `group_type`\*, `group`\*, `body`\*, `confirm`\* | "Add the CLI profile to Branch-CG." |
 | `delete_group` | **Write.** Delete a group; optionally its feature profiles too (configuration and policy groups) | `group_type`\*, `group`\*, `delete_profiles`, `confirm`\* | "Delete the unused Lab-CG." |
@@ -1353,7 +1355,7 @@ npm run verify:api -- <edge> <controller> <validator>
 
 | Area | What is checked |
 |---|---|
-| Tool list | 119 tools on a read-only server with no write tool listed, 160 with `VMANAGE_ALLOW_WRITE=true`; the read-only tool list stays under 110 KB |
+| Tool list | 121 tools on a read-only server with no write tool listed, 162 with `VMANAGE_ALLOW_WRITE=true`; the read-only tool list stays under 110 KB |
 | Client and resilience | Hostname resolution, `Retry-After` retries on 503, re-login after an expired token, session-cookie login and logout, fail-fast when the Manager is unreachable, real-time vs. list timeouts named in the error |
 | Response shaping | `fields`, `filter`, `count_by`, `offset`/`limit` paging, truncation with a `nextOffset` cursor on a 3,000-device inventory |
 | Fabric-wide tools | Health table and Manager deployment detection, BFD and TLOC sweeps: concurrency cap, time budget with resume, overload breaker, synced data re-checked live |
@@ -1365,7 +1367,7 @@ npm run verify:api -- <edge> <controller> <validator>
 
 #### Coverage by area
 
-Every one of the 160 tools belongs to one area below. **Offline** is what `npm test` checks against the simulated Manager. **Live** is the suite that runs the tools against a real 26.2.1 Manager. Read tools are verified live; write tools only up to the write gate, because writes are disabled on the lab.
+Every one of the 162 tools belongs to one area below. **Offline** is what `npm test` checks against the simulated Manager. **Live** is the suite that runs the tools against a real 26.2.1 Manager. Read tools are verified live; write tools only up to the write gate, because writes are disabled on the lab.
 
 | Area | UX | Tools | vManage APIs the tools call | Offline (`npm test`) | Live |
 |---|---|---:|---|---|---|
@@ -1407,7 +1409,7 @@ OSPF and OSPFv3 share the same 10 tools; the `version` argument selects the prot
 | Multicast | 15 | 5 | – | 6 | 26 | 10 |
 | IPv6 (without OSPFv3) | 15 | 28 | 4 | 36 | 83 | 11 |
 | UX 2.0 CLI add-ons | – | 4 | – | 6 | 10 | 5 |
-| UX 2.0 configuration, policy and topology groups | – | 15 | 5 | 20 | 40 | 18 |
+| UX 2.0 configuration, policy and topology groups | – | 15 | 5 | 20 | 40 | 20 |
 | UX 2.0 network hierarchy (Cyber Vision network settings) | – | 2 | – | 2 | 4 | 3 |
 | **Total** | **45** | **138** | **9** | **193** | **385** | **74** |
 
