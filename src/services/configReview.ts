@@ -86,6 +86,14 @@ const where = (path: string, line: string) => (path ? `${path} > ${line}` : line
 const keyOf = (path: string, line: string) => (line.includes(' ') ? `${path}\u0000${line.slice(0, line.lastIndexOf(' '))}` : null);
 const lastWord = (line: string) => line.slice(line.lastIndexOf(' ') + 1);
 
+/** Settings matching `pattern` in `before` that `rendered` does not configure, compared with secrets masked. */
+export function missingLines(before: string, rendered: string, pattern: RegExp): string[] {
+  const renderedSet = new Set(sectioned(rendered).map(([p, l]) => `${maskLine(p)}\u0000${maskLine(l)}`));
+  return sectioned(before)
+    .filter(([p, l]) => !renderedSet.has(`${maskLine(p)}\u0000${maskLine(l)}`) && pattern.test(maskLine(where(p, l))))
+    .map(([p, l]) => maskLine(where(p, l)));
+}
+
 /** Sorts what deploying would change. With `fromPolicyGroup`, the dropped and changed settings matching it are
  *  listed apart: the device's policy group configures them. Secrets are masked. */
 export function reviewConfig(running: string, rendered: string, fromPolicyGroup?: RegExp): ConfigReview {

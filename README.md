@@ -428,7 +428,7 @@ The eight tools cover all 23 EIGRP operations in the 26.2 spec: the 3 real-time 
 | `get_app_log_flow_count` | Number of logged flows | `device_id`\* | "How many flows are being logged on Branch-2?" |
 | `get_sdwan_stats` | SD-WAN statistics: ACL drops, data policy, device metrics | `device_id`\* | "Any data-policy drops on Branch-2?" |
 
-#### UX 2.0 configuration (26)
+#### UX 2.0 configuration (27)
 
 The `solution` parameter selects `sdwan` (default), `sd-routing`, `nfvirtual` or `mobility`. Groups and profiles can be passed by ID or exact name, and devices by hostname, system IP, UUID or chassis number. The dedicated tools cover all 40 configuration-group, policy-group and topology-group operations of the 26.2 spec.
 
@@ -460,10 +460,13 @@ The `solution` parameter selects `sdwan` (default), `sd-routing`, `nfvirtual` or
 | `associate_group_devices` | **Write.** Add, replace or remove the devices of a configuration or policy group | `group_type`\* (`config`/`policy`), `group`\*, `devices`\*, `mode` (`add` default/`replace`/`remove`), `confirm`\* | "Add Branch-3 to Branch-CG." |
 | `update_group_variables` | **Write.** Set device variable values of a configuration or policy group | `group_type`\* (`config`/`policy`), `group`\*, `body`\*, `confirm`\* | "Set the site ID variable of Branch-3 to 300." |
 | `deploy_group` | **Write. Pushes configuration to devices.** Deploy a configuration, policy or topology group to the given devices; returns the vManage task | `group_type`\*, `group`\*, `devices`\*, `confirm`\* | "Deploy Branch-CG to Branch-3." |
+| `deploy_template_migration` | **Write. Pushes configuration to the device.** Move one device from its device template to the configuration group converted from it, in approved steps: `prepare` (plan the values, detach the template, associate the configuration group and its SIG policy group, set the values, return the review; nothing pushed), `deploy` (push the configuration group), `status` (control connections and BFD sessions against before), `deploy_policy_group` (push SIG once it configures every SIG setting the device ran before) | `step`\*, `device`\*, `template` (prepare), `config_group`, `accept_review`, `sig_ready`, `wait_seconds`, `confirm`\* | "Migrate Branch-3 from template Branch-CG." |
 
 **Network hierarchy.** The hierarchy tools cover all 4 network-hierarchy operations in the 26.2 spec (the Cyber Vision network settings: 2 reads, 1 create/edit, 1 delete) plus the hierarchy list and node detail (`GET /v1/network-hierarchy[/{id}]`), which vManage serves but does not document. Nodes are found by node ID, hierarchy path, site ID or name; a name used by more than one node is refused with the matching paths. vManage 26.2 accepts network settings only on the **Global** node (other nodes return `NWHAR0005`), so the Cyber Vision tools default to it. The 26.2 API has no operation to create, rename, move or delete regions, areas or sites, so the server cannot change the hierarchy itself; do that in the Manager GUI (**Configuration → Network Hierarchy**).
 
 Recommended change workflow: `get_config_group` / `get_group_variables` → change with `update_group`, `associate_group_devices` or `update_group_variables` → `preview_config_group_device_config` or `preview_group_device_config` for each device → `deploy_group` after you approve the diff.
+
+**Migrating from device templates.** vManage's template-to-group conversion creates the groups but not the devices' values, and on 20.18 it leaves defects. Check the groups first with `find_config_group_conversion_defects` and fix what it reports, then plan the values with `plan_config_group_variables`. Then move one device at a time with `deploy_template_migration`: `prepare` → read the review with the user → `deploy` → `status` until healthy → `deploy_policy_group` for a device with SIG → the next device. Between `deploy` and `deploy_policy_group`, a SIG device has no SIG tunnels: vManage deploys a policy group only on a device that runs its configuration group, and the conversion doesn't carry the SIG provider's credentials, so set them in vManage first (`sig_ready: true` confirms it). Before `deploy`, undo by removing the device from its groups and re-attaching its template.
 
 #### Templates and policy – UX 1.0 (7)
 
@@ -615,6 +618,7 @@ The server reads `.env` from the project (or deployed) root folder. You can also
 | `VMANAGE_PORT` | No | `443` | HTTPS port |
 | `VMANAGE_USE_JWT` | No | `true` | `false` uses session-cookie auth (Manager releases before 20.18.1) |
 | `VMANAGE_ALLOW_WRITE` | No | `false` | `true` allows write operations through `call_api_operation` and the dedicated write tools (each call still needs `confirm: true`). The dedicated write tools (`create_*`, `update_*`, `delete_*`, `associate_*`, `clone_*`, `deploy_*`) are listed only when this is `true`. |
+| `VMANAGE_MIGRATION_AAA_PASSWORD` | No | – | The AAA user password `deploy_template_migration` sets in a configuration group that has an AAA password variable. Never sent to the assistant. |
 | `VMANAGE_TIMEOUT_MS` | No | `120000` | Timeout for real-time device queries (calls with a `deviceId`), which the Manager proxies to the device and can be slow. |
 | `VMANAGE_LIST_TIMEOUT_MS` | No | `60000` | Timeout for everything else: inventory, configuration, statistics and login. |
 | `VMANAGE_MAX_CONCURRENCY` | No | `8` | Maximum simultaneous requests sent to the Manager |
@@ -1355,7 +1359,7 @@ npm run verify:api -- <edge> <controller> <validator>
 
 | Area | What is checked |
 |---|---|
-| Tool list | 121 tools on a read-only server with no write tool listed, 162 with `VMANAGE_ALLOW_WRITE=true`; the read-only tool list stays under 110 KB |
+| Tool list | 121 tools on a read-only server with no write tool listed, 163 with `VMANAGE_ALLOW_WRITE=true`; the read-only tool list stays under 110 KB |
 | Client and resilience | Hostname resolution, `Retry-After` retries on 503, re-login after an expired token, session-cookie login and logout, fail-fast when the Manager is unreachable, real-time vs. list timeouts named in the error |
 | Response shaping | `fields`, `filter`, `count_by`, `offset`/`limit` paging, truncation with a `nextOffset` cursor on a 3,000-device inventory |
 | Fabric-wide tools | Health table and Manager deployment detection, BFD and TLOC sweeps: concurrency cap, time budget with resume, overload breaker, synced data re-checked live |
@@ -1367,7 +1371,7 @@ npm run verify:api -- <edge> <controller> <validator>
 
 #### Coverage by area
 
-Every one of the 162 tools belongs to one area below. **Offline** is what `npm test` checks against the simulated Manager. **Live** is the suite that runs the tools against a real 26.2.1 Manager. Read tools are verified live; write tools only up to the write gate, because writes are disabled on the lab.
+Every one of the 163 tools belongs to one area below. **Offline** is what `npm test` checks against the simulated Manager. **Live** is the suite that runs the tools against a real 26.2.1 Manager. Read tools are verified live; write tools only up to the write gate, because writes are disabled on the lab.
 
 | Area | UX | Tools | vManage APIs the tools call | Offline (`npm test`) | Live |
 |---|---|---:|---|---|---|
@@ -1409,7 +1413,7 @@ OSPF and OSPFv3 share the same 10 tools; the `version` argument selects the prot
 | Multicast | 15 | 5 | – | 6 | 26 | 10 |
 | IPv6 (without OSPFv3) | 15 | 28 | 4 | 36 | 83 | 11 |
 | UX 2.0 CLI add-ons | – | 4 | – | 6 | 10 | 5 |
-| UX 2.0 configuration, policy and topology groups | – | 15 | 5 | 20 | 40 | 20 |
+| UX 2.0 configuration, policy and topology groups | – | 15 | 5 | 20 | 40 | 21 |
 | UX 2.0 network hierarchy (Cyber Vision network settings) | – | 2 | – | 2 | 4 | 3 |
 | **Total** | **45** | **138** | **9** | **193** | **385** | **74** |
 
