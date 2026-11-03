@@ -6,9 +6,9 @@ A [Model Context Protocol (MCP)](https://modelcontextprotocol.io/) server for **
 
 All requests go through vManage. The server never connects to routers directly.
 
-- **109 MCP tools**: 105 purpose-built tools, including fabric-wide health, BFD and TLOC checks in a single call, BGP, OSPF and OSPFv3 monitoring and configuration (UX 2.0 features and UX 1.0 templates), UX 2.0 configuration groups, feature profiles and policy and topology groups, plus 4 general tools that reach **every operation in the vManage OpenAPI spec** (4,128 operations on 26.2).
+- **117 MCP tools**: 113 purpose-built tools, including fabric-wide health, BFD and TLOC checks in a single call, BGP, OSPF, OSPFv3 and EIGRP monitoring and configuration (UX 2.0 features and UX 1.0 templates), UX 2.0 configuration groups, feature profiles and policy and topology groups, plus 4 general tools that reach **every operation in the vManage OpenAPI spec** (4,128 operations on 26.2).
 - **Read-only by default.** Operations that change configuration or state are disabled unless you enable them, and each call then needs explicit confirmation.
-- **BGP, OSPF and OSPFv3 end to end.** Real-time neighbors, routes, interfaces and LSDB; UX 2.0 feature reads and writes for SD-WAN and SD-Routing profiles; UX 1.0 feature templates (list, read, schema, create, update, delete, clone). Every BGP and OSPF operation in the 26.2 spec has a dedicated tool.
+- **BGP, OSPF, OSPFv3 and EIGRP end to end.** Real-time neighbors, routes, interfaces, topology and LSDB; UX 2.0 feature reads and writes for SD-WAN and SD-Routing profiles; UX 1.0 feature templates (list, read, schema, create, update, delete, clone). Every BGP, OSPF and EIGRP operation in the 26.2 spec has a dedicated tool.
 - **Validated against the spec.** Calls through the general tools are checked against the OpenAPI spec published by *your* vManage before they are sent.
 - **Secrets are protected.** Endpoints that issue tokens, passwords, OTPs or credentials are blocked. Session IDs and CSRF tokens are redacted from responses.
 - **Fast and resilient.**
@@ -42,7 +42,7 @@ flowchart LR
 - [Supported functionality](#supported-functionality)
   - [General API tools](#general-api-tools-full-vmanage-api)
   - [Dedicated tools (full reference)](#dedicated-tools)
-  - [Routing protocols: BGP, OSPF, OSPFv3](#routing-protocols-at-a-glance)
+  - [Routing protocols: BGP, OSPF, OSPFv3, EIGRP](#routing-protocols-at-a-glance)
 - [Installation](#installation)
 - [Configuration](#configuration)
 - [Integrating with MCP clients](#integrating-with-mcp-clients)
@@ -74,11 +74,12 @@ Ask questions about your SD-WAN fabric in plain language and get answers built f
 | **Overlay routing (OMP)** | "Which TLOCs and routes does this site advertise in VPN 10?" | `get_omp_routes`, `get_omp_tlocs`, `get_omp_peers` |
 | **OSPF and OSPFv3** | "Is OSPF running on Branch-2? Show its OSPFv3 neighbors. Which service profiles configure OSPF?" | `get_ospf_interfaces`, `get_ospf_neighbors`, `get_ospf_config` |
 | **BGP** | "Which BGP neighbors does Hub-1 have in VPN 10? Which profiles configure BGP?" | `get_bgp_neighbors`, `get_bgp_routes`, `get_bgp_config` |
+| **EIGRP** | "Is EIGRP running on Branch-3? Show its topology table. Which service profiles configure EIGRP?" | `get_eigrp_interfaces`, `get_eigrp_topology`, `get_eigrp_config` |
 | **Routing changes (opt-in)** | "Create a BGP feature for AS 65001 and attach it to VPN 10." "Clone the OSPF-Branch template." | `create_bgp_feature`, `associate_bgp_feature`, `update_ospf_feature`, `clone_routing_template`, ... |
 | **Data plane and transport** | "Are all BFD sessions in the fabric up? How many TLOCs does site 100 have?" | `get_fabric_bfd_status`, `get_fabric_tlocs`, `get_bfd_sessions`, `get_control_wan_interfaces` |
 | **Application-aware routing** | "Show tunnel loss/latency/jitter and SLA classes." | `get_app_route_statistics`, `get_app_route_sla_class` |
 | **Configuration audit (UX 2.0)** | "Which configuration group configures the branch sites? What would a deploy change?" | `list_config_groups`, `get_config_group`, `preview_config_group_device_config` |
-| **Templates and policies (UX 1.0)** | "Which device templates and centralized policies are in use? Which BGP or OSPF templates exist?" | `list_device_templates`, `get_attached_devices`, `list_policies`, `list_routing_templates` |
+| **Templates and policies (UX 1.0)** | "Which device templates and centralized policies are in use? Which BGP, OSPF or EIGRP templates exist?" | `list_device_templates`, `get_attached_devices`, `list_policies`, `list_routing_templates` |
 | **Operations** | "Any critical alarms? Certificates expiring? Is the Manager cluster healthy?" | `list_alarms`, `get_certificate_summary`, `get_cluster_status` |
 | **Anything else in the API** | "Show IPsec/IKE sessions", "audit log for today" | `search_api_operations` → `describe_api_operation` → `call_api_operation` |
 | **Controlled changes (opt-in)** | Any POST/PUT/DELETE operation, only after you approve it | The routing write tools, or `call_api_operation`, with `confirm: true` and `VMANAGE_ALLOW_WRITE=true` |
@@ -266,17 +267,17 @@ Use the Validator's system IP or hostname as `device_id`.
 
 #### Routing protocols at a glance
 
-Every BGP, OSPF and OSPFv3 operation in the 26.2 spec has a dedicated tool. `npm test` checks this against the spec on every run.
+Every BGP, OSPF, OSPFv3 and EIGRP operation in the 26.2 spec has a dedicated tool. `npm test` checks this against the spec on every run.
 
-| Area | BGP | OSPF (v2) | OSPFv3 (IPv4 and IPv6) |
-|---|---|---|---|
-| Real-time monitoring | `get_bgp_neighbors`, `get_bgp_routes`, `get_bgp_summary` | `get_ospf_process`, `get_ospf_neighbors`, `get_ospf_interfaces`, `get_ospf_routes`, `get_ospf_database` | `get_ospf_neighbors` / `get_ospf_interfaces` with `version: "ospfv3"` |
-| UX 2.0 features: read | `get_bgp_config`, `get_bgp_feature_schema` | `get_ospf_config` | `get_ospf_config` with `version: "ospfv3-ipv4"` / `"ospfv3-ipv6"` |
-| UX 2.0 features: write | `create_bgp_feature`, `associate_bgp_feature`, `update_bgp_feature`, `delete_bgp_feature` | `create_ospf_feature`, `associate_ospf_feature`, `update_ospf_feature`, `delete_ospf_feature` | Same OSPF tools with `version: "ospfv3-ipv4"` / `"ospfv3-ipv6"` |
-| UX 1.0 templates | `cisco_bgp`, `bgp` | `cisco_ospf`, `ospf` | `cisco_ospfv3` |
-| Spec operations covered | 55 (25 read, 30 write) | 144 including OSPFv3 (63 read, 81 write) | 92 of the 144 (38 read, 54 write) |
+| Area | BGP | OSPF (v2) | OSPFv3 (IPv4 and IPv6) | EIGRP |
+|---|---|---|---|---|
+| Real-time monitoring | `get_bgp_neighbors`, `get_bgp_routes`, `get_bgp_summary` | `get_ospf_process`, `get_ospf_neighbors`, `get_ospf_interfaces`, `get_ospf_routes`, `get_ospf_database` | `get_ospf_neighbors` / `get_ospf_interfaces` with `version: "ospfv3"` | `get_eigrp_interfaces`, `get_eigrp_routes`, `get_eigrp_topology` |
+| UX 2.0 features: read | `get_bgp_config`, `get_bgp_feature_schema` | `get_ospf_config` | `get_ospf_config` with `version: "ospfv3-ipv4"` / `"ospfv3-ipv6"` | `get_eigrp_config` (service profiles) |
+| UX 2.0 features: write | `create_bgp_feature`, `associate_bgp_feature`, `update_bgp_feature`, `delete_bgp_feature` | `create_ospf_feature`, `associate_ospf_feature`, `update_ospf_feature`, `delete_ospf_feature` | Same OSPF tools with `version: "ospfv3-ipv4"` / `"ospfv3-ipv6"` | `create_eigrp_feature`, `associate_eigrp_feature`, `update_eigrp_feature`, `delete_eigrp_feature` |
+| UX 1.0 templates | `cisco_bgp`, `bgp` | `cisco_ospf`, `ospf` | `cisco_ospfv3` | `eigrp` |
+| Spec operations covered | 55 (25 read, 30 write) | 144 including OSPFv3 (63 read, 81 write) | 92 of the 144 (38 read, 54 write) | 23 (11 read, 12 write) |
 
-The UX 1.0 rows use the [routing template tools](#bgp-ospf-and-ospfv3-feature-templates--ux-10-7), which work on all five template types.
+The UX 1.0 rows use the [routing template tools](#bgp-ospf-ospfv3-and-eigrp-feature-templates--ux-10-7), which work on all six template types.
 
 UX 2.0 configuration tools address a feature by profile, never by raw URL:
 
@@ -328,6 +329,21 @@ The four write tools change configuration. Like `call_api_operation`, they are d
 | `delete_ospf_feature` | **Write.** Delete a feature; with `vpn_feature_id`, only removes its association with that VPN/VRF | `profile_type`\*, `profile`\*, `feature_id`\*, `confirm`\*, `vpn_feature_id` | "Detach the OSPF feature from VPN 10 in Branch-Service." |
 | `associate_ospf_feature` | **Write.** Attach an existing feature to a VPN feature (sdwan) or VRF feature (sd-routing) | `profile_type`\*, `profile`\*, `vpn_feature_id`\*, `feature_id`\*, `confirm`\*, `global_vrf` | "Attach the OSPF feature to the VPN 10 feature." |
 
+#### EIGRP (8)
+
+The eight tools cover all 23 EIGRP operations in the 26.2 spec: the 3 real-time monitoring endpoints and the 8 read and 12 write operations for EIGRP features. vManage has EIGRP features only in **service** profiles (SD-WAN: profile level and per LAN VPN; SD-Routing: profile level and per VRF), so `profile_type` accepts only `service`. The write tools follow the same rules as the OSPF write tools above.
+
+| Tool | Description | Key parameters | Example prompt |
+|---|---|---|---|
+| `get_eigrp_interfaces` | EIGRP-enabled interfaces; an empty list means EIGRP is not running | `device_id`\* | "Is EIGRP running on Branch-3?" |
+| `get_eigrp_routes` | EIGRP routes | `device_id`\* | "Show EIGRP routes on Branch-3." |
+| `get_eigrp_topology` | EIGRP topology table (successors and feasible successors) | `device_id`\* | "Does Branch-3 have a feasible successor for 10.20.0.0/16?" |
+| `get_eigrp_config` | EIGRP features of a UX 2.0 service profile, optionally per VPN/VRF feature or one feature | `profile_type`\* (`service`), `profile`\*, `solution` (`sdwan`/`sd-routing`), `vpn_feature_id`, `feature_id` | "Which EIGRP features does the Branch-Service profile have?" |
+| `create_eigrp_feature` | **Write.** Create an EIGRP feature in a service profile; returns its ID | `profile_type`\*, `profile`\*, `body`\*, `confirm`\*, `solution` | "Create an EIGRP AS 100 feature in Branch-Service." |
+| `update_eigrp_feature` | **Write.** Replace a feature (full definition); with `vpn_feature_id`, edits its VPN/VRF association | `profile_type`\*, `profile`\*, `feature_id`\*, `body`\*, `confirm`\*, `vpn_feature_id` | "Add network 10.30.0.0/16 to the EIGRP feature." |
+| `delete_eigrp_feature` | **Write.** Delete a feature; with `vpn_feature_id`, only removes its association with that VPN/VRF | `profile_type`\*, `profile`\*, `feature_id`\*, `confirm`\*, `vpn_feature_id` | "Detach the EIGRP feature from VPN 20." |
+| `associate_eigrp_feature` | **Write.** Attach an existing feature to a LAN VPN feature (sdwan) or VRF feature (sd-routing) | `profile_type`\*, `profile`\*, `vpn_feature_id`\*, `feature_id`\*, `confirm`\* | "Attach the EIGRP feature to the VPN 20 feature." |
+
 #### Application-aware routing, flows and statistics (7)
 
 | Tool | Description | Key parameters | Example prompt |
@@ -371,13 +387,13 @@ The `solution` parameter selects `sdwan` (default), `sd-routing`, `nfvirtual` or
 | `list_policy_definitions` | Policy definitions of one type | `definition_type`\* (`acl`, `approute`, `control`, `data`, `hubandspoke`, `mesh`, `qosmap`, `zonebasedfw`, ...) | "List the app-route policy definitions." |
 | `list_policies` | Centralized (vSmart), localized (vEdge) and security policies | `policy_type` (`vsmart`/`vedge`/`security`) | "Which centralized policy is active?" |
 
-#### BGP, OSPF and OSPFv3 feature templates – UX 1.0 (7)
+#### BGP, OSPF, OSPFv3 and EIGRP feature templates – UX 1.0 (7)
 
-These tools only act on the routing template types `cisco_bgp`, `cisco_ospf`, `cisco_ospfv3` (IOS XE) and `bgp`, `ospf` (vEdge); other templates are refused. The write tools follow the same rules as the UX 2.0 write tools. Changing a template does not reconfigure devices until their device templates are pushed again, and vManage refuses to delete a template that a device template still uses.
+These tools only act on the routing template types `cisco_bgp`, `cisco_ospf`, `cisco_ospfv3`, `eigrp` (IOS XE) and `bgp`, `ospf` (vEdge); other templates are refused. The write tools follow the same rules as the UX 2.0 write tools. Changing a template does not reconfigure devices until their device templates are pushed again, and vManage refuses to delete a template that a device template still uses.
 
 | Tool | Description | Key parameters | Example prompt |
 |---|---|---|---|
-| `list_routing_templates` | BGP, OSPF and OSPFv3 feature templates with attached device counts | `protocol` (`all` default/`bgp`/`ospf`/`ospfv3`) | "Which OSPF feature templates exist?" |
+| `list_routing_templates` | BGP, OSPF, OSPFv3 and EIGRP feature templates with attached device counts | `protocol` (`all` default/`bgp`/`ospf`/`ospfv3`/`eigrp`) | "Which OSPF feature templates exist?" |
 | `get_routing_template` | One template's definition and the device templates using it | `template_id`\* | "Show the BGP-Hub template and where it is used." |
 | `get_routing_template_schema` | Field definition of a routing template type | `template_type`\*, `version` (default `15.0.0`) | "What fields does a Cisco OSPFv3 template have?" |
 | `create_routing_template` | **Write.** Create a routing feature template | `body`\* (`templateName`, `templateDescription`, `templateType`, `deviceType`, `templateMinVersion`, `templateDefinition`, `factoryDefault`), `confirm`\* | "Create a Cisco BGP template for AS 65001." |
@@ -791,6 +807,10 @@ OSPF runs in service VPN 10 with one OSPFv2 neighbor on GigabitEthernet3. `get_o
 | "Detach the OSPFv3 IPv6 feature from VPN 10 and delete it." *(writes enabled)* | `delete_ospf_feature` (with, then without `vpn_feature_id`) |
 | "Which BGP, OSPF and OSPFv3 feature templates exist, and which device templates use them?" | `list_routing_templates`, `get_routing_template` |
 | "Copy the *BGP-Hub* template as *BGP-Hub-Lab*." *(writes enabled)* | `clone_routing_template` |
+| "Is EIGRP running on Branch-3, and does it have feasible successors?" | `get_eigrp_interfaces`, `get_eigrp_topology` |
+| "Which EIGRP features does *Branch-Service* contain, and which LAN VPNs use them?" | `get_eigrp_config` (with `vpn_feature_id`) |
+| "Create an EIGRP AS 100 feature in *Branch-Service* and attach it to the VPN 20 feature." *(writes enabled)* | `create_eigrp_feature`, `associate_eigrp_feature` |
+| "Which EIGRP feature templates exist, and what fields does one have?" | `list_routing_templates` (`protocol: "eigrp"`), `get_routing_template_schema` (`template_type: "eigrp"`) |
 | "Which certificates expire soon, and are there active critical alarms?" | `get_certificate_summary`, `list_alarms` |
 | "List the centralized policies and the device templates in use." | `list_policies`, `list_device_templates` |
 
@@ -818,6 +838,31 @@ Routing protocol monitoring (BGP with filters, OSPFv3, OSPF database):
 
 ```json
 { "name": "get_ospf_database", "arguments": { "device_id": "Hub-1", "view": "external" } }
+```
+
+```json
+{ "name": "get_eigrp_topology", "arguments": { "device_id": "Branch-3" } }
+```
+
+EIGRP features exist only in service profiles; create one, then attach it to a LAN VPN feature:
+
+```json
+{
+  "name": "create_eigrp_feature",
+  "arguments": {
+    "profile_type": "service",
+    "profile": "Branch-Service",
+    "body": { "name": "EIGRP-100", "description": "Branch EIGRP", "data": { "asNum": { "optionType": "global", "value": 100 } } },
+    "confirm": true
+  }
+}
+```
+
+```json
+{
+  "name": "associate_eigrp_feature",
+  "arguments": { "profile_type": "service", "profile": "Branch-Service", "vpn_feature_id": "<lan-vpn-feature-id>", "feature_id": "<eigrp-feature-id>", "confirm": true }
+}
 ```
 
 UX 2.0 routing features (read):
@@ -987,7 +1032,7 @@ npm run verify:api -- <edge> <controller> <validator>   # full read-only coverag
 
 For the routing tools it also checks:
 
-- **Spec coverage:** every BGP, OSPF and OSPFv3 read and write operation in the spec is reached by a dedicated tool, and those tools call nothing outside the spec.
+- **Spec coverage:** every BGP, OSPF, OSPFv3 and EIGRP read and write operation in the spec is reached by a dedicated tool, and those tools call nothing outside the spec.
 - **Requests:** each tool sends the right method, path, query and body, and BGP monitoring filters are passed through.
 - **Write protection:** writes are blocked by default and without `confirm`.
 - **Invalid input:** bad IDs, versions, scopes and template types are rejected before anything is sent.
@@ -1004,7 +1049,7 @@ Results on Catalyst SD-WAN Manager 26.2.1:
 | Read operations live-tested | 1,261 |
 | Returned data | 1,113 |
 | Errors from Manager or lab (feature not configured, query body required, provider-only role) | 148 |
-| Dedicated tools verified live | 86 / 86 (83 by `verify:api`; the 3 fabric-wide tools by `test:ux2`). The 10 OSPF tools, 6 new BGP tools and 7 UX 1.0 routing template tools were added later and are covered by the offline tests. |
+| Dedicated tools verified live | 86 / 86 (83 by `verify:api`; the 3 fabric-wide tools by `test:ux2`). The 10 OSPF tools, 6 new BGP tools, 8 EIGRP tools and 7 UX 1.0 routing template tools were added later and are covered by the offline tests. |
 
 To try individual tools interactively, use the MCP Inspector:
 
@@ -1032,7 +1077,8 @@ npx @modelcontextprotocol/inspector node /absolute/path/to/build/index.js
 | `Unknown query parameter(s)` / `Missing required ...` | The call does not match the spec. Run `describe_api_operation` for the exact parameter names. |
 | `get_ospf_process` returns no rows although OSPF is configured | Some IOS XE releases report nothing there for OSPF in a service VPN. Use `get_ospf_interfaces` or `get_ospf_neighbors`. |
 | BGP or OSPF calls on one edge take 30–60 s | Real-time queries are answered by the device itself; a busy edge (high CPU) answers slowly. Narrow with `vpn_id`, `prefix` or `peer_addr`, or raise `VMANAGE_TIMEOUT_MS`. |
-| `Template ... is a cisco_vpn template, not a BGP, OSPF or OSPFv3 template` | The routing template tools only act on `cisco_bgp`, `cisco_ospf`, `cisco_ospfv3`, `bgp` and `ospf` templates. Use `list_routing_templates` to find their IDs. |
+| `Template ... is a cisco_vpn template, not a BGP, OSPF, OSPFv3 or EIGRP template` | The routing template tools only act on `cisco_bgp`, `cisco_ospf`, `cisco_ospfv3`, `eigrp`, `bgp` and `ospf` templates. Use `list_routing_templates` to find their IDs. |
+| `profile_type must be one of: service` on an EIGRP tool | vManage has EIGRP features only in service profiles. Use the service profile of the site. |
 | `global_vrf applies only to sd-routing transport profiles` / `... must be a feature ID (UUID)` | Check the scope arguments: `global_vrf` needs `solution: "sd-routing"` and `profile_type: "transport"`; feature, VPN and template IDs are UUIDs (from `get_*_config`, `get_feature_profile` or `list_routing_templates`). |
 | `vManage API error 400` on a create or update | vManage rejected the body. Build it from `get_bgp_feature_schema` / `get_routing_template_schema`, or copy `name`, `description` and `data` from an existing feature returned by `get_bgp_config` / `get_ospf_config`. |
 | `vManage API error 400 ... Empty query` | Statistics endpoints need a query body even when the spec marks it optional. See the statistics example above. |

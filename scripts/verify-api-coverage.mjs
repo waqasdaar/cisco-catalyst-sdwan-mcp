@@ -167,6 +167,7 @@ try {
   if (services.service?.[0]) {
     toolSamples.get_ospf_config = { profile_type: 'service', profile: services.service[0].profileName };
     toolSamples.get_bgp_config = { profile_type: 'service', profile: services.service[0].profileName };
+    toolSamples.get_eigrp_config = { profile_type: 'service', profile: services.service[0].profileName };
   }
 } catch (err) {
   console.error(`UX 2.0 sample lookup failed: ${err.message}`);

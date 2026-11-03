@@ -35,7 +35,7 @@ const tlocs = () => [
   { color: 'biz-internet', interface: 'GigabitEthernet2', 'operation-state': 'up', 'admin-state': 'up', 'public-ip': '203.0.113.1', 'private-ip': '203.0.113.1' },
 ];
 
-const stats = { logins: 0, sessionLogins: 0, logouts: 0, ompStatusCalls: 0, ompSummaryCalls: 0, deviceIds: [], ospfPaths: [], ospfWrites: [], bgpPaths: [], bgpWrites: [], templateWrites: [] };
+const stats = { logins: 0, sessionLogins: 0, logouts: 0, ompStatusCalls: 0, ompSummaryCalls: 0, deviceIds: [], ospfPaths: [], ospfWrites: [], bgpPaths: [], bgpWrites: [], eigrpPaths: [], eigrpWrites: [], templateWrites: [] };
 const BGP_TEMPLATE = '66666666-6666-4666-8666-666666666666';
 const OSPFV3_TEMPLATE = '77777777-7777-4777-8777-777777777777';
 const VPN_TEMPLATE = '88888888-8888-4888-8888-888888888888';
@@ -43,6 +43,7 @@ const FEATURE_TEMPLATES = [
   { templateId: BGP_TEMPLATE, templateName: 'BGP-Hub', templateType: 'cisco_bgp', devicesAttached: 2 },
   { templateId: OSPFV3_TEMPLATE, templateName: 'OSPFv3-Branch', templateType: 'cisco_ospfv3', devicesAttached: 0 },
   { templateId: VPN_TEMPLATE, templateName: 'VPN-10', templateType: 'cisco_vpn', devicesAttached: 4 },
+  { templateId: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa', templateName: 'EIGRP-Branch', templateType: 'eigrp', devicesAttached: 1 },
 ];
 const OSPF_PROFILE = '11111111-1111-4111-8111-111111111111';
 const tokens = new Set();
@@ -130,6 +131,14 @@ function handler(req, res) {
         return send(200, req.method === 'POST' ? { parcelId: '55555555-5555-4555-8555-555555555555' } : {});
       }
       stats.bgpPaths.push(p);
+      return send(200, { data: [{ path: p, query: Object.fromEntries(url.searchParams) }] });
+    }
+    if (p.startsWith('/dataservice/device/eigrp/') || (p.startsWith('/dataservice/v1/feature-profile/') && p.includes('/routing/eigrp'))) {
+      if (req.method !== 'GET') {
+        stats.eigrpWrites.push({ method: req.method, path: p, body: raw ? JSON.parse(raw) : undefined });
+        return send(200, req.method === 'POST' ? { parcelId: 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb' } : {});
+      }
+      stats.eigrpPaths.push(p);
       return send(200, { data: [{ path: p, query: Object.fromEntries(url.searchParams) }] });
     }
     if (p.startsWith('/dataservice/template/feature')) {
@@ -266,7 +275,7 @@ async function tool(client, name, args = {}) {
 // ---------- Tests ----------
 const c = await connect();
 const { tools } = await c.listTools();
-check('tool list', tools.length === 109, `${tools.length} tools`);
+check('tool list', tools.length === 117, `${tools.length} tools`);
 
 let t = Date.now();
 let r = await tool(c, 'get_omp_status');
@@ -615,19 +624,23 @@ check(`all ${specBgpWrites.length} BGP write operations in the spec covered`, sp
 check('BGP write tools only call operations from the spec', [...bgpWritten].every((op) => specBgpWrites.includes(op)));
 await wb.close();
 
-// UX 1.0 feature templates for BGP, OSPF and OSPFv3.
+// UX 1.0 feature templates for BGP, OSPF, OSPFv3 and EIGRP.
 mock.templateListDelayMs = 0;
 const ct = await connect();
 r = await tool(ct, 'list_routing_templates');
-check('list_routing_templates keeps only BGP/OSPF/OSPFv3 templates', r.value?.data?.map((t) => t.templateName).join() === 'BGP-Hub,OSPFv3-Branch', JSON.stringify(r.value ?? r.error));
+check('list_routing_templates keeps only routing templates', r.value?.data?.map((t) => t.templateName).join() === 'BGP-Hub,OSPFv3-Branch,EIGRP-Branch', JSON.stringify(r.value ?? r.error));
 r = await tool(ct, 'list_routing_templates', { protocol: 'ospfv3' });
 check('list_routing_templates protocol filter', r.value?.data?.map((t) => t.templateName).join() === 'OSPFv3-Branch', JSON.stringify(r.value ?? r.error));
+r = await tool(ct, 'list_routing_templates', { protocol: 'eigrp' });
+check('list_routing_templates EIGRP', r.value?.data?.map((t) => t.templateName).join() === 'EIGRP-Branch', JSON.stringify(r.value ?? r.error));
+r = await tool(ct, 'get_routing_template_schema', { template_type: 'eigrp' });
+check('get_routing_template_schema EIGRP', r.value?.path === '/dataservice/template/feature/types/definition/eigrp/15.0.0', JSON.stringify(r.value ?? r.error));
 r = await tool(ct, 'get_routing_template', { template_id: BGP_TEMPLATE });
 check('get_routing_template with device templates', r.value?.templateType === 'cisco_bgp' && r.value.deviceTemplates?.[0]?.templateName === 'DT-Hub', JSON.stringify(r.value ?? r.error));
 r = await tool(ct, 'get_routing_template_schema', { template_type: 'cisco_ospfv3' });
 check('get_routing_template_schema', r.value?.path === '/dataservice/template/feature/types/definition/cisco_ospfv3/15.0.0', JSON.stringify(r.value ?? r.error));
 for (const [label, name, args, pattern] of [
-  ['get_routing_template refuses non-routing templates', 'get_routing_template', { template_id: VPN_TEMPLATE }, /cisco_vpn template, not a BGP, OSPF or OSPFv3/],
+  ['get_routing_template refuses non-routing templates', 'get_routing_template', { template_id: VPN_TEMPLATE }, /cisco_vpn template, not a BGP, OSPF, OSPFv3 or EIGRP/],
   ['get_routing_template rejects non-UUID ID', 'get_routing_template', { template_id: '../device/x' }, /must be a feature template ID/],
   ['get_routing_template_schema rejects other types', 'get_routing_template_schema', { template_type: 'cisco_vpn' }, /template_type must be one of/],
   ['get_routing_template_schema rejects bad version', 'get_routing_template_schema', { template_type: 'cisco_bgp', version: '../../x' }, /version must look like/],
@@ -671,13 +684,17 @@ check(
 );
 r = await tool(wt, 'clone_routing_template', { template_id: OSPFV3_TEMPLATE, name: 'OSPFv3-Lab', description: 'Lab copy', confirm: true });
 check('clone_routing_template with description', lastTemplateWrite()?.query?.desc === 'Lab copy' && lastTemplateWrite().query.id === OSPFV3_TEMPLATE, JSON.stringify(lastTemplateWrite()));
+r = await tool(wt, 'create_routing_template', { body: { ...TEMPLATE_BODY, templateName: 'EIGRP-New', templateType: 'eigrp' }, confirm: true });
+check('create_routing_template EIGRP', !r.error && lastTemplateWrite()?.body?.templateType === 'eigrp', JSON.stringify(r.value ?? r.error));
+r = await tool(wt, 'clone_routing_template', { template_id: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa', name: 'EIGRP-Lab', confirm: true });
+check('clone_routing_template EIGRP', !r.error && lastTemplateWrite()?.query?.desc === 'Clone of EIGRP-Branch', JSON.stringify(lastTemplateWrite()));
 for (const [label, name, args, pattern] of [
   ['create_routing_template refuses other template types', 'create_routing_template', { body: { ...TEMPLATE_BODY, templateType: 'cisco_vpn' }, confirm: true }, /body.templateType must be one of/],
   ['update_routing_template refuses a type change', 'update_routing_template', { template_id: BGP_TEMPLATE, body: { ...TEMPLATE_BODY, templateType: 'cisco_ospf' }, confirm: true }, /must stay cisco_bgp/],
-  ['update_routing_template refuses non-routing templates', 'update_routing_template', { template_id: VPN_TEMPLATE, body: TEMPLATE_BODY, confirm: true }, /not a BGP, OSPF or OSPFv3/],
-  ['delete_routing_template refuses non-routing templates', 'delete_routing_template', { template_id: VPN_TEMPLATE, confirm: true }, /not a BGP, OSPF or OSPFv3/],
+  ['update_routing_template refuses non-routing templates', 'update_routing_template', { template_id: VPN_TEMPLATE, body: TEMPLATE_BODY, confirm: true }, /not a BGP, OSPF, OSPFv3 or EIGRP/],
+  ['delete_routing_template refuses non-routing templates', 'delete_routing_template', { template_id: VPN_TEMPLATE, confirm: true }, /not a BGP, OSPF, OSPFv3 or EIGRP/],
   ['delete_routing_template needs confirm: true', 'delete_routing_template', { template_id: BGP_TEMPLATE }, /confirm: true/],
-  ['clone_routing_template refuses non-routing templates', 'clone_routing_template', { template_id: VPN_TEMPLATE, name: 'VPN-Copy', confirm: true }, /not a BGP, OSPF or OSPFv3/],
+  ['clone_routing_template refuses non-routing templates', 'clone_routing_template', { template_id: VPN_TEMPLATE, name: 'VPN-Copy', confirm: true }, /not a BGP, OSPF, OSPFv3 or EIGRP/],
   ['clone_routing_template requires a name', 'clone_routing_template', { template_id: BGP_TEMPLATE, name: '  ', confirm: true }, /name is required/],
   ['clone_routing_template needs confirm: true', 'clone_routing_template', { template_id: BGP_TEMPLATE, name: 'BGP-Copy' }, /confirm: true/],
 ]) {
@@ -686,6 +703,103 @@ for (const [label, name, args, pattern] of [
   check(label, pattern.test(r.error ?? '') && stats.templateWrites.length === 0, r.error ?? 'not rejected');
 }
 await wt.close();
+
+// EIGRP: real-time monitoring and UX 2.0 service-profile features (read and write).
+const specEigrp = (methods) =>
+  Object.entries(spec.paths)
+    .filter(([path]) => /eigrp/i.test(path))
+    .flatMap(([path, ops]) => methods.filter((m) => ops[m]).map((m) => `${m.toUpperCase()} ${template(path)}`));
+const EIGRP_BODY = { name: 'EIGRP-100', description: 'test', data: { asNum: { optionType: 'global', value: 100 } } };
+const eigrpBase = `/dataservice/v1/feature-profile/sdwan/service/${OSPF_PROFILE}`;
+const ce = await connect();
+for (const [name, view] of [['get_eigrp_interfaces', 'interface'], ['get_eigrp_routes', 'route'], ['get_eigrp_topology', 'topology']]) {
+  const row = (await tool(ce, name, { device_id: 'Branch-1' })).value?.data?.[0];
+  check(name, row?.path === `/dataservice/device/eigrp/${view}` && row.query.deviceId === '192.0.2.11', JSON.stringify(row));
+}
+r = await tool(ce, 'get_eigrp_config', { profile_type: 'service', profile: 'Branch-Service' });
+check('get_eigrp_config by profile name', r.value?.data?.[0]?.path === `${eigrpBase}/routing/eigrp`, JSON.stringify(r.value ?? r.error));
+r = await tool(ce, 'get_eigrp_config', { solution: 'sd-routing', profile_type: 'service', profile: OSPF_PROFILE });
+check(
+  'get_eigrp_config sd-routing (VRF section)',
+  r.value?.data?.[0]?.path === `/dataservice/v1/feature-profile/sd-routing/service/${OSPF_PROFILE}/vrf/routing/eigrp`,
+  JSON.stringify(r.value ?? r.error)
+);
+
+const eigrpScopes = [
+  ['sdwan', [{}], [{ vpn_feature_id: VPN }]],
+  ['sd-routing', [{}], [{ vpn_feature_id: VPN }]],
+];
+const specEigrpGets = specEigrp(['get']);
+stats.eigrpPaths = [];
+for (const name of ['get_eigrp_interfaces', 'get_eigrp_routes', 'get_eigrp_topology']) await tool(ce, name, { device_id: 'Branch-1' });
+for (const [solution, profileScopes, vpnScopes] of eigrpScopes) {
+  for (const scope of [...profileScopes, ...vpnScopes]) {
+    for (const one of [{}, { feature_id: FEATURE }]) await tool(ce, 'get_eigrp_config', { solution, profile_type: 'service', profile: OSPF_PROFILE, ...scope, ...one });
+  }
+}
+const eigrpReached = new Set(stats.eigrpPaths.map((path) => `GET ${template(path)}`));
+const missingEigrpReads = specEigrpGets.filter((op) => !eigrpReached.has(op));
+check(`all ${specEigrpGets.length} EIGRP read operations in the spec covered`, specEigrpGets.length === 11 && missingEigrpReads.length === 0, missingEigrpReads.join(', '));
+check('EIGRP tools only call read paths from the spec', [...eigrpReached].every((op) => specEigrpGets.includes(op)));
+
+for (const [label, name, args, pattern] of [
+  ['get_eigrp_routes requires device_id', 'get_eigrp_routes', {}, /device_id is required/],
+  ['get_eigrp_config rejects transport profiles', 'get_eigrp_config', { profile_type: 'transport', profile: OSPF_PROFILE }, /profile_type must be one of: service$/],
+  ['get_eigrp_config rejects global_vrf', 'get_eigrp_config', { solution: 'sd-routing', profile_type: 'service', profile: OSPF_PROFILE, global_vrf: true }, /global_vrf applies only/],
+  ['get_eigrp_config rejects non-UUID vpn_feature_id', 'get_eigrp_config', { profile_type: 'service', profile: OSPF_PROFILE, vpn_feature_id: '../x' }, /vpn_feature_id must be a feature ID/],
+]) {
+  stats.eigrpPaths = [];
+  r = await tool(ce, name, args);
+  check(label, pattern.test(r.error ?? '') && stats.eigrpPaths.length === 0, r.error ?? 'not rejected');
+}
+r = await tool(ce, 'create_eigrp_feature', { profile_type: 'service', profile: OSPF_PROFILE, body: EIGRP_BODY, confirm: true });
+check('EIGRP writes disabled by default', /VMANAGE_ALLOW_WRITE=true/.test(r.error ?? '') && stats.eigrpWrites.length === 0, r.error ?? 'not rejected');
+await ce.close();
+
+const we = await connect({ VMANAGE_ALLOW_WRITE: 'true' });
+const lastEigrpWrite = () => stats.eigrpWrites.at(-1);
+r = await tool(we, 'create_eigrp_feature', { profile_type: 'service', profile: 'Branch-Service', body: EIGRP_BODY });
+check('create_eigrp_feature needs confirm: true', /confirm: true/.test(r.error ?? '') && stats.eigrpWrites.length === 0, r.error ?? 'not rejected');
+r = await tool(we, 'create_eigrp_feature', { profile_type: 'service', profile: 'Branch-Service', body: EIGRP_BODY, confirm: true });
+check(
+  'create_eigrp_feature',
+  r.value?.operationId === 'CreateRoutingEigrpProfileParcelForService' && lastEigrpWrite()?.path === `${eigrpBase}/routing/eigrp` &&
+    JSON.stringify(lastEigrpWrite().body) === JSON.stringify(EIGRP_BODY),
+  JSON.stringify(r.value ?? r.error)
+);
+r = await tool(we, 'associate_eigrp_feature', { profile_type: 'service', profile: OSPF_PROFILE, vpn_feature_id: VPN, feature_id: FEATURE, confirm: true });
+check('associate_eigrp_feature', !r.error && lastEigrpWrite()?.method === 'POST' && lastEigrpWrite().path === `${eigrpBase}/lan/vpn/${VPN}/routing/eigrp` && lastEigrpWrite().body?.parcelId === FEATURE, JSON.stringify(lastEigrpWrite()));
+r = await tool(we, 'update_eigrp_feature', { profile_type: 'service', profile: OSPF_PROFILE, feature_id: FEATURE, body: EIGRP_BODY, confirm: true });
+check('update_eigrp_feature', !r.error && lastEigrpWrite()?.method === 'PUT' && lastEigrpWrite().path === `${eigrpBase}/routing/eigrp/${FEATURE}`, JSON.stringify(lastEigrpWrite()));
+r = await tool(we, 'delete_eigrp_feature', { profile_type: 'service', profile: OSPF_PROFILE, vpn_feature_id: VPN, feature_id: FEATURE, confirm: true });
+check('delete_eigrp_feature with VPN removes only the association', lastEigrpWrite()?.method === 'DELETE' && lastEigrpWrite().path === `${eigrpBase}/lan/vpn/${VPN}/routing/eigrp/${FEATURE}`, JSON.stringify(lastEigrpWrite()));
+for (const [label, name, args, pattern] of [
+  ['create_eigrp_feature rejects transport profiles', 'create_eigrp_feature', { profile_type: 'transport', profile: OSPF_PROFILE, body: EIGRP_BODY, confirm: true }, /profile_type must be one of: service$/],
+  ['create_eigrp_feature rejects a VPN scope', 'create_eigrp_feature', { profile_type: 'service', profile: OSPF_PROFILE, vpn_feature_id: VPN, body: EIGRP_BODY, confirm: true }, /associate_eigrp_feature/],
+  ['delete_eigrp_feature needs confirm: true', 'delete_eigrp_feature', { profile_type: 'service', profile: OSPF_PROFILE, feature_id: FEATURE }, /confirm: true/],
+  ['associate_eigrp_feature requires feature_id', 'associate_eigrp_feature', { profile_type: 'service', profile: OSPF_PROFILE, vpn_feature_id: VPN, confirm: true }, /vpn_feature_id and feature_id are required/],
+]) {
+  stats.eigrpWrites = [];
+  r = await tool(we, name, args);
+  check(label, pattern.test(r.error ?? '') && stats.eigrpWrites.length === 0, r.error ?? 'not rejected');
+}
+
+const specEigrpWrites = specEigrp(['post', 'put', 'delete']);
+stats.eigrpWrites = [];
+for (const [solution, profileScopes, vpnScopes] of eigrpScopes) {
+  const scope = { solution, profile_type: 'service', profile: OSPF_PROFILE, confirm: true };
+  for (const s of profileScopes) await tool(we, 'create_eigrp_feature', { ...scope, ...s, body: EIGRP_BODY });
+  for (const s of vpnScopes) await tool(we, 'associate_eigrp_feature', { ...scope, ...s, feature_id: FEATURE });
+  for (const s of [...profileScopes, ...vpnScopes]) {
+    await tool(we, 'update_eigrp_feature', { ...scope, ...s, feature_id: FEATURE, body: EIGRP_BODY });
+    await tool(we, 'delete_eigrp_feature', { ...scope, ...s, feature_id: FEATURE });
+  }
+}
+const eigrpWritten = new Set(stats.eigrpWrites.map((x) => `${x.method} ${template(x.path)}`));
+const missingEigrpWrites = specEigrpWrites.filter((op) => !eigrpWritten.has(op));
+check(`all ${specEigrpWrites.length} EIGRP write operations in the spec covered`, specEigrpWrites.length === 12 && missingEigrpWrites.length === 0, missingEigrpWrites.join(', '));
+check('EIGRP write tools only call operations from the spec', [...eigrpWritten].every((op) => specEigrpWrites.includes(op)));
+await we.close();
 
 // Unreachable Manager: the first call fails, the next ones fail immediately.
 const closedPort = await new Promise((resolve) => {
