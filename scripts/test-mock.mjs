@@ -35,7 +35,12 @@ const tlocs = () => [
   { color: 'biz-internet', interface: 'GigabitEthernet2', 'operation-state': 'up', 'admin-state': 'up', 'public-ip': '203.0.113.1', 'private-ip': '203.0.113.1' },
 ];
 
-const stats = { logins: 0, sessionLogins: 0, logouts: 0, ompStatusCalls: 0, ompSummaryCalls: 0, deviceIds: [], ospfPaths: [], ospfWrites: [], bgpPaths: [], bgpWrites: [], eigrpPaths: [], eigrpWrites: [], templateWrites: [] };
+const stats = { logins: 0, sessionLogins: 0, logouts: 0, ompStatusCalls: 0, ompSummaryCalls: 0, deviceIds: [], ospfPaths: [], ospfWrites: [], bgpPaths: [], bgpWrites: [], eigrpPaths: [], eigrpWrites: [], templateWrites: [], cliPaths: [], cliWrites: [] };
+const CLI_PROFILE_ID = 'cccccccc-cccc-4ccc-8ccc-cccccccccccc';
+const CLI_FEATURE = 'dddddddd-dddd-4ddd-8ddd-dddddddddddd';
+const CLI_TEMPLATE = 'eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee';
+const RIP_CLI = 'router rip\n version 2\n network 10.0.0.0';
+const cliFeature = { parcelId: CLI_FEATURE, lastUpdatedBy: 'admin', payload: { name: 'RIP-Addon', description: 'RIP for LAN', data: { config: RIP_CLI } } };
 const BGP_TEMPLATE = '66666666-6666-4666-8666-666666666666';
 const OSPFV3_TEMPLATE = '77777777-7777-4777-8777-777777777777';
 const VPN_TEMPLATE = '88888888-8888-4888-8888-888888888888';
@@ -44,6 +49,11 @@ const FEATURE_TEMPLATES = [
   { templateId: OSPFV3_TEMPLATE, templateName: 'OSPFv3-Branch', templateType: 'cisco_ospfv3', devicesAttached: 0 },
   { templateId: VPN_TEMPLATE, templateName: 'VPN-10', templateType: 'cisco_vpn', devicesAttached: 4 },
   { templateId: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa', templateName: 'EIGRP-Branch', templateType: 'eigrp', devicesAttached: 1 },
+  {
+    templateId: CLI_TEMPLATE, templateName: 'RIP-CLI', templateDescription: 'RIP add-on', templateType: 'cli-template', deviceType: ['vedge-C8000V'], templateMinVersion: '15.0.0', devicesAttached: 0,
+    templateDefinition: { config: { vipObjectType: 'object', vipType: 'constant', vipValue: RIP_CLI } },
+  },
+  { templateId: 'ffffffff-ffff-4fff-8fff-ffffffffffff', templateName: 'Banner-CLI', templateType: 'cli-template', deviceType: ['vedge-C8000V'], devicesAttached: 3, templateDefinition: { config: { vipValue: 'banner motd ^hi^' } } },
 ];
 const OSPF_PROFILE = '11111111-1111-4111-8111-111111111111';
 const tokens = new Set();
@@ -141,6 +151,17 @@ function handler(req, res) {
       stats.eigrpPaths.push(p);
       return send(200, { data: [{ path: p, query: Object.fromEntries(url.searchParams) }] });
     }
+    if (/^\/dataservice\/v1\/feature-profile\/(sdwan|sd-routing)\/cli(\/|$)/.test(p)) {
+      if (req.method !== 'GET') {
+        stats.cliWrites.push({ method: req.method, path: p, body: raw ? JSON.parse(raw) : undefined });
+        return send(200, req.method === 'POST' ? { parcelId: '12121212-1212-4121-8121-121212121212' } : {});
+      }
+      stats.cliPaths.push(p);
+      if (/\/cli$/.test(p)) return send(200, [{ profileId: CLI_PROFILE_ID, profileName: 'Branch-CLI' }, { profileId: OSPF_PROFILE, profileName: 'Hub-CLI' }]);
+      if (p.endsWith(`/cli/${OSPF_PROFILE}/config`)) return send(200, { data: [{ parcelId: FEATURE, payload: { name: 'Banner', data: { config: 'banner motd ^hi^' } } }] });
+      if (/\/config$/.test(p)) return send(200, { data: [cliFeature] });
+      return send(200, cliFeature);
+    }
     if (p.startsWith('/dataservice/template/feature')) {
       const id = p.split('/').pop();
       if (req.method !== 'GET') {
@@ -152,7 +173,7 @@ function handler(req, res) {
       }
       if (p.startsWith('/dataservice/template/feature/object/')) {
         const t = FEATURE_TEMPLATES.find((x) => x.templateId === id);
-        return t ? send(200, { ...t, templateDefinition: {} }) : send(404, { error: 'no template' });
+        return t ? send(200, { templateDefinition: {}, ...t }) : send(404, { error: 'no template' });
       }
       if (p.startsWith('/dataservice/template/feature/devicetemplates/')) return send(200, { data: [{ templateName: 'DT-Hub' }] });
       if (p.startsWith('/dataservice/template/feature/types/definition/')) return send(200, { path: p });
@@ -275,7 +296,7 @@ async function tool(client, name, args = {}) {
 // ---------- Tests ----------
 const c = await connect();
 const { tools } = await c.listTools();
-check('tool list', tools.length === 117, `${tools.length} tools`);
+check('tool list', tools.length === 127, `${tools.length} tools`);
 
 let t = Date.now();
 let r = await tool(c, 'get_omp_status');
@@ -800,6 +821,113 @@ const missingEigrpWrites = specEigrpWrites.filter((op) => !eigrpWritten.has(op))
 check(`all ${specEigrpWrites.length} EIGRP write operations in the spec covered`, specEigrpWrites.length === 12 && missingEigrpWrites.length === 0, missingEigrpWrites.join(', '));
 check('EIGRP write tools only call operations from the spec', [...eigrpWritten].every((op) => specEigrpWrites.includes(op)));
 await we.close();
+
+// CLI add-ons: the way to manage RIP/RIPng and other configuration without a dedicated API.
+const cc = await connect();
+r = await tool(cc, 'list_cli_addons');
+check('list_cli_addons across CLI profiles', r.value?.data?.map((f) => `${f.profile}:${f.name}`).join() === 'Branch-CLI:RIP-Addon,Hub-CLI:Banner', JSON.stringify(r.value ?? r.error));
+r = await tool(cc, 'list_cli_addons', { contains: 'ROUTER RIP' });
+check('list_cli_addons contains (case-insensitive)', r.value?.data?.length === 1 && r.value.data[0].config === RIP_CLI && r.value.data[0].featureId === CLI_FEATURE, JSON.stringify(r.value ?? r.error));
+r = await tool(cc, 'list_cli_addons', { profile: 'Branch-CLI', solution: 'sd-routing' });
+check('list_cli_addons one sd-routing profile', r.value?.data?.length === 1 && stats.cliPaths.at(-1) === `/dataservice/v1/feature-profile/sd-routing/cli/${CLI_PROFILE_ID}/config`, JSON.stringify(stats.cliPaths.at(-1)));
+r = await tool(cc, 'get_cli_addon', { profile: 'Branch-CLI', feature_id: CLI_FEATURE });
+check('get_cli_addon', r.value?.payload?.data?.config === RIP_CLI, JSON.stringify(r.value ?? r.error));
+r = await tool(cc, 'list_cli_templates');
+check('list_cli_templates keeps only cli-template', r.value?.data?.map((t) => t.templateName).join() === 'RIP-CLI,Banner-CLI', JSON.stringify(r.value ?? r.error));
+r = await tool(cc, 'list_cli_templates', { contains: 'ipv6 router rip' });
+check('list_cli_templates contains (no match)', r.value?.data?.length === 0, JSON.stringify(r.value ?? r.error));
+r = await tool(cc, 'list_cli_templates', { contains: 'router rip' });
+check('list_cli_templates contains', r.value?.data?.map((t) => t.templateName).join() === 'RIP-CLI' && r.value.data[0].config === RIP_CLI, JSON.stringify(r.value ?? r.error));
+r = await tool(cc, 'get_cli_template', { template_id: CLI_TEMPLATE });
+check('get_cli_template', r.value?.config === RIP_CLI && r.value.deviceTemplates?.[0]?.templateName === 'DT-Hub', JSON.stringify(r.value ?? r.error));
+r = await tool(cc, 'get_cli_template', { template_id: BGP_TEMPLATE });
+check('get_cli_template refuses other template types', /cisco_bgp template, not a CLI add-on/.test(r.error ?? ''), r.error ?? 'not rejected');
+r = await tool(cc, 'create_cli_addon', { profile: 'Branch-CLI', name: 'RIPng', config: 'ipv6 router rip RIPNG', confirm: true });
+check('CLI writes disabled by default', /VMANAGE_ALLOW_WRITE=true/.test(r.error ?? '') && stats.cliWrites.length === 0, r.error ?? 'not rejected');
+await cc.close();
+
+const wc = await connect({ VMANAGE_ALLOW_WRITE: 'true' });
+const cliBase = `/dataservice/v1/feature-profile/sdwan/cli/${CLI_PROFILE_ID}/config`;
+const lastCliWrite = () => stats.cliWrites.at(-1);
+const RIPNG_CLI = 'ipv6 router rip RIPNG\n redistribute connected';
+r = await tool(wc, 'create_cli_addon', { profile: 'Branch-CLI', name: 'RIPng', config: RIPNG_CLI });
+check('create_cli_addon needs confirm: true', /confirm: true/.test(r.error ?? '') && stats.cliWrites.length === 0, r.error ?? 'not rejected');
+r = await tool(wc, 'create_cli_addon', { profile: 'Branch-CLI', name: 'RIPng', description: 'RIPng LAN', config: RIPNG_CLI, confirm: true });
+check(
+  'create_cli_addon',
+  r.value?.operationId === 'CreateSdwanConfigProfileParcelForCli' && lastCliWrite()?.path === cliBase &&
+    JSON.stringify(lastCliWrite().body) === JSON.stringify({ name: 'RIPng', description: 'RIPng LAN', data: { config: RIPNG_CLI } }),
+  JSON.stringify(lastCliWrite() ?? r.error)
+);
+r = await tool(wc, 'update_cli_addon', { profile: 'Branch-CLI', feature_id: CLI_FEATURE, config: RIPNG_CLI, confirm: true });
+check(
+  'update_cli_addon keeps unchanged fields',
+  r.value?.operationId === 'EditConfigProfileParcelForCLI' && lastCliWrite()?.method === 'PUT' && lastCliWrite().path === `${cliBase}/${CLI_FEATURE}` &&
+    lastCliWrite().body.name === 'RIP-Addon' && lastCliWrite().body.description === 'RIP for LAN' && lastCliWrite().body.data.config === RIPNG_CLI,
+  JSON.stringify(lastCliWrite() ?? r.error)
+);
+r = await tool(wc, 'delete_cli_addon', { profile: 'Branch-CLI', feature_id: CLI_FEATURE, confirm: true });
+check('delete_cli_addon', r.value?.operationId === 'DeleteConfigProfileParcelForCLI' && lastCliWrite()?.method === 'DELETE' && lastCliWrite().path === `${cliBase}/${CLI_FEATURE}`, JSON.stringify(lastCliWrite()));
+r = await tool(wc, 'create_cli_addon', { profile: CLI_PROFILE_ID, solution: 'sd-routing', name: 'RIP', config: RIP_CLI, confirm: true });
+check('create_cli_addon sd-routing', r.value?.operationId === 'CreateSdroutingCLIAddOnFeature', JSON.stringify(r.value ?? r.error));
+
+r = await tool(wc, 'create_cli_template', { name: 'RIPng-CLI', config: RIPNG_CLI, device_types: ['vedge-C8000V'], confirm: true });
+check(
+  'create_cli_template',
+  r.value?.operationId === 'createFeatureTemplate' && lastTemplateWrite()?.body?.templateType === 'cli-template' &&
+    lastTemplateWrite().body.templateDefinition.config.vipValue === RIPNG_CLI && lastTemplateWrite().body.templateDescription === 'RIPng-CLI',
+  JSON.stringify(lastTemplateWrite())
+);
+r = await tool(wc, 'update_cli_template', { template_id: CLI_TEMPLATE, config: RIPNG_CLI, confirm: true });
+check(
+  'update_cli_template keeps name, type and device models',
+  r.value?.operationId === 'editFeatureTemplate' && lastTemplateWrite()?.path === `/dataservice/template/feature/${CLI_TEMPLATE}` &&
+    lastTemplateWrite().body.templateName === 'RIP-CLI' && lastTemplateWrite().body.deviceType[0] === 'vedge-C8000V' &&
+    lastTemplateWrite().body.templateDefinition.config.vipValue === RIPNG_CLI && lastTemplateWrite().body.templateType === 'cli-template',
+  JSON.stringify(lastTemplateWrite())
+);
+r = await tool(wc, 'delete_cli_template', { template_id: CLI_TEMPLATE, confirm: true });
+check('delete_cli_template', r.value?.operationId === 'deleteGeneralTemplate' && lastTemplateWrite()?.path === `/dataservice/template/feature/${CLI_TEMPLATE}`, JSON.stringify(lastTemplateWrite()));
+
+for (const [label, name, args, pattern] of [
+  ['create_cli_addon requires config', 'create_cli_addon', { profile: 'Branch-CLI', name: 'x', config: '  ', confirm: true }, /config must be non-empty/],
+  ['create_cli_addon requires a name', 'create_cli_addon', { profile: 'Branch-CLI', config: RIP_CLI, confirm: true }, /name is required/],
+  ['create_cli_addon rejects oversized config', 'create_cli_addon', { profile: 'Branch-CLI', name: 'x', config: 'x'.repeat(100_001), confirm: true }, /at most 100000/],
+  ['update_cli_addon with nothing to change', 'update_cli_addon', { profile: 'Branch-CLI', feature_id: CLI_FEATURE, confirm: true }, /Nothing to change/],
+  ['delete_cli_addon rejects non-UUID feature_id', 'delete_cli_addon', { profile: 'Branch-CLI', feature_id: '../../system', confirm: true }, /feature_id must be a feature ID/],
+  ['delete_cli_addon needs confirm: true', 'delete_cli_addon', { profile: 'Branch-CLI', feature_id: CLI_FEATURE }, /confirm: true/],
+  ['create_cli_template rejects bad device_types', 'create_cli_template', { name: 'x', config: RIP_CLI, device_types: ['../x'], confirm: true }, /device_types must be/],
+  ['update_cli_template refuses other template types', 'update_cli_template', { template_id: BGP_TEMPLATE, config: RIP_CLI, confirm: true }, /not a CLI add-on/],
+  ['delete_cli_template refuses other template types', 'delete_cli_template', { template_id: VPN_TEMPLATE, confirm: true }, /not a CLI add-on/],
+]) {
+  stats.cliWrites = [];
+  stats.templateWrites = [];
+  r = await tool(wc, name, args);
+  check(label, pattern.test(r.error ?? '') && stats.cliWrites.length === 0 && stats.templateWrites.length === 0, r.error ?? 'not rejected');
+}
+
+// Every UX 2.0 CLI add-on (config) operation in the spec for SD-WAN and SD-Routing is reachable.
+const specCli = Object.entries(spec.paths)
+  .filter(([path]) => /^\/v1\/feature-profile\/(sdwan|sd-routing)\/cli\/\{[^}]+\}\/config(\/\{[^}]+\})?$/.test(path))
+  .flatMap(([path, ops]) => ['get', 'post', 'put', 'delete'].filter((m) => ops[m]).map((m) => `${m.toUpperCase()} ${template(path)}`));
+stats.cliPaths = [];
+stats.cliWrites = [];
+for (const solution of ['sdwan', 'sd-routing']) {
+  const scope = { solution, profile: CLI_PROFILE_ID };
+  await tool(wc, 'list_cli_addons', scope);
+  await tool(wc, 'get_cli_addon', { ...scope, feature_id: CLI_FEATURE });
+  await tool(wc, 'create_cli_addon', { ...scope, name: 'x', config: RIP_CLI, confirm: true });
+  await tool(wc, 'update_cli_addon', { ...scope, feature_id: CLI_FEATURE, config: RIP_CLI, confirm: true });
+  await tool(wc, 'delete_cli_addon', { ...scope, feature_id: CLI_FEATURE, confirm: true });
+}
+const cliReached = new Set([
+  ...stats.cliPaths.filter((path) => /\/config(\/|$)/.test(path)).map((path) => `GET ${template(path)}`),
+  ...stats.cliWrites.map((x) => `${x.method} ${template(x.path)}`),
+]);
+const missingCli = specCli.filter((op) => !cliReached.has(op));
+check(`all ${specCli.length} UX 2.0 CLI add-on operations (SD-WAN and SD-Routing) covered`, specCli.length === 10 && missingCli.length === 0, missingCli.join(', '));
+check('CLI add-on tools only call operations from the spec', [...cliReached].every((op) => specCli.includes(op)), [...cliReached].filter((op) => !specCli.includes(op)).join(', '));
+await wc.close();
 
 // Unreachable Manager: the first call fails, the next ones fail immediately.
 const closedPort = await new Promise((resolve) => {

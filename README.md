@@ -6,9 +6,10 @@ A [Model Context Protocol (MCP)](https://modelcontextprotocol.io/) server for **
 
 All requests go through vManage. The server never connects to routers directly.
 
-- **117 MCP tools**: 113 purpose-built tools, including fabric-wide health, BFD and TLOC checks in a single call, BGP, OSPF, OSPFv3 and EIGRP monitoring and configuration (UX 2.0 features and UX 1.0 templates), UX 2.0 configuration groups, feature profiles and policy and topology groups, plus 4 general tools that reach **every operation in the vManage OpenAPI spec** (4,128 operations on 26.2).
+- **127 MCP tools**: 123 purpose-built tools, including fabric-wide health, BFD and TLOC checks in a single call, BGP, OSPF, OSPFv3 and EIGRP monitoring and configuration (UX 2.0 features and UX 1.0 templates), CLI add-on configuration (for example RIP/RIPng), UX 2.0 configuration groups, feature profiles and policy and topology groups, plus 4 general tools that reach **every operation in the vManage OpenAPI spec** (4,128 operations on 26.2).
 - **Read-only by default.** Operations that change configuration or state are disabled unless you enable them, and each call then needs explicit confirmation.
 - **BGP, OSPF, OSPFv3 and EIGRP end to end.** Real-time neighbors, routes, interfaces, topology and LSDB; UX 2.0 feature reads and writes for SD-WAN and SD-Routing profiles; UX 1.0 feature templates (list, read, schema, create, update, delete, clone). Every BGP, OSPF and EIGRP operation in the 26.2 spec has a dedicated tool.
+- **CLI add-ons for everything else.** RIP and RIPng have no vManage API, so they are configured as raw IOS XE CLI. Dedicated tools find, read, create, change and delete CLI add-on features (UX 2.0) and CLI add-on templates (UX 1.0); `contains: "router rip"` finds where a protocol is configured.
 - **Validated against the spec.** Calls through the general tools are checked against the OpenAPI spec published by *your* vManage before they are sent.
 - **Secrets are protected.** Endpoints that issue tokens, passwords, OTPs or credentials are blocked. Session IDs and CSRF tokens are redacted from responses.
 - **Fast and resilient.**
@@ -43,6 +44,7 @@ flowchart LR
   - [General API tools](#general-api-tools-full-vmanage-api)
   - [Dedicated tools (full reference)](#dedicated-tools)
   - [Routing protocols: BGP, OSPF, OSPFv3, EIGRP](#routing-protocols-at-a-glance)
+  - [CLI add-ons (RIP, RIPng, other CLI)](#cli-add-ons-rip-ripng-and-other-cli--ux-20-and-ux-10-10)
 - [Installation](#installation)
 - [Configuration](#configuration)
 - [Integrating with MCP clients](#integrating-with-mcp-clients)
@@ -75,6 +77,7 @@ Ask questions about your SD-WAN fabric in plain language and get answers built f
 | **OSPF and OSPFv3** | "Is OSPF running on Branch-2? Show its OSPFv3 neighbors. Which service profiles configure OSPF?" | `get_ospf_interfaces`, `get_ospf_neighbors`, `get_ospf_config` |
 | **BGP** | "Which BGP neighbors does Hub-1 have in VPN 10? Which profiles configure BGP?" | `get_bgp_neighbors`, `get_bgp_routes`, `get_bgp_config` |
 | **EIGRP** | "Is EIGRP running on Branch-3? Show its topology table. Which service profiles configure EIGRP?" | `get_eigrp_interfaces`, `get_eigrp_topology`, `get_eigrp_config` |
+| **RIP, RIPng and other CLI** | "Which CLI add-ons configure RIP? Add an `ipv6 router rip` block to the Branch CLI profile." | `list_cli_addons`, `list_cli_templates`, `create_cli_addon`, `update_cli_addon` |
 | **Routing changes (opt-in)** | "Create a BGP feature for AS 65001 and attach it to VPN 10." "Clone the OSPF-Branch template." | `create_bgp_feature`, `associate_bgp_feature`, `update_ospf_feature`, `clone_routing_template`, ... |
 | **Data plane and transport** | "Are all BFD sessions in the fabric up? How many TLOCs does site 100 have?" | `get_fabric_bfd_status`, `get_fabric_tlocs`, `get_bfd_sessions`, `get_control_wan_interfaces` |
 | **Application-aware routing** | "Show tunnel loss/latency/jitter and SLA classes." | `get_app_route_statistics`, `get_app_route_sla_class` |
@@ -279,6 +282,8 @@ Every BGP, OSPF, OSPFv3 and EIGRP operation in the 26.2 spec has a dedicated too
 
 The UX 1.0 rows use the [routing template tools](#bgp-ospf-ospfv3-and-eigrp-feature-templates--ux-10-7), which work on all six template types.
 
+**RIP and RIPng** have no API in vManage 26.2: no `/device/rip` monitoring, no UX 2.0 routing feature and no UX 1.0 template type. They are configured as IOS XE CLI through [CLI add-ons](#cli-add-ons-rip-ripng-and-other-cli--ux-20-and-ux-10-10).
+
 UX 2.0 configuration tools address a feature by profile, never by raw URL:
 
 - `profile_type` (`service` or `transport`) and `profile` (ID or exact name) pick the feature profile; `solution` picks `sdwan` (default) or `sd-routing`.
@@ -400,6 +405,25 @@ These tools only act on the routing template types `cisco_bgp`, `cisco_ospf`, `c
 | `update_routing_template` | **Write.** Replace a routing template (type cannot change) | `template_id`\*, `body`\*, `confirm`\* | "Change the hello interval in the OSPF-Branch template." |
 | `delete_routing_template` | **Write.** Delete a routing template | `template_id`\*, `confirm`\* | "Delete the unused BGP-Lab template." |
 | `clone_routing_template` | **Write.** Copy a routing template under a new name; returns the new ID (not attached anywhere) | `template_id`\*, `name`\*, `description`, `confirm`\* | "Copy the BGP-Hub template as BGP-Hub-Lab." |
+
+#### CLI add-ons: RIP, RIPng and other CLI – UX 2.0 and UX 1.0 (10)
+
+CLI add-ons carry raw IOS XE configuration that is appended to a device's configuration. They are how protocols without a vManage API, such as **RIP** (`router rip`) and **RIPng** (`ipv6 router rip`), are configured. UX 2.0 keeps them as `config` features in CLI feature profiles (SD-WAN and SD-Routing; all 10 operations covered); UX 1.0 as `cli-template` feature templates.
+
+The write tools follow the same rules as the other write tools (`VMANAGE_ALLOW_WRITE=true`, `confirm: true`, validated against the spec). Update tools change only the fields you give and keep the rest. Devices get the change when their configuration group is deployed (UX 2.0) or their device template is pushed again (UX 1.0). vManage does not check the CLI text until then, so preview it with `preview_config_group_device_config` first.
+
+| Tool | Description | Key parameters | Example prompt |
+|---|---|---|---|
+| `list_cli_addons` | CLI add-on features of all CLI profiles or one, with their configuration text | `profile`, `solution` (`sdwan`/`sd-routing`), `contains` | "Which CLI add-ons configure RIP?" (`contains: "router rip"`) |
+| `get_cli_addon` | One CLI add-on feature | `profile`\*, `feature_id`\*, `solution` | "Show the add-on CLI of the Branch CLI profile." |
+| `create_cli_addon` | **Write.** Add a CLI add-on feature to a CLI profile | `profile`\*, `name`\*, `config`\*, `description`, `solution`, `confirm`\* | "Add RIPng on the LAN to the Branch CLI profile." |
+| `update_cli_addon` | **Write.** Change a CLI add-on feature (omitted fields unchanged; `config` replaces the whole text) | `profile`\*, `feature_id`\*, `name`, `description`, `config`, `confirm`\* | "Add network 10.20.0.0 to the RIP add-on." |
+| `delete_cli_addon` | **Write.** Delete a CLI add-on feature | `profile`\*, `feature_id`\*, `confirm`\* | "Remove the RIP add-on from the Branch CLI profile." |
+| `list_cli_templates` | UX 1.0 CLI add-on templates (`cli-template`) | `contains` (reads each template) | "Which CLI templates contain ipv6 router rip?" |
+| `get_cli_template` | One CLI template: configuration text and the device templates using it | `template_id`\* | "Show the RIP-CLI template and where it is used." |
+| `create_cli_template` | **Write.** Create a CLI add-on template | `name`\*, `config`\*, `device_types`\* (e.g. `["vedge-C8000V"]`), `description`, `min_version`, `confirm`\* | "Create a CLI template with RIP version 2 for C8000V." |
+| `update_cli_template` | **Write.** Change a CLI template (type and device models kept) | `template_id`\*, `name`, `description`, `config`, `confirm`\* | "Replace the config of the RIP-CLI template." |
+| `delete_cli_template` | **Write.** Delete a CLI template | `template_id`\*, `confirm`\* | "Delete the unused RIP-CLI template." |
 
 #### Cloud OnRamp, administration and applications (8)
 
@@ -811,6 +835,8 @@ OSPF runs in service VPN 10 with one OSPFv2 neighbor on GigabitEthernet3. `get_o
 | "Which EIGRP features does *Branch-Service* contain, and which LAN VPNs use them?" | `get_eigrp_config` (with `vpn_feature_id`) |
 | "Create an EIGRP AS 100 feature in *Branch-Service* and attach it to the VPN 20 feature." *(writes enabled)* | `create_eigrp_feature`, `associate_eigrp_feature` |
 | "Which EIGRP feature templates exist, and what fields does one have?" | `list_routing_templates` (`protocol: "eigrp"`), `get_routing_template_schema` (`template_type: "eigrp"`) |
+| "Is RIP or RIPng configured anywhere?" | `list_cli_addons` and `list_cli_templates` (`contains: "router rip"`) |
+| "Add RIPng to the *Branch-CLI* profile, redistributing connected routes." *(writes enabled)* | `create_cli_addon` |
 | "Which certificates expire soon, and are there active critical alarms?" | `get_certificate_summary`, `list_alarms` |
 | "List the centralized policies and the device templates in use." | `list_policies`, `list_device_templates` |
 
@@ -904,6 +930,34 @@ UX 2.0 routing features (write; `VMANAGE_ALLOW_WRITE=true` and user approval). C
 {
   "name": "delete_ospf_feature",
   "arguments": { "profile_type": "service", "profile": "Branch-Service", "version": "ospfv3-ipv6", "vpn_feature_id": "<lan-vpn-feature-id>", "feature_id": "<ospfv3-feature-id>", "confirm": true }
+}
+```
+
+CLI add-ons (RIP and RIPng have no dedicated API, so they are configured as CLI). Find where RIP is configured, then add a RIPng block to a UX 2.0 CLI profile:
+
+```json
+{ "name": "list_cli_addons", "arguments": { "contains": "router rip" } }
+```
+
+```json
+{
+  "name": "create_cli_addon",
+  "arguments": {
+    "profile": "Branch-CLI",
+    "name": "RIPng-LAN",
+    "description": "RIPng on LAN VPN 10",
+    "config": "ipv6 router rip RIPNG\n redistribute connected\n!\ninterface GigabitEthernet3\n ipv6 rip RIPNG enable",
+    "confirm": true
+  }
+}
+```
+
+The UX 1.0 equivalent:
+
+```json
+{
+  "name": "create_cli_template",
+  "arguments": { "name": "RIP-v2", "config": "router rip\n version 2\n network 10.0.0.0\n no auto-summary", "device_types": ["vedge-C8000V"], "confirm": true }
 }
 ```
 
@@ -1032,7 +1086,7 @@ npm run verify:api -- <edge> <controller> <validator>   # full read-only coverag
 
 For the routing tools it also checks:
 
-- **Spec coverage:** every BGP, OSPF, OSPFv3 and EIGRP read and write operation in the spec is reached by a dedicated tool, and those tools call nothing outside the spec.
+- **Spec coverage:** every BGP, OSPF, OSPFv3 and EIGRP read and write operation, and every UX 2.0 CLI add-on operation, in the spec is reached by a dedicated tool, and those tools call nothing outside the spec.
 - **Requests:** each tool sends the right method, path, query and body, and BGP monitoring filters are passed through.
 - **Write protection:** writes are blocked by default and without `confirm`.
 - **Invalid input:** bad IDs, versions, scopes and template types are rejected before anything is sent.
@@ -1049,7 +1103,7 @@ Results on Catalyst SD-WAN Manager 26.2.1:
 | Read operations live-tested | 1,261 |
 | Returned data | 1,113 |
 | Errors from Manager or lab (feature not configured, query body required, provider-only role) | 148 |
-| Dedicated tools verified live | 86 / 86 (83 by `verify:api`; the 3 fabric-wide tools by `test:ux2`). The 10 OSPF tools, 6 new BGP tools, 8 EIGRP tools and 7 UX 1.0 routing template tools were added later and are covered by the offline tests. |
+| Dedicated tools verified live | 86 / 86 (83 by `verify:api`; the 3 fabric-wide tools by `test:ux2`). The 10 OSPF tools, 6 new BGP tools, 8 EIGRP tools, 7 UX 1.0 routing template tools and 10 CLI add-on tools were added later and are covered by the offline tests. |
 
 To try individual tools interactively, use the MCP Inspector:
 
@@ -1079,6 +1133,8 @@ npx @modelcontextprotocol/inspector node /absolute/path/to/build/index.js
 | BGP or OSPF calls on one edge take 30–60 s | Real-time queries are answered by the device itself; a busy edge (high CPU) answers slowly. Narrow with `vpn_id`, `prefix` or `peer_addr`, or raise `VMANAGE_TIMEOUT_MS`. |
 | `Template ... is a cisco_vpn template, not a BGP, OSPF, OSPFv3 or EIGRP template` | The routing template tools only act on `cisco_bgp`, `cisco_ospf`, `cisco_ospfv3`, `eigrp`, `bgp` and `ospf` templates. Use `list_routing_templates` to find their IDs. |
 | `profile_type must be one of: service` on an EIGRP tool | vManage has EIGRP features only in service profiles. Use the service profile of the site. |
+| No RIP or RIPng tool | vManage 26.2 has no RIP/RIPng API. Configure them as CLI with `create_cli_addon` (UX 2.0) or `create_cli_template` (UX 1.0); find existing ones with `contains: "router rip"`. |
+| `Template ... is a cisco_bgp template, not a CLI add-on (cli-template) template` | The CLI template tools only act on `cli-template` templates; use `list_cli_templates` for their IDs. |
 | `global_vrf applies only to sd-routing transport profiles` / `... must be a feature ID (UUID)` | Check the scope arguments: `global_vrf` needs `solution: "sd-routing"` and `profile_type: "transport"`; feature, VPN and template IDs are UUIDs (from `get_*_config`, `get_feature_profile` or `list_routing_templates`). |
 | `vManage API error 400` on a create or update | vManage rejected the body. Build it from `get_bgp_feature_schema` / `get_routing_template_schema`, or copy `name`, `description` and `data` from an existing feature returned by `get_bgp_config` / `get_ospf_config`. |
 | `vManage API error 400 ... Empty query` | Statistics endpoints need a query body even when the spec marks it optional. See the statistics example above. |

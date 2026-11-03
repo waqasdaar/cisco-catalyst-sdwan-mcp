@@ -142,6 +142,7 @@ const toolSamples = {
   list_policy_definitions: { definition_type: 'control' },
   get_bgp_feature_schema: { profile_type: 'service' },
   get_routing_template_schema: { template_type: 'cisco_bgp' },
+  list_cli_addons: { contains: 'router rip' },
   list_api_categories: {},
   search_api_operations: { query: 'omp routes' },
   describe_api_operation: { operation_id: 'createReceivedRoutesList' },

@@ -231,6 +231,12 @@ const NO_ROW_OPTIONS = new Set([
   'update_routing_template',
   'delete_routing_template',
   'clone_routing_template',
+  'create_cli_addon',
+  'update_cli_addon',
+  'delete_cli_addon',
+  'create_cli_template',
+  'update_cli_template',
+  'delete_cli_template',
 ]);
 // UX 1.0 feature template types for BGP, OSPF, OSPFv3 and EIGRP (cisco_* and eigrp for IOS XE, bgp/ospf for vEdge), by protocol.
 const ROUTING_TEMPLATE_TYPES = new Map([
@@ -268,6 +274,23 @@ const WRITE_CONFIRM = {
   confirm: { type: 'boolean', description: 'Must be true, only after the user explicitly approves this change' },
 };
 const WRITE_NOTE = 'Changes configuration: needs VMANAGE_ALLOW_WRITE=true on the server and confirm: true after explicit user approval.';
+const CLI_PROFILE = {
+  profile: { type: 'string', description: 'CLI feature profile ID or exact name' },
+  solution: { type: 'string', enum: ['sdwan', 'sd-routing'], description: 'Solution family (default: sdwan)' },
+};
+const CLI_CONTENT = {
+  name: { type: 'string', description: 'Name' },
+  description: { type: 'string', description: 'Description' },
+  config: { type: 'string', description: 'IOS XE configuration text, one command per line (e.g. "router rip\n version 2\n network 10.0.0.0")' },
+};
+const CLI_CONFIG_MAX = 100_000;
+
+/** Configuration text of a CLI add-on feature payload (plain string or { optionType, value }). */
+function cliText(config: unknown): string {
+  if (typeof config === 'string') return config;
+  const value = (config as { value?: unknown } | undefined)?.value;
+  return typeof value === 'string' ? value : '';
+}
 
 type RoutingProtocol = 'ospf' | 'bgp' | 'eigrp';
 
@@ -1693,6 +1716,107 @@ export class CatalystSdwanMCPServer {
         },
       },
 
+      // === CLI add-on configuration (UX 2.0 CLI profile features, UX 1.0 cli-template) ===
+      {
+        name: 'list_cli_addons',
+        description:
+          'List UX 2.0 CLI add-on features (raw IOS XE configuration, e.g. RIP/RIPng, which has no dedicated API) of all CLI profiles or one. contains finds add-ons whose configuration includes a text, e.g. "router rip".',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            profile: { type: 'string', description: 'CLI profile ID or exact name (default: all CLI profiles)' },
+            solution: { type: 'string', enum: ['sdwan', 'sd-routing'], description: 'Solution family (default: sdwan)' },
+            contains: { type: 'string', description: 'Only add-ons whose configuration contains this text (case-insensitive)' },
+          },
+        },
+      },
+      {
+        name: 'get_cli_addon',
+        description: 'Get one UX 2.0 CLI add-on feature with its full configuration text.',
+        inputSchema: {
+          type: 'object',
+          properties: { ...CLI_PROFILE, feature_id: { type: 'string', description: 'CLI add-on feature ID' } },
+          required: ['profile', 'feature_id'],
+        },
+      },
+      {
+        name: 'create_cli_addon',
+        description: `Create a UX 2.0 CLI add-on feature in a CLI profile with raw IOS XE configuration (e.g. a "router rip" or "ipv6 router rip" block). Devices get it when their configuration group is deployed. ${WRITE_NOTE}`,
+        inputSchema: {
+          type: 'object',
+          properties: { ...CLI_PROFILE, ...CLI_CONTENT, ...WRITE_CONFIRM },
+          required: ['profile', 'name', 'config', 'confirm'],
+        },
+      },
+      {
+        name: 'update_cli_addon',
+        description: `Change a UX 2.0 CLI add-on feature. Omitted fields keep their current value; config replaces the whole configuration text. ${WRITE_NOTE}`,
+        inputSchema: {
+          type: 'object',
+          properties: { ...CLI_PROFILE, feature_id: { type: 'string', description: 'CLI add-on feature ID' }, ...CLI_CONTENT, ...WRITE_CONFIRM },
+          required: ['profile', 'feature_id', 'confirm'],
+        },
+      },
+      {
+        name: 'delete_cli_addon',
+        description: `Delete a UX 2.0 CLI add-on feature from a CLI profile. ${WRITE_NOTE}`,
+        inputSchema: {
+          type: 'object',
+          properties: { ...CLI_PROFILE, feature_id: { type: 'string', description: 'CLI add-on feature ID' }, ...WRITE_CONFIRM },
+          required: ['profile', 'feature_id', 'confirm'],
+        },
+      },
+      {
+        name: 'list_cli_templates',
+        description:
+          'List UX 1.0 CLI add-on feature templates (cli-template). contains finds templates whose configuration includes a text, e.g. "router rip" (reads each template).',
+        inputSchema: {
+          type: 'object',
+          properties: { contains: { type: 'string', description: 'Only templates whose configuration contains this text (case-insensitive)' } },
+        },
+      },
+      {
+        name: 'get_cli_template',
+        description: 'Get one UX 1.0 CLI add-on template: its configuration text and the device templates that use it.',
+        inputSchema: {
+          type: 'object',
+          properties: { template_id: { type: 'string', description: 'cli-template feature template ID' } },
+          required: ['template_id'],
+        },
+      },
+      {
+        name: 'create_cli_template',
+        description: `Create a UX 1.0 CLI add-on feature template (cli-template) with raw IOS XE configuration. Attach it to a device template to use it. ${WRITE_NOTE}`,
+        inputSchema: {
+          type: 'object',
+          properties: {
+            ...CLI_CONTENT,
+            device_types: { type: 'array', items: { type: 'string' }, description: 'Device models the template applies to, e.g. ["vedge-C8000V"]' },
+            min_version: { type: 'string', description: 'Template minimum version (default: 15.0.0)' },
+            ...WRITE_CONFIRM,
+          },
+          required: ['name', 'config', 'device_types', 'confirm'],
+        },
+      },
+      {
+        name: 'update_cli_template',
+        description: `Change a UX 1.0 CLI add-on template. Omitted fields keep their current value; config replaces the whole configuration text. Devices are not updated until their device templates are pushed again. ${WRITE_NOTE}`,
+        inputSchema: {
+          type: 'object',
+          properties: { template_id: { type: 'string', description: 'cli-template feature template ID' }, ...CLI_CONTENT, ...WRITE_CONFIRM },
+          required: ['template_id', 'confirm'],
+        },
+      },
+      {
+        name: 'delete_cli_template',
+        description: `Delete a UX 1.0 CLI add-on template. vManage refuses templates still used by a device template. ${WRITE_NOTE}`,
+        inputSchema: {
+          type: 'object',
+          properties: { template_id: { type: 'string', description: 'cli-template feature template ID' }, ...WRITE_CONFIRM },
+          required: ['template_id', 'confirm'],
+        },
+      },
+
       // === Policy ===
       {
         name: 'list_policy_lists',
@@ -1906,15 +2030,47 @@ export class CatalystSdwanMCPServer {
       return { operationId: op.operationId, method, path, result };
     };
     const routingProtocol: RoutingProtocol = name.includes('_bgp_') ? 'bgp' : name.includes('_eigrp_') ? 'eigrp' : 'ospf';
-    // A UX 1.0 feature template, refused unless it is a BGP / OSPF / OSPFv3 template.
-    const routingTemplate = async () => {
+    // A UX 1.0 feature template, refused unless its type is one the calling tool manages.
+    const typedTemplate = async (allowed: (type: string) => boolean, kind: string) => {
       const id = String(args.template_id ?? '');
       if (!UUID.test(id)) throw new Error('template_id must be a feature template ID (UUID)');
       const template = await this.apiService.get<Record<string, unknown>>(`/dataservice/template/feature/object/${id}`);
-      if (!ROUTING_TEMPLATE_TYPES.has(String(template?.templateType))) {
-        throw new Error(`Template ${id} is a ${template?.templateType} template, not a BGP, OSPF, OSPFv3 or EIGRP template`);
+      if (!allowed(String(template?.templateType))) {
+        throw new Error(`Template ${id} is a ${template?.templateType} template, not ${kind} template`);
       }
       return { id, template };
+    };
+    const routingTemplate = () => typedTemplate((t) => ROUTING_TEMPLATE_TYPES.has(t), 'a BGP, OSPF, OSPFv3 or EIGRP');
+    const cliTemplate = () => typedTemplate((t) => t === 'cli-template', 'a CLI add-on (cli-template)');
+    const cliContains = () => {
+      const text = String(args.contains ?? '').trim().toLowerCase();
+      return text || undefined;
+    };
+    const cliName = (required: boolean) => {
+      const value = args.name === undefined ? '' : String(args.name).trim();
+      if (!value && required) throw new Error('name is required');
+      if (value.length > 128) throw new Error('name must be at most 128 characters');
+      return value || undefined;
+    };
+    const cliConfig = (required: boolean) => {
+      if (args.config === undefined && !required) return undefined;
+      if (typeof args.config !== 'string' || !args.config.trim()) throw new Error('config must be non-empty configuration text');
+      if (args.config.length > CLI_CONFIG_MAX) throw new Error(`config must be at most ${CLI_CONFIG_MAX} characters`);
+      return args.config;
+    };
+    // UX 2.0 CLI add-on features live under /cli/{profileId}/config.
+    const cliAddonTarget = async (needFeature: boolean) => {
+      if (name.startsWith('update_') && args.name === undefined && args.description === undefined && args.config === undefined) {
+        throw new Error('Nothing to change: give name, description or config');
+      }
+      const solution = pick('solution', { sdwan: 'sdwan', 'sd-routing': 'sd-routing' }, 'sdwan');
+      let featureId: string | undefined;
+      if (needFeature) {
+        featureId = String(args.feature_id ?? '');
+        if (!UUID.test(featureId)) throw new Error('feature_id must be a feature ID (UUID)');
+      }
+      const profileId = await this.resolveFeatureProfileId(solution, 'cli', args.profile);
+      return { path: `/dataservice/v1/feature-profile/${solution}/cli/${encodeURIComponent(profileId)}/config`, featureId };
     };
 
     switch (name) {
@@ -2259,6 +2415,130 @@ export class CatalystSdwanMCPServer {
         const { id, template } = await routingTemplate();
         const desc = String(args.description ?? '').trim() || `Clone of ${template.templateName}`;
         return routingWrite('POST', '/dataservice/template/feature/clone', undefined, { id, name: newName, desc });
+      }
+
+      case 'list_cli_addons': {
+        const solution = pick('solution', { sdwan: 'sdwan', 'sd-routing': 'sd-routing' }, 'sdwan');
+        const contains = cliContains();
+        let profiles: Array<{ id: string; name: string }>;
+        if (args.profile !== undefined) {
+          const id = await this.resolveFeatureProfileId(solution, 'cli', args.profile);
+          profiles = [{ id, name: String(args.profile) }];
+        } else {
+          const rows = await this.apiService.get<Array<Record<string, unknown>>>(`/dataservice/v1/feature-profile/${solution}/cli`, undefined, GROUP_LIST_TTL_MS);
+          profiles = (Array.isArray(rows) ? rows : []).map((p) => ({ id: String(p.profileId), name: String(p.profileName) }));
+        }
+        const perProfile = await Promise.all(
+          profiles.map(async (p) => {
+            try {
+              const res = await this.apiService.get(`/dataservice/v1/feature-profile/${solution}/cli/${encodeURIComponent(p.id)}/config`);
+              const features = dataOf(res);
+              return (Array.isArray(features) ? features : []).map((f: Record<string, any>) => ({
+                profile: p.name,
+                profileId: p.id,
+                featureId: f.parcelId,
+                name: f.payload?.name,
+                description: f.payload?.description,
+                config: cliText(f.payload?.data?.config),
+                lastUpdatedBy: f.lastUpdatedBy,
+                lastUpdatedOn: f.lastUpdatedOn,
+              }));
+            } catch (e) {
+              return [{ profile: p.name, profileId: p.id, error: errorMessage(e) }];
+            }
+          })
+        );
+        const rows = perProfile.flat().filter((r) => !contains || ('config' in r && String(r.config).toLowerCase().includes(contains)));
+        return { data: rows };
+      }
+      case 'get_cli_addon': {
+        const { path, featureId } = await cliAddonTarget(true);
+        return this.apiService.get(`${path}/${featureId}`);
+      }
+      case 'create_cli_addon': {
+        const { path } = await cliAddonTarget(false);
+        const body = { name: cliName(true), description: String(args.description ?? ''), data: { config: cliConfig(true) } };
+        return routingWrite('POST', path, body);
+      }
+      case 'update_cli_addon': {
+        const { path, featureId } = await cliAddonTarget(true);
+        const current = await this.apiService.get<Record<string, any>>(`${path}/${featureId}`);
+        const payload = current?.payload ?? current;
+        const body = {
+          name: cliName(false) ?? payload?.name,
+          description: args.description !== undefined ? String(args.description) : payload?.description ?? '',
+          data: { ...(payload?.data ?? {}), config: cliConfig(false) ?? payload?.data?.config },
+        };
+        return routingWrite('PUT', `${path}/${featureId}`, body);
+      }
+      case 'delete_cli_addon': {
+        const { path, featureId } = await cliAddonTarget(true);
+        return routingWrite('DELETE', `${path}/${featureId}`);
+      }
+
+      case 'list_cli_templates': {
+        const contains = cliContains();
+        const list = await this.apiService.get<{ data?: Array<Record<string, unknown>> }>('/dataservice/template/feature');
+        let rows = (list.data ?? []).filter((t) => t.templateType === 'cli-template');
+        if (contains) {
+          const configs = await Promise.all(
+            rows.map((t) =>
+              this.apiService
+                .get<Record<string, any>>(`/dataservice/template/feature/object/${encodeURIComponent(String(t.templateId))}`)
+                .then((o) => cliText(o?.templateDefinition?.config?.vipValue))
+                .catch(() => '')
+            )
+          );
+          rows = rows.filter((_, i) => configs[i].toLowerCase().includes(contains)).map((t, i) => ({ ...t, config: configs[i] }));
+        }
+        return { ...list, data: rows };
+      }
+      case 'get_cli_template': {
+        const { id, template } = await cliTemplate();
+        const usedBy = await this.apiService
+          .get(`/dataservice/template/feature/devicetemplates/${id}`)
+          .catch((e: Error) => ({ error: e.message }));
+        return { ...template, config: cliText((template.templateDefinition as any)?.config?.vipValue), deviceTemplates: dataOf(usedBy) };
+      }
+      case 'create_cli_template': {
+        const types = args.device_types;
+        if (!Array.isArray(types) || !types.length || !types.every((t) => typeof t === 'string' && /^[\w.-]+$/.test(t))) {
+          throw new Error('device_types must be a non-empty list of device models, e.g. ["vedge-C8000V"]');
+        }
+        const minVersion = String(args.min_version ?? '15.0.0');
+        if (!/^\d+(\.\d+){0,3}$/.test(minVersion)) throw new Error('min_version must look like 15.0.0');
+        const body = {
+          templateName: cliName(true),
+          templateDescription: String(args.description ?? '').trim() || String(args.name),
+          templateType: 'cli-template',
+          deviceType: types,
+          templateMinVersion: minVersion,
+          templateDefinition: { config: { vipObjectType: 'object', vipType: 'constant', vipValue: cliConfig(true) } },
+          factoryDefault: false,
+        };
+        return routingWrite('POST', '/dataservice/template/feature', body);
+      }
+      case 'update_cli_template': {
+        if (args.name === undefined && args.description === undefined && args.config === undefined) {
+          throw new Error('Nothing to change: give name, description or config');
+        }
+        const { id, template } = await cliTemplate();
+        const definition = (template.templateDefinition ?? {}) as Record<string, any>;
+        const config = cliConfig(false);
+        const body = {
+          templateName: cliName(false) ?? template.templateName,
+          templateDescription: args.description !== undefined ? String(args.description) : template.templateDescription,
+          templateType: 'cli-template',
+          deviceType: template.deviceType,
+          templateMinVersion: template.templateMinVersion,
+          templateDefinition: config === undefined ? definition : { ...definition, config: { ...(definition.config ?? {}), vipObjectType: 'object', vipType: 'constant', vipValue: config } },
+          factoryDefault: false,
+        };
+        return routingWrite('PUT', `/dataservice/template/feature/${id}`, body);
+      }
+      case 'delete_cli_template': {
+        const { id } = await cliTemplate();
+        return routingWrite('DELETE', `/dataservice/template/feature/${id}`);
       }
 
       case 'list_policy_lists': {
