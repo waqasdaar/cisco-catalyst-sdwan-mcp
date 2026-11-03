@@ -799,7 +799,35 @@ MCP clients start the container per session over stdio. Pass the settings with `
 }
 ```
 
-For VS Code, use the same `command`/`args` with `"type": "stdio"`. For OpenCode, use `"command": ["docker", "run", "-i", "--rm", "--env-file", "/absolute/path/to/.env", "catalyst-sdwan-mcp:latest"]`.
+Example for VS Code (`.vscode/mcp.json`):
+
+```json
+{
+  "servers": {
+    "catalyst-sdwan": {
+      "type": "stdio",
+      "command": "docker",
+      "args": ["run", "-i", "--rm", "--env-file", "/absolute/path/to/.env", "catalyst-sdwan-mcp:latest"]
+    }
+  }
+}
+```
+
+Example for OpenCode 2.x / OpenChamber (`opencode.json`):
+
+```json
+{
+  "$schema": "https://opencode.ai/config.json",
+  "mcp": {
+    "servers": {
+      "catalyst-sdwan": {
+        "type": "local",
+        "command": ["docker", "run", "-i", "--rm", "--env-file", "/absolute/path/to/.env", "catalyst-sdwan-mcp:latest"]
+      }
+    }
+  }
+}
+```
 
 ---
 
