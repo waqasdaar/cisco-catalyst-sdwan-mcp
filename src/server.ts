@@ -230,6 +230,13 @@ const NO_ROW_OPTIONS = new Set([
   'update_multicast_feature',
   'delete_multicast_feature',
   'associate_multicast_feature',
+  'create_ipv6_policy_object',
+  'update_ipv6_policy_object',
+  'delete_ipv6_policy_object',
+  'create_ipv6_tracker',
+  'associate_ipv6_tracker',
+  'update_ipv6_tracker',
+  'delete_ipv6_tracker',
   'associate_eigrp_feature',
   'create_routing_template',
   'update_routing_template',
@@ -285,6 +292,56 @@ const WRITE_CONFIRM = {
   confirm: { type: 'boolean', description: 'Must be true, only after the user explicitly approves this change' },
 };
 const WRITE_NOTE = 'Changes configuration: needs VMANAGE_ALLOW_WRITE=true on the server and confirm: true after explicit user approval.';
+const WRITE_TOOL = /^(create|update|delete|associate|clone)_/;
+
+// IPv6 real-time views: endpoint and the filters it accepts (tool argument -> query parameter).
+const IPV6_VIEWS: Record<string, { path: string; filters?: Record<string, string>; local?: string[] }> = {
+  nd: { path: '/dataservice/device/ipv6/nd6' },
+  neighbors: { path: '/dataservice/device/ndv6', filters: { vpn_id: 'vpn-id', if_name: 'if-name', mac: 'mac' } },
+  // IOS XE edges reject /device/ip/v6fib and return nothing from /device/ip/routetable; the IETF routing list works
+  // everywhere but ignores its address-family filter, so IPv6, prefix and protocol are filtered here.
+  routes: { path: '/dataservice/device/ip/ipRoutes', filters: { vpn_id: 'routing-instance-name' }, local: ['prefix', 'protocol'] },
+  fib: { path: '/dataservice/device/ip/v6fib', filters: { vpn_id: 'vpn-id', prefix: 'prefix', tloc: 'tloc', color: 'color' } },
+  'interface-stats': { path: '/dataservice/device/interface/ipv6Stats', filters: { vpn_id: 'vpn-id', if_name: 'ifname' } },
+  dhcpv6: { path: '/dataservice/device/dhcpv6/interface' },
+  nat64: { path: '/dataservice/device/ip/nat64/translation' },
+  'omp-received': { path: '/dataservice/device/omp/routes/received/ompIpv6' },
+  'omp-advertised': { path: '/dataservice/device/omp/routes/advertised/ompIpv6' },
+  'cflowd-flows': {
+    path: '/dataservice/device/cedgecflowd/app-fwd-cflowd-v6-flows',
+    filters: { vpn_id: 'vpn-id', src_addr: 'src-addr', dst_addr: 'dst-addr', app: 'app' },
+  },
+};
+const IPV6_FILTER_ARGS = ['vpn_id', 'prefix', 'protocol', 'if_name', 'mac', 'tloc', 'color', 'src_addr', 'dst_addr', 'app'];
+const IPV6_POLICY_VIEWS: Record<string, string> = {
+  'acl-names': '/dataservice/device/policy/ipv6/accesslistnames',
+  'acl-associations': '/dataservice/device/policy/ipv6/accesslistassociations',
+  'acl-counters': '/dataservice/device/policy/ipv6/accesslistcounters',
+  'acl-policers': '/dataservice/device/policy/ipv6/accesslistpolicers',
+  'sgacl-counters': '/dataservice/device/roleBasedIpv6Counters',
+  'sgacl-permissions': '/dataservice/device/roleBasedIpv6Permissions',
+};
+// UX 1.0 IPv6 policy objects: prefix lists and IPv6 ACL / device-access definitions.
+const IPV6_POLICY_OBJECTS: Record<string, string> = {
+  'prefix-list': '/dataservice/template/policy/list/ipv6prefix',
+  'data-prefix-list': '/dataservice/template/policy/list/dataipv6prefix',
+  acl: '/dataservice/template/policy/definition/aclv6',
+  'device-access': '/dataservice/template/policy/definition/deviceaccesspolicyv6',
+};
+const IPV6_POLICY_KIND = {
+  kind: {
+    type: 'string',
+    enum: Object.keys(IPV6_POLICY_OBJECTS),
+    description: 'prefix-list (ipv6prefix list), data-prefix-list (dataipv6prefix list), acl (aclv6 definition) or device-access (deviceaccesspolicyv6 definition)',
+  },
+};
+const IPV6_TRACKER_SCOPE = {
+  profile: { type: 'string', description: 'SD-WAN transport feature profile ID or exact name' },
+  tracker_type: { type: 'string', enum: ['tracker', 'group'], description: 'IPv6 tracker or IPv6 tracker group (default: tracker)' },
+  vpn_feature_id: { type: 'string', description: 'WAN VPN feature ID (with interface_type and interface_feature_id: trackers of one WAN interface)' },
+  interface_type: { type: 'string', enum: ['ethernet', 'cellular'], description: 'WAN interface feature type' },
+  interface_feature_id: { type: 'string', description: 'WAN interface feature ID' },
+};
 const CLI_PROFILE = {
   profile: { type: 'string', description: 'CLI feature profile ID or exact name' },
   solution: { type: 'string', enum: ['sdwan', 'sd-routing'], description: 'Solution family (default: sdwan)' },
@@ -377,23 +434,13 @@ function routingFeatureTools(protocol: RoutingProtocol): Tool[] {
     },
   ];
 }
+// Added to ~100 tools, so descriptions stay short: the tool list is sent to the model on every request.
 const ROW_OPTIONS = {
-  fields: {
-    type: 'array',
-    items: { type: 'string' },
-    description: 'Return only these fields of each row (smaller, faster responses), e.g. host-name, system-ip, reachability',
-  },
-  filter: {
-    type: 'object',
-    additionalProperties: true,
-    description: 'Return only rows whose fields match these values (case-insensitive; an array value matches any of its items), e.g. state: down',
-  },
-  count_by: {
-    type: 'string',
-    description: 'Return row counts per value of this field instead of rows (after filter), e.g. reachability, device-model, version, site-id. Fastest way to summarize large lists.',
-  },
-  offset: { type: 'integer', minimum: 0, description: 'Skip this many rows (after filter). Use nextOffset from a truncated or paged response to continue.' },
-  limit: { type: 'integer', minimum: 1, description: 'Return at most this many rows (after filter and offset)' },
+  fields: { type: 'array', items: { type: 'string' }, description: 'Only these row fields' },
+  filter: { type: 'object', additionalProperties: true, description: 'Only rows whose fields match (case-insensitive; array = any of)' },
+  count_by: { type: 'string', description: 'Count rows per value of this field instead of returning rows' },
+  offset: { type: 'integer', minimum: 0, description: 'Skip rows (use nextOffset to continue)' },
+  limit: { type: 'integer', minimum: 1, description: 'Max rows' },
 };
 const SYNCED_OPTION = {
   type: 'boolean',
@@ -706,10 +753,13 @@ export class CatalystSdwanMCPServer {
           },
         }
       : {};
-    this.tools ??= this.baseTools().map((tool) => {
-      const rowOptions = NO_ROW_OPTIONS.has(tool.name) ? {} : ROW_OPTIONS;
-      return { ...tool, inputSchema: { ...tool.inputSchema, properties: { ...rowOptions, ...tenantOption, ...(tool.inputSchema.properties ?? {}) } } };
-    });
+    this.tools ??= this.baseTools()
+      // Write tools only work with VMANAGE_ALLOW_WRITE=true; listing them otherwise costs tokens and tool slots.
+      .filter((tool) => this.config.allowWrite || !WRITE_TOOL.test(tool.name))
+      .map((tool) => {
+        const rowOptions = NO_ROW_OPTIONS.has(tool.name) ? {} : ROW_OPTIONS;
+        return { ...tool, inputSchema: { ...tool.inputSchema, properties: { ...rowOptions, ...tenantOption, ...(tool.inputSchema.properties ?? {}) } } };
+      });
     return this.tools;
   }
 
@@ -1462,6 +1512,163 @@ export class CatalystSdwanMCPServer {
         },
       },
 
+      // === IPv6: real-time monitoring, UX 1.0 policy objects, UX 2.0 trackers ===
+      {
+        name: 'get_ipv6_status',
+        description:
+          'Get IPv6 state of a device (real time): ND cache, IPv6 neighbors, IPv6 route table, IPv6 FIB (vEdge and controllers only), IPv6 interface statistics, DHCPv6 interfaces, NAT64 translations, OMP IPv6 routes received/advertised, or cflowd IPv6 flows.',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            device_id: { type: 'string', description: 'Device ID or system-ip' },
+            view: { type: 'string', enum: Object.keys(IPV6_VIEWS), description: 'What to return (default: nd)' },
+            vpn_id: { type: 'string', description: 'VPN (neighbors, routes, fib, interface-stats, cflowd-flows)' },
+            prefix: { type: 'string', description: 'IPv6 prefix (routes, fib)' },
+            protocol: { type: 'string', description: 'Route source protocol, e.g. omp, connected, static, bgp, ospfv3 (routes; substring match)' },
+            if_name: { type: 'string', description: 'Interface name (neighbors, interface-stats)' },
+            mac: { type: 'string', description: 'MAC address (neighbors)' },
+            tloc: { type: 'string', description: 'TLOC IP (fib)' },
+            color: { type: 'string', description: 'TLOC color (fib)' },
+            src_addr: { type: 'string', description: 'Source address (cflowd-flows)' },
+            dst_addr: { type: 'string', description: 'Destination address (cflowd-flows)' },
+            app: { type: 'string', description: 'Application (cflowd-flows)' },
+          },
+          required: ['device_id'],
+        },
+      },
+      {
+        name: 'get_ipv6_policy_status',
+        description: 'Get IPv6 policy state of a device (real time): IPv6 ACL names, interface associations, counters or policers, or role-based (SGACL) IPv6 counters and permissions.',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            device_id: { type: 'string', description: 'Device ID or system-ip' },
+            view: { type: 'string', enum: Object.keys(IPV6_POLICY_VIEWS), description: 'What to return (default: acl-names)' },
+          },
+          required: ['device_id'],
+        },
+      },
+      {
+        name: 'get_ipv6_policy_object',
+        description:
+          'Get UX 1.0 IPv6 policy objects: IPv6 prefix lists, data IPv6 prefix lists, IPv6 ACL (aclv6) or IPv6 device-access definitions. Without object_id lists them (info_tag filters lists); preview renders the device CLI of a saved object (with object_id) or of an unsaved body (preview_body), without saving anything.',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            ...IPV6_POLICY_KIND,
+            object_id: { type: 'string', description: 'List or definition ID' },
+            info_tag: { type: 'string', description: 'Only prefix lists with this info tag' },
+            preview: { type: 'boolean', description: 'Render the device CLI of object_id instead of returning it' },
+            preview_body: { type: 'object', description: 'Render the device CLI of this unsaved list or definition' },
+          },
+          required: ['kind'],
+        },
+      },
+      {
+        name: 'create_ipv6_policy_object',
+        description: `Create a UX 1.0 IPv6 prefix list, data IPv6 prefix list, IPv6 ACL or IPv6 device-access definition. ${WRITE_NOTE}`,
+        inputSchema: {
+          type: 'object',
+          properties: {
+            ...IPV6_POLICY_KIND,
+            body: {
+              type: 'object',
+              description: 'Lists: { name, description, entries: [{ ipv6Prefix }] }. Definitions: { name, description, type, defaultAction, sequences }. Same shape as get_ipv6_policy_object output.',
+            },
+            ...WRITE_CONFIRM,
+          },
+          required: ['kind', 'body', 'confirm'],
+        },
+      },
+      {
+        name: 'update_ipv6_policy_object',
+        description: `Replace a UX 1.0 IPv6 policy object (full definition). For ACL / device-access definitions, mode multiple edits a definition used by several policies and mode bulk saves several definitions at once (body: array). Devices get the change when the policies using it are activated or pushed again. ${WRITE_NOTE}`,
+        inputSchema: {
+          type: 'object',
+          properties: {
+            ...IPV6_POLICY_KIND,
+            object_id: { type: 'string', description: 'List or definition ID (not for mode bulk)' },
+            mode: { type: 'string', enum: ['single', 'multiple', 'bulk'], description: 'single (default), multiple or bulk (definitions only)' },
+            body: { description: 'Complete object (array of objects for mode bulk)' },
+            ...WRITE_CONFIRM,
+          },
+          required: ['kind', 'body', 'confirm'],
+        },
+      },
+      {
+        name: 'delete_ipv6_policy_object',
+        description: `Delete a UX 1.0 IPv6 policy object by ID, or all prefix lists with an info tag. vManage refuses objects still used by a policy. ${WRITE_NOTE}`,
+        inputSchema: {
+          type: 'object',
+          properties: {
+            ...IPV6_POLICY_KIND,
+            object_id: { type: 'string', description: 'List or definition ID' },
+            info_tag: { type: 'string', description: 'Prefix lists only: delete every list with this info tag' },
+            ...WRITE_CONFIRM,
+          },
+          required: ['kind', 'confirm'],
+        },
+      },
+      {
+        name: 'get_ipv6_tracker',
+        description:
+          'Get UX 2.0 IPv6 trackers or tracker groups of an SD-WAN transport profile, or those associated with one WAN interface (vpn_feature_id + interface_type + interface_feature_id). tracker_id returns one; schema_type returns the JSON schema for create/update bodies instead.',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            ...IPV6_TRACKER_SCOPE,
+            tracker_id: { type: 'string', description: 'IPv6 tracker or tracker group feature ID' },
+            schema_type: { type: 'string', enum: ['post', 'put'], description: 'Return the body schema for create (post) or update (put); profile not needed' },
+          },
+        },
+      },
+      {
+        name: 'create_ipv6_tracker',
+        description: `Create a UX 2.0 IPv6 tracker or tracker group in an SD-WAN transport profile. Returns its ID; attach it to a WAN interface with associate_ipv6_tracker. ${WRITE_NOTE}`,
+        inputSchema: {
+          type: 'object',
+          properties: {
+            profile: IPV6_TRACKER_SCOPE.profile,
+            tracker_type: IPV6_TRACKER_SCOPE.tracker_type,
+            body: { type: 'object', description: 'Feature definition: { name, description, data } (see get_ipv6_tracker schema_type: post)' },
+            ...WRITE_CONFIRM,
+          },
+          required: ['profile', 'body', 'confirm'],
+        },
+      },
+      {
+        name: 'associate_ipv6_tracker',
+        description: `Attach an existing IPv6 tracker or tracker group to a WAN Ethernet or cellular interface feature. ${WRITE_NOTE}`,
+        inputSchema: {
+          type: 'object',
+          properties: { ...IPV6_TRACKER_SCOPE, tracker_id: { type: 'string', description: 'IPv6 tracker or tracker group feature ID' }, ...WRITE_CONFIRM },
+          required: ['profile', 'vpn_feature_id', 'interface_type', 'interface_feature_id', 'tracker_id', 'confirm'],
+        },
+      },
+      {
+        name: 'update_ipv6_tracker',
+        description: `Replace an IPv6 tracker or tracker group (full definition). With the interface scope, edits its association with that WAN interface instead. ${WRITE_NOTE}`,
+        inputSchema: {
+          type: 'object',
+          properties: {
+            ...IPV6_TRACKER_SCOPE,
+            tracker_id: { type: 'string', description: 'IPv6 tracker or tracker group feature ID' },
+            body: { type: 'object', description: 'Complete feature definition: { name, description, data }' },
+            ...WRITE_CONFIRM,
+          },
+          required: ['profile', 'tracker_id', 'body', 'confirm'],
+        },
+      },
+      {
+        name: 'delete_ipv6_tracker',
+        description: `Delete an IPv6 tracker or tracker group. With the interface scope, only removes its association with that WAN interface. ${WRITE_NOTE}`,
+        inputSchema: {
+          type: 'object',
+          properties: { ...IPV6_TRACKER_SCOPE, tracker_id: { type: 'string', description: 'IPv6 tracker or tracker group feature ID' }, ...WRITE_CONFIRM },
+          required: ['profile', 'tracker_id', 'confirm'],
+        },
+      },
+
       // === Real-time Monitoring - Cflowd ===
       {
         name: 'get_cflowd_flows',
@@ -2144,6 +2351,34 @@ export class CatalystSdwanMCPServer {
       if (args.config.length > CLI_CONFIG_MAX) throw new Error(`config must be at most ${CLI_CONFIG_MAX} characters`);
       return args.config;
     };
+    const optionalId = (arg: string, what: string) => {
+      const value = args[arg];
+      if (value === undefined || value === null || value === '') return undefined;
+      if (!UUID.test(String(value))) throw new Error(`${arg} must be ${what} (UUID)`);
+      return String(value);
+    };
+    const ipv6PolicyTarget = () => {
+      const kind = pick('kind', Object.fromEntries(Object.keys(IPV6_POLICY_OBJECTS).map((k) => [k, k])), '');
+      const isList = kind.endsWith('prefix-list');
+      const id = optionalId('object_id', 'a policy list or definition ID');
+      const infoTag = args.info_tag === undefined ? undefined : String(args.info_tag);
+      if (infoTag !== undefined && !/^[\w.-]{1,64}$/.test(infoTag)) throw new Error('info_tag must be 1-64 letters, digits, ".", "_" or "-"');
+      if (infoTag !== undefined && !isList) throw new Error('info_tag applies only to prefix lists');
+      return { base: IPV6_POLICY_OBJECTS[kind], id, infoTag, isList };
+    };
+    const ipv6TrackerTarget = async () => {
+      const kind = pick('tracker_type', { tracker: 'ipv6-tracker', group: 'ipv6-trackergroup' }, 'tracker');
+      const vpnId = optionalId('vpn_feature_id', 'a WAN VPN feature ID');
+      const ifId = optionalId('interface_feature_id', 'an interface feature ID');
+      const ifType = args.interface_type === undefined ? undefined : pick('interface_type', { ethernet: 'ethernet', cellular: 'cellular' }, '');
+      const scoped = vpnId !== undefined || ifId !== undefined || ifType !== undefined;
+      if (scoped && !(vpnId && ifId && ifType)) throw new Error('vpn_feature_id, interface_type and interface_feature_id must be given together');
+      const trackerId = optionalId('tracker_id', 'an IPv6 tracker feature ID');
+      const profileId = await this.resolveFeatureProfileId('sdwan', 'transport', args.profile);
+      let path = `/dataservice/v1/feature-profile/sdwan/transport/${encodeURIComponent(profileId)}`;
+      if (scoped) path += `/wan/vpn/${vpnId}/interface/${ifType}/${ifId}`;
+      return { path: `${path}/${kind}`, trackerId, scoped };
+    };
     // UX 2.0 CLI add-on features live under /cli/{profileId}/config.
     const cliAddonTarget = async (needFeature: boolean) => {
       if (name.startsWith('update_') && args.name === undefined && args.description === undefined && args.config === undefined) {
@@ -2425,6 +2660,103 @@ export class CatalystSdwanMCPServer {
         return this.apiService.get('/dataservice/v1/feature-profile/sdwan/service/routing/multicast/schema', {
           schemaType: pick('schema_type', { post: 'post', put: 'put' }, 'post'),
         });
+
+      case 'get_ipv6_status': {
+        const view = pick('view', Object.fromEntries(Object.keys(IPV6_VIEWS).map((v) => [v, v])), 'nd');
+        const { path, filters = {}, local = [] } = IPV6_VIEWS[view];
+        const query: Record<string, unknown> = {};
+        for (const arg of IPV6_FILTER_ARGS) {
+          if (args[arg] === undefined || local.includes(arg)) continue;
+          if (!Object.hasOwn(filters, arg)) {
+            const supported = [...Object.keys(filters), ...local];
+            throw new Error(`${arg} does not apply to view ${view}${supported.length ? ` (filters: ${supported.join(', ')})` : ' (no filters)'}`);
+          }
+          query[filters[arg]] = args[arg];
+        }
+        const result = await deviceGet(path, query);
+        if (view !== 'routes') return result;
+        const prefix = args.prefix === undefined ? undefined : String(args.prefix).toLowerCase();
+        const protocol = args.protocol === undefined ? undefined : String(args.protocol).toLowerCase();
+        const rows = dataOf(result);
+        const routes = (Array.isArray(rows) ? rows : []).filter(
+          (r: Record<string, unknown>) =>
+            String(r['rib-address-family']).toLowerCase() === 'ipv6' &&
+            (!prefix || String(r['route-destination-prefix']).toLowerCase() === prefix) &&
+            (!protocol || String(r['route-source-protocol']).toLowerCase().includes(protocol))
+        );
+        return { ...(result as object), data: routes };
+      }
+      case 'get_ipv6_policy_status':
+        return deviceGet(pick('view', IPV6_POLICY_VIEWS, 'acl-names'));
+      case 'get_ipv6_policy_object': {
+        const { base, id, infoTag } = ipv6PolicyTarget();
+        if (args.preview_body !== undefined) {
+          if (id || args.preview === true) throw new Error('preview_body renders an unsaved object; do not combine it with object_id or preview');
+          const body = args.preview_body;
+          if (!body || typeof body !== 'object' || Array.isArray(body)) throw new Error('preview_body must be an object');
+          // Read-only render on vManage (POST); nothing is saved.
+          return (await this.apiService.request('POST', `${base}/preview`, { body })).body;
+        }
+        if (args.preview === true) {
+          if (!id) throw new Error('preview needs object_id');
+          return this.apiService.get(`${base}/preview/${id}`);
+        }
+        if (id) return this.apiService.get(`${base}/${id}`);
+        if (infoTag) return this.apiService.get(`${base}/filtered`, { infoTag });
+        return this.apiService.get(base);
+      }
+      case 'create_ipv6_policy_object': {
+        const { base, id, infoTag } = ipv6PolicyTarget();
+        if (id || infoTag) throw new Error('create_ipv6_policy_object takes no object_id or info_tag');
+        return routingWrite('POST', base, writeBody());
+      }
+      case 'update_ipv6_policy_object': {
+        const { base, id, isList } = ipv6PolicyTarget();
+        const mode = pick('mode', { single: 'single', multiple: 'multiple', bulk: 'bulk' }, 'single');
+        if (mode !== 'single' && isList) throw new Error(`mode ${mode} applies only to acl and device-access definitions`);
+        if (mode === 'bulk') {
+          if (id) throw new Error('mode bulk takes no object_id');
+          if (!Array.isArray(args.body) || !args.body.length) throw new Error('mode bulk needs body: a non-empty array of definitions');
+          return routingWrite('PUT', `${base}/bulk`, args.body);
+        }
+        if (!id) throw new Error('object_id is required');
+        return routingWrite('PUT', mode === 'multiple' ? `${base}/multiple/${id}` : `${base}/${id}`, writeBody());
+      }
+      case 'delete_ipv6_policy_object': {
+        const { base, id, infoTag } = ipv6PolicyTarget();
+        if (Boolean(id) === Boolean(infoTag)) throw new Error('Give exactly one of object_id or info_tag');
+        return id ? routingWrite('DELETE', `${base}/${id}`) : routingWrite('DELETE', base, undefined, { infoTag });
+      }
+      case 'get_ipv6_tracker': {
+        if (args.schema_type !== undefined) {
+          const kind = pick('tracker_type', { tracker: 'ipv6-tracker', group: 'ipv6-trackergroup' }, 'tracker');
+          return this.apiService.get(`/dataservice/v1/feature-profile/sdwan/transport/${kind}/schema`, {
+            schemaType: pick('schema_type', { post: 'post', put: 'put' }, 'post'),
+          });
+        }
+        const { path, trackerId } = await ipv6TrackerTarget();
+        return this.apiService.get(trackerId ? `${path}/${trackerId}` : path);
+      }
+      case 'create_ipv6_tracker': {
+        const { path, trackerId, scoped } = await ipv6TrackerTarget();
+        if (scoped || trackerId) throw new Error('create_ipv6_tracker creates a profile-level tracker; use associate_ipv6_tracker to attach it to a WAN interface');
+        return routingWrite('POST', path, writeBody());
+      }
+      case 'associate_ipv6_tracker': {
+        const { path, trackerId, scoped } = await ipv6TrackerTarget();
+        if (!scoped || !trackerId) throw new Error('vpn_feature_id, interface_type, interface_feature_id and tracker_id are required');
+        return routingWrite('POST', path, { parcelId: trackerId });
+      }
+      case 'update_ipv6_tracker': {
+        const { path, trackerId } = await ipv6TrackerTarget();
+        if (!trackerId) throw new Error('tracker_id is required');
+        return routingWrite('PUT', `${path}/${trackerId}`, writeBody());
+      }
+      case 'delete_ipv6_tracker': {
+        const { path, trackerId } = await ipv6TrackerTarget();
+        if (!trackerId) throw new Error('tracker_id is required');
+        return routingWrite('DELETE', `${path}/${trackerId}`);
+      }
       case 'get_ospf_config':
       case 'get_eigrp_config':
       case 'get_multicast_config':

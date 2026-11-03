@@ -143,6 +143,8 @@ const toolSamples = {
   get_bgp_feature_schema: { profile_type: 'service' },
   get_routing_template_schema: { template_type: 'cisco_bgp' },
   list_cli_addons: { contains: 'router rip' },
+  get_ipv6_policy_object: { kind: 'prefix-list' },
+  get_ipv6_tracker: { schema_type: 'post' },
   list_api_categories: {},
   search_api_operations: { query: 'omp routes' },
   describe_api_operation: { operation_id: 'createReceivedRoutesList' },

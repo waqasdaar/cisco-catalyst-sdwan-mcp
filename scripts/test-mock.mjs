@@ -35,7 +35,7 @@ const tlocs = () => [
   { color: 'biz-internet', interface: 'GigabitEthernet2', 'operation-state': 'up', 'admin-state': 'up', 'public-ip': '203.0.113.1', 'private-ip': '203.0.113.1' },
 ];
 
-const stats = { logins: 0, sessionLogins: 0, logouts: 0, ompStatusCalls: 0, ompSummaryCalls: 0, deviceIds: [], ospfPaths: [], ospfWrites: [], bgpPaths: [], bgpWrites: [], eigrpPaths: [], eigrpWrites: [], templateWrites: [], cliPaths: [], cliWrites: [], mcPaths: [], mcWrites: [] };
+const stats = { logins: 0, sessionLogins: 0, logouts: 0, ompStatusCalls: 0, ompSummaryCalls: 0, deviceIds: [], ospfPaths: [], ospfWrites: [], bgpPaths: [], bgpWrites: [], eigrpPaths: [], eigrpWrites: [], templateWrites: [], cliPaths: [], cliWrites: [], mcPaths: [], mcWrites: [], v6Paths: [], v6Writes: [], v6Previews: [] };
 const CLI_PROFILE_ID = 'cccccccc-cccc-4ccc-8ccc-cccccccccccc';
 const CLI_FEATURE = 'dddddddd-dddd-4ddd-8ddd-dddddddddddd';
 const CLI_TEMPLATE = 'eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee';
@@ -142,6 +142,24 @@ function handler(req, res) {
         return send(200, req.method === 'POST' ? { parcelId: '55555555-5555-4555-8555-555555555555' } : {});
       }
       stats.bgpPaths.push(p);
+      return send(200, { data: [{ path: p, query: Object.fromEntries(url.searchParams) }] });
+    }
+    if (p === '/dataservice/v1/feature-profile/sdwan/transport') return send(200, [{ profileId: OSPF_PROFILE, profileName: 'Branch-Transport' }]);
+    if (p === '/dataservice/device/ip/ipRoutes') {
+      stats.v6Paths.push(p);
+      const route = (family, prefix, source) => ({ 'rib-address-family': family, 'route-destination-prefix': prefix, 'route-source-protocol': source, 'routing-instance-name': url.searchParams.get('routing-instance-name') ?? '10', query: Object.fromEntries(url.searchParams) });
+      return send(200, { data: [route('ipv4', '10.1.0.0/16', 'rt-ext:omp'), route('ipv6', '2001:db8:10::/64', 'rt-ext:omp'), route('ipv6', '2001:db8:20::/64', 'direct')] });
+    }
+    if (/ipv6|v6|nat64|dhcpv6/i.test(p) && !/ospf/i.test(p) && /^\/dataservice\/(device|template\/policy|v1\/feature-profile)\//.test(p)) {
+      if (req.method === 'POST' && p.endsWith('/preview')) {
+        stats.v6Previews.push({ path: p, body: raw ? JSON.parse(raw) : undefined });
+        return send(200, { preview: 'ipv6 access-list acl6-test' });
+      }
+      if (req.method !== 'GET') {
+        stats.v6Writes.push({ method: req.method, path: p, query: Object.fromEntries(url.searchParams), body: raw ? JSON.parse(raw) : undefined });
+        return send(200, req.method === 'POST' ? { id: '15151515-1515-4151-8151-151515151515' } : {});
+      }
+      stats.v6Paths.push(p);
       return send(200, { data: [{ path: p, query: Object.fromEntries(url.searchParams) }] });
     }
     if (/^\/dataservice\/device\/(igmp|pim|multicast|ip\/mfib)/.test(p) || (p.startsWith('/dataservice/v1/feature-profile/') && p.includes('/routing/multicast'))) {
@@ -305,7 +323,12 @@ async function tool(client, name, args = {}) {
 // ---------- Tests ----------
 const c = await connect();
 const { tools } = await c.listTools();
-check('tool list', tools.length === 137, `${tools.length} tools`);
+check('tool list (read-only server: write tools hidden)', tools.length === 115, `${tools.length} tools`);
+check(
+  'write tools hidden when writes are disabled; call_api_operation kept',
+  !tools.some((x) => /^(create|update|delete|associate|clone)_/.test(x.name)) && tools.some((x) => x.name === 'call_api_operation')
+);
+check('tool list stays compact', JSON.stringify(tools).length < 110_000, `${JSON.stringify(tools).length} bytes`);
 
 let t = Date.now();
 let r = await tool(c, 'get_omp_status');
@@ -1039,6 +1062,164 @@ const missingMcWrites = specMcWrites.filter((op) => !mcWritten.has(op));
 check(`all ${specMcWrites.length} multicast write operations in the spec covered`, specMcWrites.length === 6 && missingMcWrites.length === 0, missingMcWrites.join(', '));
 check('multicast write tools only call operations from the spec', [...mcWritten].every((op) => specMcWrites.includes(op)));
 await wm.close();
+
+// IPv6: real-time monitoring, UX 1.0 IPv6 policy objects, UX 2.0 IPv6 trackers.
+const V6_RX = /ipv6|v6|nat64|dhcpv6/i;
+const specV6 = Object.entries(spec.paths).filter(([path]) => V6_RX.test(path) && !/ospf|app-registry|\/ise\//i.test(path));
+const specV6Ops = (methods, previews = false) =>
+  specV6.flatMap(([path, ops]) =>
+    methods.filter((m) => ops[m] && (m !== 'post' || /\/preview$/.test(path) === previews)).map((m) => `${m.toUpperCase()} ${template(path)}`)
+  );
+const ACL6_ID = '16161616-1616-4161-8161-161616161616';
+const TRACKER = '17171717-1717-4171-8171-171717171717';
+const IFACE = '18181818-1818-4181-8181-181818181818';
+const trackerBase = `/dataservice/v1/feature-profile/sdwan/transport/${OSPF_PROFILE}`;
+const cv = await connect();
+let v6 = (await tool(cv, 'get_ipv6_status', { device_id: 'Branch-1' })).value?.data?.[0];
+check('get_ipv6_status (default nd)', v6?.path === '/dataservice/device/ipv6/nd6' && v6.query.deviceId === '192.0.2.11', JSON.stringify(v6));
+v6 = (await tool(cv, 'get_ipv6_status', { device_id: 'Branch-1', view: 'fib', vpn_id: '10', prefix: '2001:db8::/32', color: 'mpls' })).value?.data?.[0];
+check('get_ipv6_status fib with filters', v6?.path === '/dataservice/device/ip/v6fib' && v6.query['vpn-id'] === '10' && v6.query.prefix === '2001:db8::/32' && v6.query.color === 'mpls', JSON.stringify(v6));
+v6 = (await tool(cv, 'get_ipv6_status', { device_id: 'Branch-1', view: 'interface-stats', if_name: 'GigabitEthernet3' })).value?.data?.[0];
+check('get_ipv6_status interface-stats maps if_name to ifname', v6?.query?.ifname === 'GigabitEthernet3', JSON.stringify(v6));
+r = await tool(cv, 'get_ipv6_status', { device_id: 'Branch-1', view: 'routes', vpn_id: '10' });
+check(
+  'get_ipv6_status routes keeps only IPv6 routes',
+  r.value?.data?.map((x) => x['route-destination-prefix']).join() === '2001:db8:10::/64,2001:db8:20::/64' && r.value.data[0].query['routing-instance-name'] === '10',
+  JSON.stringify(r.value ?? r.error)
+);
+r = await tool(cv, 'get_ipv6_status', { device_id: 'Branch-1', view: 'routes', protocol: 'OMP' });
+check('get_ipv6_status routes protocol filter', r.value?.data?.map((x) => x['route-destination-prefix']).join() === '2001:db8:10::/64', JSON.stringify(r.value ?? r.error));
+r = await tool(cv, 'get_ipv6_status', { device_id: 'Branch-1', view: 'routes', prefix: '2001:DB8:20::/64' });
+check('get_ipv6_status routes prefix filter', r.value?.data?.length === 1 && r.value.data[0]['route-source-protocol'] === 'direct', JSON.stringify(r.value ?? r.error));
+v6 = (await tool(cv, 'get_ipv6_policy_status', { device_id: 'Branch-1', view: 'sgacl-counters' })).value?.data?.[0];
+check('get_ipv6_policy_status sgacl-counters', v6?.path === '/dataservice/device/roleBasedIpv6Counters', JSON.stringify(v6));
+r = await tool(cv, 'get_ipv6_policy_object', { kind: 'prefix-list', info_tag: 'branch' });
+check('get_ipv6_policy_object info_tag', r.value?.data?.[0]?.path === '/dataservice/template/policy/list/ipv6prefix/filtered' && r.value.data[0].query.infoTag === 'branch', JSON.stringify(r.value ?? r.error));
+r = await tool(cv, 'get_ipv6_policy_object', { kind: 'acl', object_id: ACL6_ID, preview: true });
+check('get_ipv6_policy_object preview saved', r.value?.data?.[0]?.path === `/dataservice/template/policy/definition/aclv6/preview/${ACL6_ID}`, JSON.stringify(r.value ?? r.error));
+r = await tool(cv, 'get_ipv6_policy_object', { kind: 'acl', preview_body: { name: 'acl6', type: 'aclv6', sequences: [] } });
+check('get_ipv6_policy_object preview_body works read-only', r.value?.preview === 'ipv6 access-list acl6-test' && stats.v6Previews.at(-1)?.path === '/dataservice/template/policy/definition/aclv6/preview' && stats.v6Writes.length === 0, JSON.stringify(r.value ?? r.error));
+r = await tool(cv, 'get_ipv6_tracker', { profile: 'Branch-Transport', tracker_type: 'group', vpn_feature_id: VPN, interface_type: 'cellular', interface_feature_id: IFACE });
+check(
+  'get_ipv6_tracker on a WAN interface',
+  r.value?.data?.[0]?.path === `${trackerBase}/wan/vpn/${VPN}/interface/cellular/${IFACE}/ipv6-trackergroup`,
+  JSON.stringify(r.value ?? r.error)
+);
+r = await tool(cv, 'get_ipv6_tracker', { schema_type: 'put' });
+check('get_ipv6_tracker schema (no profile needed)', r.value?.data?.[0]?.path === '/dataservice/v1/feature-profile/sdwan/transport/ipv6-tracker/schema' && r.value.data[0].query.schemaType === 'put', JSON.stringify(r.value ?? r.error));
+
+stats.v6Paths = [];
+stats.v6Previews = [];
+for (const view of ['nd', 'neighbors', 'fib', 'interface-stats', 'dhcpv6', 'nat64', 'omp-received', 'omp-advertised', 'cflowd-flows']) await tool(cv, 'get_ipv6_status', { device_id: 'Branch-1', view });
+for (const view of ['acl-names', 'acl-associations', 'acl-counters', 'acl-policers', 'sgacl-counters', 'sgacl-permissions']) await tool(cv, 'get_ipv6_policy_status', { device_id: 'Branch-1', view });
+for (const kind of ['prefix-list', 'data-prefix-list', 'acl', 'device-access']) {
+  await tool(cv, 'get_ipv6_policy_object', { kind });
+  await tool(cv, 'get_ipv6_policy_object', { kind, object_id: ACL6_ID });
+  await tool(cv, 'get_ipv6_policy_object', { kind, object_id: ACL6_ID, preview: true });
+  await tool(cv, 'get_ipv6_policy_object', { kind, preview_body: { name: 'x' } });
+  if (kind.endsWith('prefix-list')) await tool(cv, 'get_ipv6_policy_object', { kind, info_tag: 'tag' });
+}
+for (const tracker_type of ['tracker', 'group']) {
+  for (const schema_type of ['post', 'put']) await tool(cv, 'get_ipv6_tracker', { tracker_type, schema_type });
+  for (const scope of [{}, { vpn_feature_id: VPN, interface_type: 'ethernet', interface_feature_id: IFACE }, { vpn_feature_id: VPN, interface_type: 'cellular', interface_feature_id: IFACE }]) {
+    for (const one of [{}, { tracker_id: TRACKER }]) await tool(cv, 'get_ipv6_tracker', { profile: OSPF_PROFILE, tracker_type, ...scope, ...one });
+  }
+}
+const specV6Gets = specV6Ops(['get']);
+const v6Reached = new Set(stats.v6Paths.filter((path) => V6_RX.test(path)).map((path) => `GET ${template(path)}`));
+const missingV6Reads = specV6Gets.filter((op) => !v6Reached.has(op));
+check(`all ${specV6Gets.length} IPv6 read operations in the spec covered`, specV6Gets.length === 43 && missingV6Reads.length === 0, missingV6Reads.join(', '));
+check('IPv6 tools only call read paths from the spec', [...v6Reached].every((op) => specV6Gets.includes(op)), [...v6Reached].filter((op) => !specV6Gets.includes(op)).join(', '));
+const specV6Previews = specV6Ops(['post'], true);
+const v6Previewed = new Set(stats.v6Previews.map((x) => `POST ${template(x.path)}`));
+check(`all ${specV6Previews.length} IPv6 policy preview operations covered`, specV6Previews.length === 4 && specV6Previews.every((op) => v6Previewed.has(op)));
+
+for (const [label, name, args, pattern] of [
+  ['get_ipv6_status rejects a filter the view lacks', 'get_ipv6_status', { device_id: 'Branch-1', view: 'nd', vpn_id: '10' }, /vpn_id does not apply to view nd \(no filters\)/],
+  ['get_ipv6_status rejects unknown view', 'get_ipv6_status', { device_id: 'Branch-1', view: '../omp' }, /view must be one of/],
+  ['get_ipv6_policy_object rejects info_tag on definitions', 'get_ipv6_policy_object', { kind: 'acl', info_tag: 'x' }, /info_tag applies only to prefix lists/],
+  ['get_ipv6_policy_object rejects bad info_tag', 'get_ipv6_policy_object', { kind: 'prefix-list', info_tag: '../x' }, /info_tag must be/],
+  ['get_ipv6_policy_object preview needs object_id', 'get_ipv6_policy_object', { kind: 'acl', preview: true }, /preview needs object_id/],
+  ['get_ipv6_tracker needs the whole interface scope', 'get_ipv6_tracker', { profile: OSPF_PROFILE, vpn_feature_id: VPN }, /must be given together/],
+  ['get_ipv6_tracker rejects non-UUID tracker_id', 'get_ipv6_tracker', { profile: OSPF_PROFILE, tracker_id: '../x' }, /tracker_id must be/],
+]) {
+  stats.v6Paths = [];
+  r = await tool(cv, name, args);
+  check(label, pattern.test(r.error ?? '') && stats.v6Paths.length === 0, r.error ?? 'not rejected');
+}
+r = await tool(cv, 'create_ipv6_policy_object', { kind: 'prefix-list', body: { name: 'v6' }, confirm: true });
+check('IPv6 writes disabled by default', /VMANAGE_ALLOW_WRITE=true/.test(r.error ?? '') && stats.v6Writes.length === 0, r.error ?? 'not rejected');
+await cv.close();
+
+const wv = await connect({ VMANAGE_ALLOW_WRITE: 'true' });
+check('tool list with writes enabled', (await wv.listTools()).tools.length === 148);
+const lastV6Write = () => stats.v6Writes.at(-1);
+const PREFIX_LIST = { name: 'Branch-v6', description: 'test', entries: [{ ipv6Prefix: '2001:db8:10::/48' }] };
+r = await tool(wv, 'create_ipv6_policy_object', { kind: 'prefix-list', body: PREFIX_LIST });
+check('create_ipv6_policy_object needs confirm: true', /confirm: true/.test(r.error ?? '') && stats.v6Writes.length === 0, r.error ?? 'not rejected');
+r = await tool(wv, 'create_ipv6_policy_object', { kind: 'prefix-list', body: PREFIX_LIST, confirm: true });
+check(
+  'create_ipv6_policy_object',
+  !r.error && lastV6Write()?.method === 'POST' && lastV6Write().path === '/dataservice/template/policy/list/ipv6prefix' && JSON.stringify(lastV6Write().body) === JSON.stringify(PREFIX_LIST),
+  JSON.stringify(r.value ?? r.error)
+);
+r = await tool(wv, 'update_ipv6_policy_object', { kind: 'acl', object_id: ACL6_ID, mode: 'multiple', body: { name: 'acl6' }, confirm: true });
+check('update_ipv6_policy_object mode multiple', !r.error && lastV6Write()?.method === 'PUT' && lastV6Write().path === `/dataservice/template/policy/definition/aclv6/multiple/${ACL6_ID}`, JSON.stringify(lastV6Write() ?? r.error));
+r = await tool(wv, 'update_ipv6_policy_object', { kind: 'device-access', mode: 'bulk', body: [{ name: 'a' }, { name: 'b' }], confirm: true });
+check('update_ipv6_policy_object mode bulk', !r.error && lastV6Write()?.path === '/dataservice/template/policy/definition/deviceaccesspolicyv6/bulk' && lastV6Write().body.length === 2, JSON.stringify(lastV6Write() ?? r.error));
+r = await tool(wv, 'delete_ipv6_policy_object', { kind: 'data-prefix-list', info_tag: 'lab', confirm: true });
+check('delete_ipv6_policy_object by info_tag', !r.error && lastV6Write()?.method === 'DELETE' && lastV6Write().path === '/dataservice/template/policy/list/dataipv6prefix' && lastV6Write().query.infoTag === 'lab', JSON.stringify(lastV6Write() ?? r.error));
+const TRACKER_BODY = { name: 'v6-tracker', description: 'test', data: { endpointApiUrl: { optionType: 'global', value: 'http://[2001:db8::1]/' } } };
+r = await tool(wv, 'create_ipv6_tracker', { profile: 'Branch-Transport', body: TRACKER_BODY, confirm: true });
+check('create_ipv6_tracker', r.value?.operationId === 'CreateIpv6TrackerProfileParcelForTransport' && lastV6Write()?.path === `${trackerBase}/ipv6-tracker`, JSON.stringify(r.value ?? r.error));
+r = await tool(wv, 'associate_ipv6_tracker', { profile: OSPF_PROFILE, vpn_feature_id: VPN, interface_type: 'ethernet', interface_feature_id: IFACE, tracker_id: TRACKER, confirm: true });
+check(
+  'associate_ipv6_tracker',
+  r.value?.operationId === 'CreateWanVpnInterfaceEthernetAndIpv6TrackerParcelAssociationForTransport' && lastV6Write()?.body?.parcelId === TRACKER,
+  JSON.stringify(r.value ?? r.error)
+);
+for (const [label, name, args, pattern] of [
+  ['update_ipv6_policy_object bulk only for definitions', 'update_ipv6_policy_object', { kind: 'prefix-list', mode: 'bulk', body: [{}], confirm: true }, /applies only to acl and device-access/],
+  ['update_ipv6_policy_object requires object_id', 'update_ipv6_policy_object', { kind: 'acl', body: { name: 'x' }, confirm: true }, /object_id is required/],
+  ['delete_ipv6_policy_object needs exactly one target', 'delete_ipv6_policy_object', { kind: 'prefix-list', confirm: true }, /exactly one of object_id or info_tag/],
+  ['delete_ipv6_policy_object needs confirm: true', 'delete_ipv6_policy_object', { kind: 'acl', object_id: ACL6_ID }, /confirm: true/],
+  ['create_ipv6_tracker rejects an interface scope', 'create_ipv6_tracker', { profile: OSPF_PROFILE, vpn_feature_id: VPN, interface_type: 'ethernet', interface_feature_id: IFACE, body: TRACKER_BODY, confirm: true }, /associate_ipv6_tracker/],
+  ['associate_ipv6_tracker needs the interface scope', 'associate_ipv6_tracker', { profile: OSPF_PROFILE, tracker_id: TRACKER, confirm: true }, /are required/],
+]) {
+  stats.v6Writes = [];
+  r = await tool(wv, name, args);
+  check(label, pattern.test(r.error ?? '') && stats.v6Writes.length === 0, r.error ?? 'not rejected');
+}
+
+stats.v6Writes = [];
+for (const kind of ['prefix-list', 'data-prefix-list', 'acl', 'device-access']) {
+  const isList = kind.endsWith('prefix-list');
+  await tool(wv, 'create_ipv6_policy_object', { kind, body: { name: 'x' }, confirm: true });
+  await tool(wv, 'update_ipv6_policy_object', { kind, object_id: ACL6_ID, body: { name: 'x' }, confirm: true });
+  await tool(wv, 'delete_ipv6_policy_object', { kind, object_id: ACL6_ID, confirm: true });
+  if (isList) await tool(wv, 'delete_ipv6_policy_object', { kind, info_tag: 'tag', confirm: true });
+  else {
+    await tool(wv, 'update_ipv6_policy_object', { kind, object_id: ACL6_ID, mode: 'multiple', body: { name: 'x' }, confirm: true });
+    await tool(wv, 'update_ipv6_policy_object', { kind, mode: 'bulk', body: [{ name: 'x' }], confirm: true });
+  }
+}
+for (const tracker_type of ['tracker', 'group']) {
+  const base = { profile: OSPF_PROFILE, tracker_type, confirm: true };
+  await tool(wv, 'create_ipv6_tracker', { ...base, body: TRACKER_BODY });
+  for (const interface_type of ['ethernet', 'cellular']) {
+    await tool(wv, 'associate_ipv6_tracker', { ...base, vpn_feature_id: VPN, interface_type, interface_feature_id: IFACE, tracker_id: TRACKER });
+  }
+  for (const scope of [{}, { vpn_feature_id: VPN, interface_type: 'ethernet', interface_feature_id: IFACE }, { vpn_feature_id: VPN, interface_type: 'cellular', interface_feature_id: IFACE }]) {
+    await tool(wv, 'update_ipv6_tracker', { ...base, ...scope, tracker_id: TRACKER, body: TRACKER_BODY });
+    await tool(wv, 'delete_ipv6_tracker', { ...base, ...scope, tracker_id: TRACKER });
+  }
+}
+const specV6Writes = specV6Ops(['post', 'put', 'delete']);
+const v6Written = new Set(stats.v6Writes.map((x) => `${x.method} ${template(x.path)}`));
+const missingV6Writes = specV6Writes.filter((op) => !v6Written.has(op));
+check(`all ${specV6Writes.length} IPv6 write operations in the spec covered`, specV6Writes.length === 36 && missingV6Writes.length === 0, missingV6Writes.join(', '));
+check('IPv6 write tools only call operations from the spec', [...v6Written].every((op) => specV6Writes.includes(op)), [...v6Written].filter((op) => !specV6Writes.includes(op)).join(', '));
+await wv.close();
 
 // Unreachable Manager: the first call fails, the next ones fail immediately.
 const closedPort = await new Promise((resolve) => {

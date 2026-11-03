@@ -6,10 +6,12 @@ A [Model Context Protocol (MCP)](https://modelcontextprotocol.io/) server for **
 
 All requests go through vManage. The server never connects to routers directly.
 
-- **137 MCP tools**: 133 purpose-built tools, including fabric-wide health, BFD and TLOC checks in a single call, BGP, OSPF, OSPFv3, EIGRP and multicast (IGMP, PIM, MFIB) monitoring and configuration (UX 2.0 features and UX 1.0 templates), CLI add-on configuration (for example RIP/RIPng), UX 2.0 configuration groups, feature profiles and policy and topology groups, plus 4 general tools that reach **every operation in the vManage OpenAPI spec** (4,128 operations on 26.2).
+- **148 MCP tools** (115 listed on a read-only server, 148 with writes enabled): 144 purpose-built tools, including fabric-wide health, BFD and TLOC checks in a single call, BGP, OSPF, OSPFv3, EIGRP, multicast (IGMP, PIM, MFIB) and IPv6 monitoring and configuration (UX 2.0 features and UX 1.0 templates/policy objects), CLI add-on configuration (for example RIP/RIPng), UX 2.0 configuration groups, feature profiles and policy and topology groups, plus 4 general tools that reach **every operation in the vManage OpenAPI spec** (4,128 operations on 26.2).
+- **Lean tool list.** Write tools are listed only when `VMANAGE_ALLOW_WRITE=true`, so a read-only server offers 115 tools (under VS Code's 128-tool limit) in a 99 KB tool list, 37% smaller than before. Assistants answer faster and spend fewer tokens on every request.
 - **Read-only by default.** Operations that change configuration or state are disabled unless you enable them, and each call then needs explicit confirmation.
 - **BGP, OSPF, OSPFv3 and EIGRP end to end.** Real-time neighbors, routes, interfaces, topology and LSDB; UX 2.0 feature reads and writes for SD-WAN and SD-Routing profiles; UX 1.0 feature templates (list, read, schema, create, update, delete, clone). Every BGP, OSPF and EIGRP operation in the 26.2 spec has a dedicated tool.
 - **Multicast end to end.** IGMP, PIM, overlay multicast (topology, RPF, replicators, tunnels) and MFIB monitoring; UX 2.0 multicast features (read, schema, write); UX 1.0 IGMP, PIM and multicast templates. Every multicast operation in the 26.2 spec has a dedicated tool.
+- **IPv6 end to end.** ND, neighbors, IPv6 routes, FIB, interface statistics, DHCPv6, NAT64, OMP IPv6 routes, IPv6 ACL and SGACL counters; UX 1.0 IPv6 prefix lists, IPv6 ACLs and device-access policies (read, preview, write); UX 2.0 IPv6 trackers and tracker groups (read, schema, write). Every IPv6 operation in the 26.2 spec has a dedicated tool.
 - **CLI add-ons for everything else.** RIP and RIPng have no vManage API, so they are configured as raw IOS XE CLI. Dedicated tools find, read, create, change and delete CLI add-on features (UX 2.0) and CLI add-on templates (UX 1.0); `contains: "router rip"` finds where a protocol is configured.
 - **Validated against the spec.** Calls through the general tools are checked against the OpenAPI spec published by *your* vManage before they are sent.
 - **Secrets are protected.** Endpoints that issue tokens, passwords, OTPs or credentials are blocked. Session IDs and CSRF tokens are redacted from responses.
@@ -46,6 +48,7 @@ flowchart LR
   - [Dedicated tools (full reference)](#dedicated-tools)
   - [Routing protocols: BGP, OSPF, OSPFv3, EIGRP](#routing-protocols-at-a-glance)
   - [Multicast (IGMP, PIM, MFIB)](#multicast-igmp-pim-overlay-multicast-mfib-10)
+  - [IPv6](#ipv6-monitoring-policy-objects-trackers-11)
   - [CLI add-ons (RIP, RIPng, other CLI)](#cli-add-ons-rip-ripng-and-other-cli--ux-20-and-ux-10-10)
 - [Installation](#installation)
 - [Configuration](#configuration)
@@ -80,6 +83,7 @@ Ask questions about your SD-WAN fabric in plain language and get answers built f
 | **BGP** | "Which BGP neighbors does Hub-1 have in VPN 10? Which profiles configure BGP?" | `get_bgp_neighbors`, `get_bgp_routes`, `get_bgp_config` |
 | **EIGRP** | "Is EIGRP running on Branch-3? Show its topology table. Which service profiles configure EIGRP?" | `get_eigrp_interfaces`, `get_eigrp_topology`, `get_eigrp_config` |
 | **Multicast** | "Which IGMP groups has Branch-1 joined? Who are its PIM neighbors and RPs? Which service profiles configure multicast?" | `get_igmp_status`, `get_pim_status`, `get_mfib`, `get_multicast_config` |
+| **IPv6** | "Which IPv6 routes does Branch-1 have in VPN 10? Show its IPv6 neighbors. Which IPv6 prefix lists and ACLs exist?" | `get_ipv6_status`, `get_ipv6_policy_status`, `get_ipv6_policy_object`, `get_ipv6_tracker` |
 | **RIP, RIPng and other CLI** | "Which CLI add-ons configure RIP? Add an `ipv6 router rip` block to the Branch CLI profile." | `list_cli_addons`, `list_cli_templates`, `create_cli_addon`, `update_cli_addon` |
 | **Routing changes (opt-in)** | "Create a BGP feature for AS 65001 and attach it to VPN 10." "Clone the OSPF-Branch template." | `create_bgp_feature`, `associate_bgp_feature`, `update_ospf_feature`, `clone_routing_template`, ... |
 | **Data plane and transport** | "Are all BFD sessions in the fabric up? How many TLOCs does site 100 have?" | `get_fabric_bfd_status`, `get_fabric_tlocs`, `get_bfd_sessions`, `get_control_wan_interfaces` |
@@ -426,6 +430,26 @@ The ten tools cover all 26 multicast operations in the 26.2 spec: 15 real-time m
 | `delete_multicast_feature` | **Write.** Delete a feature; with `vpn_feature_id`, only removes its association with that LAN VPN | `profile_type`\*, `profile`\*, `feature_id`\*, `confirm`\*, `vpn_feature_id` | "Detach the multicast feature from VPN 10." |
 | `associate_multicast_feature` | **Write.** Attach an existing feature to a LAN VPN feature | `profile_type`\*, `profile`\*, `vpn_feature_id`\*, `feature_id`\*, `confirm`\* | "Attach the multicast feature to the VPN 10 feature." |
 
+#### IPv6: monitoring, policy objects, trackers (11)
+
+The eleven tools cover all 83 IPv6 operations in the 26.2 spec apart from OSPFv3 (which the [OSPF tools](#ospf-and-ospfv3-10) cover): 15 real-time monitoring endpoints, 36 UX 1.0 IPv6 policy-object operations (IPv6 prefix lists, data IPv6 prefix lists, IPv6 ACL and IPv6 device-access definitions) and 32 UX 2.0 IPv6 tracker and tracker-group operations (SD-WAN transport profiles and WAN Ethernet/cellular interfaces). The write tools follow the same rules as the other write tools.
+
+| Tool | Description | Key parameters | Example prompt |
+|---|---|---|---|
+| `get_ipv6_status` | IPv6 state by `view`: `nd` (default), `neighbors`, `routes`, `fib`, `interface-stats`, `dhcpv6`, `nat64`, `omp-received`, `omp-advertised`, `cflowd-flows` | `device_id`\*, `view`, `vpn_id`, `prefix`, `protocol`, `if_name`, `mac`, `tloc`, `color`, `src_addr`, `dst_addr`, `app` (each view accepts the filters it supports) | "Which IPv6 routes does Branch-1 learn over OMP in VPN 10?" |
+| `get_ipv6_policy_status` | IPv6 ACL names, associations, counters, policers; SGACL IPv6 counters and permissions | `device_id`\*, `view` | "Are IPv6 ACL counters increasing on Hub-1?" |
+| `get_ipv6_policy_object` | UX 1.0 IPv6 prefix lists, data IPv6 prefix lists, `aclv6` and `deviceaccesspolicyv6` definitions; list, one object, by info tag, or a read-only CLI preview | `kind`\*, `object_id`, `info_tag`, `preview`, `preview_body` | "Show the IPv6 ACLs and the CLI they render to." |
+| `create_ipv6_policy_object` | **Write.** Create an IPv6 list or definition | `kind`\*, `body`\*, `confirm`\* | "Create an IPv6 prefix list with 2001:db8:10::/48." |
+| `update_ipv6_policy_object` | **Write.** Replace a list or definition; `mode: multiple` or `bulk` for definitions | `kind`\*, `object_id`, `mode`, `body`\*, `confirm`\* | "Add a sequence to the IPv6 ACL." |
+| `delete_ipv6_policy_object` | **Write.** Delete by ID, or every prefix list with an info tag | `kind`\*, `object_id` or `info_tag`, `confirm`\* | "Delete the lab IPv6 prefix lists." |
+| `get_ipv6_tracker` | IPv6 trackers or tracker groups of a transport profile or one WAN interface, or their body schema | `profile`, `tracker_type` (`tracker`/`group`), `vpn_feature_id`, `interface_type` (`ethernet`/`cellular`), `interface_feature_id`, `tracker_id`, `schema_type` | "Which IPv6 trackers does the Transport profile use?" |
+| `create_ipv6_tracker` | **Write.** Create an IPv6 tracker or tracker group | `profile`\*, `tracker_type`, `body`\*, `confirm`\* | "Create an IPv6 tracker probing 2001:db8::1." |
+| `associate_ipv6_tracker` | **Write.** Attach a tracker to a WAN Ethernet or cellular interface feature | `profile`\*, `vpn_feature_id`\*, `interface_type`\*, `interface_feature_id`\*, `tracker_id`\*, `confirm`\* | "Attach the IPv6 tracker to GigabitEthernet1." |
+| `update_ipv6_tracker` | **Write.** Replace a tracker; with the interface scope, edits its association | `profile`\*, `tracker_id`\*, `body`\*, `confirm`\* | "Change the IPv6 tracker interval to 30 s." |
+| `delete_ipv6_tracker` | **Write.** Delete a tracker; with the interface scope, only detaches it | `profile`\*, `tracker_id`\*, `confirm`\* | "Detach the IPv6 tracker from the cellular interface." |
+
+For IPv6 routes use `view: "routes"`: it works on every platform. IOS XE edges reject the `fib` view (`/device/ip/v6fib` is answered only by vEdge and controllers), and their `/device/ip/routetable` is empty, so `routes` reads the IETF routing list and keeps only IPv6 entries (`prefix` and `protocol` are matched by the server).
+
 #### CLI add-ons: RIP, RIPng and other CLI – UX 2.0 and UX 1.0 (10)
 
 CLI add-ons carry raw IOS XE configuration that is appended to a device's configuration. They are how protocols without a vManage API, such as **RIP** (`router rip`) and **RIPng** (`ipv6 router rip`), are configured. UX 2.0 keeps them as `config` features in CLI feature profiles (SD-WAN and SD-Routing; all 10 operations covered); UX 1.0 as `cli-template` feature templates.
@@ -512,7 +536,7 @@ The server reads `.env` from the project (or deployed) root folder. You can also
 | `VMANAGE_PASSWORD` | Yes | | API password |
 | `VMANAGE_PORT` | No | `443` | HTTPS port |
 | `VMANAGE_USE_JWT` | No | `true` | `false` uses session-cookie auth (Manager releases before 20.18.1) |
-| `VMANAGE_ALLOW_WRITE` | No | `false` | `true` allows write operations through `call_api_operation` and the BGP / OSPF / routing template write tools (each call still needs `confirm: true`) |
+| `VMANAGE_ALLOW_WRITE` | No | `false` | `true` allows write operations through `call_api_operation` and the dedicated write tools (each call still needs `confirm: true`). The dedicated write tools (`create_*`, `update_*`, `delete_*`, `associate_*`, `clone_*`) are listed only when this is `true`. |
 | `VMANAGE_TIMEOUT_MS` | No | `120000` | Timeout for real-time device queries (calls with a `deviceId`), which the Manager proxies to the device and can be slow. |
 | `VMANAGE_LIST_TIMEOUT_MS` | No | `60000` | Timeout for everything else: inventory, configuration, statistics and login. |
 | `VMANAGE_MAX_CONCURRENCY` | No | `8` | Maximum simultaneous requests sent to the Manager |
@@ -858,6 +882,10 @@ OSPF runs in service VPN 10 with one OSPFv2 neighbor on GigabitEthernet3. `get_o
 | "Which IGMP groups has Branch-1 joined, and which PIM RP does it use?" | `get_igmp_status`, `get_pim_status` (`view: "rp-mapping"`) |
 | "Is multicast traffic forwarded on Hub-1, and through which replicator?" | `get_mfib` (`view: "oil"`), `get_multicast_status` (`view: "replicator"`) |
 | "Create a multicast feature in *Branch-Service* and attach it to VPN 10." *(writes enabled)* | `get_multicast_feature_schema`, `create_multicast_feature`, `associate_multicast_feature` |
+| "Which IPv6 routes does Branch-1 learn over OMP in VPN 10?" | `get_ipv6_status` (`view: "routes"`, `vpn_id: "10"`, `protocol: "omp"`) |
+| "Show the IPv6 neighbor cache and IPv6 interface statistics of Hub-1." | `get_ipv6_status` (`view: "nd"`, then `"interface-stats"`) |
+| "Which IPv6 prefix lists and IPv6 ACLs exist, and what CLI does the ACL render to?" | `get_ipv6_policy_object` (`kind`, `preview: true`) |
+| "Create an IPv6 tracker and attach it to the WAN interface of the Transport profile." *(writes enabled)* | `get_ipv6_tracker` (`schema_type`), `create_ipv6_tracker`, `associate_ipv6_tracker` |
 | "Is RIP or RIPng configured anywhere?" | `list_cli_addons` and `list_cli_templates` (`contains: "router rip"`) |
 | "Add RIPng to the *Branch-CLI* profile, redistributing connected routes." *(writes enabled)* | `create_cli_addon` |
 | "Which certificates expire soon, and are there active critical alarms?" | `get_certificate_summary`, `list_alarms` |
@@ -953,6 +981,45 @@ UX 2.0 routing features (write; `VMANAGE_ALLOW_WRITE=true` and user approval). C
 {
   "name": "delete_ospf_feature",
   "arguments": { "profile_type": "service", "profile": "Branch-Service", "version": "ospfv3-ipv6", "vpn_feature_id": "<lan-vpn-feature-id>", "feature_id": "<ospfv3-feature-id>", "confirm": true }
+}
+```
+
+IPv6 monitoring, policy objects and trackers:
+
+```json
+{ "name": "get_ipv6_status", "arguments": { "device_id": "Branch-1", "view": "routes", "vpn_id": "10", "protocol": "omp" } }
+```
+
+```json
+{ "name": "get_ipv6_status", "arguments": { "device_id": "Branch-1", "view": "omp-received", "count_by": "vpn-id" } }
+```
+
+```json
+{ "name": "get_ipv6_policy_object", "arguments": { "kind": "acl", "object_id": "<aclv6-definition-id>", "preview": true } }
+```
+
+```json
+{
+  "name": "create_ipv6_policy_object",
+  "arguments": {
+    "kind": "prefix-list",
+    "body": { "name": "Branch-v6", "description": "Branch LAN prefixes", "entries": [{ "ipv6Prefix": "2001:db8:10::/48" }] },
+    "confirm": true
+  }
+}
+```
+
+```json
+{
+  "name": "associate_ipv6_tracker",
+  "arguments": {
+    "profile": "Transport",
+    "vpn_feature_id": "<wan-vpn-feature-id>",
+    "interface_type": "ethernet",
+    "interface_feature_id": "<wan-interface-feature-id>",
+    "tracker_id": "<ipv6-tracker-id>",
+    "confirm": true
+  }
 }
 ```
 
@@ -1097,7 +1164,7 @@ Without `confirm: true`, or with writes disabled, the server refuses the call an
 
 ## Security
 
-- **Read-only by default.** POST, PUT and DELETE operations, and GETs documented as actions, are refused unless `VMANAGE_ALLOW_WRITE=true`. Each write call then also needs `confirm: true`, which assistants should set only after the user approves.
+- **Read-only by default.** POST, PUT and DELETE operations, and GETs documented as actions, are refused unless `VMANAGE_ALLOW_WRITE=true`. Each write call then also needs `confirm: true`, which assistants should set only after the user approves. The dedicated write tools are not even listed until writes are enabled.
 - **Scoped write tools.** The BGP, OSPF and routing template write tools run through the same gate as `call_api_operation`: the request is resolved to an operation in the Manager's spec and validated before it is sent. They only reach their own protocol's features or templates; IDs must be UUIDs, and a template of another type (for example `cisco_vpn`) is refused. A template's type cannot be changed by an update. Profile and template changes are never deployed to devices by these tools.
 - **Blocked endpoints.** Operations that issue or expose tokens, passwords, OTPs, credentials or bootstrap configurations are never callable. Neither are file uploads or server-sent event streams.
 - **Validation.** Path and query parameters must exist in the spec, required ones must be present, and types and enums are checked. Path values are URL-encoded and `.`/`..` are rejected.
@@ -1123,7 +1190,8 @@ npm run verify:api -- <edge> <controller> <validator>   # full read-only coverag
 
 For the routing tools it also checks:
 
-- **Spec coverage:** every BGP, OSPF, OSPFv3, EIGRP and multicast read and write operation, and every UX 2.0 CLI add-on operation, in the spec is reached by a dedicated tool, and those tools call nothing outside the spec.
+- **Spec coverage:** every BGP, OSPF, OSPFv3, EIGRP, multicast and IPv6 read and write operation, and every UX 2.0 CLI add-on operation, in the spec is reached by a dedicated tool, and those tools call nothing outside the spec.
+- **Tool list:** a read-only server lists 115 tools in under 110 KB and hides every write tool; with writes enabled all 148 are listed.
 - **Requests:** each tool sends the right method, path, query and body, and BGP monitoring filters are passed through.
 - **Write protection:** writes are blocked by default and without `confirm`.
 - **Invalid input:** bad IDs, versions, scopes and template types are rejected before anything is sent.
@@ -1140,7 +1208,7 @@ Results on Catalyst SD-WAN Manager 26.2.1:
 | Read operations live-tested | 1,261 |
 | Returned data | 1,113 |
 | Errors from Manager or lab (feature not configured, query body required, provider-only role) | 148 |
-| Dedicated tools verified live | 86 / 86 (83 by `verify:api`; the 3 fabric-wide tools by `test:ux2`). The 10 OSPF tools, 6 new BGP tools, 8 EIGRP tools, 7 UX 1.0 routing template tools, 10 CLI add-on tools and 10 multicast tools were added later and are covered by the offline tests. |
+| Dedicated tools verified live | 86 / 86 (83 by `verify:api`; the 3 fabric-wide tools by `test:ux2`). The 10 OSPF tools, 6 new BGP tools, 8 EIGRP tools, 7 UX 1.0 routing template tools, 10 CLI add-on tools, 10 multicast tools and 11 IPv6 tools were added later and are covered by the offline tests. |
 
 To try individual tools interactively, use the MCP Inspector:
 
@@ -1165,6 +1233,8 @@ npx @modelcontextprotocol/inspector node /absolute/path/to/build/index.js
 | `JWT authentication failed: 400 ... Duration must be ... <= 1800` | Fixed in this version (token duration is 1800 s). Rebuild. |
 | `JWT authentication failed` on older Managers | Set `VMANAGE_USE_JWT=false`. |
 | `... is disabled: write operations need VMANAGE_ALLOW_WRITE=true` | Expected in read-only mode. Enable deliberately, then `npm run deploy` and restart the client. |
+| `create_*` / `update_*` / `delete_*` tools are missing | They are listed only when `VMANAGE_ALLOW_WRITE=true`. Set it, then restart the MCP server. |
+| `Invalid data type IPv6Fib` from `get_ipv6_status` | IOS XE edges do not answer the `fib` view. Use `view: "routes"`. |
 | `Unknown query parameter(s)` / `Missing required ...` | The call does not match the spec. Run `describe_api_operation` for the exact parameter names. |
 | `get_ospf_process` returns no rows although OSPF is configured | Some IOS XE releases report nothing there for OSPF in a service VPN. Use `get_ospf_interfaces` or `get_ospf_neighbors`. |
 | BGP or OSPF calls on one edge take 30–60 s | Real-time queries are answered by the device itself; a busy edge (high CPU) answers slowly. Narrow with `vpn_id`, `prefix` or `peer_addr`, or raise `VMANAGE_TIMEOUT_MS`. |
