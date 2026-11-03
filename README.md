@@ -508,7 +508,7 @@ npm start
 The command your MCP client will run is:
 
 ```bash
-node /absolute/path/to/catalyst-sdwan-mcp-community/build/index.js
+node /absolute/path/to/cisco-catalyst-sdwan-mcp/build/index.js
 ```
 
 ### Recommended: deploy outside cloud-synced folders
@@ -1284,7 +1284,5 @@ Dockerfile, docker-compose.yml
 ## License
 
 MIT. See [LICENSE](LICENSE).
-
-Based on the [CiscoDevNet catalyst-sdwan-mcp-community](https://github.com/CiscoDevNet/catalyst-sdwan-mcp-community) project.
 
 [![MCP Badge](https://lobehub.com/badge/mcp/sdntechforum-catalyst-sdwan-mcp)](https://lobehub.com/mcp/sdntechforum-catalyst-sdwan-mcp)
