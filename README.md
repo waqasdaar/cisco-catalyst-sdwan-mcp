@@ -1205,44 +1205,79 @@ Without `confirm: true`, or with writes disabled, the server refuses the call an
 
 ## Testing and verification
 
+Four test suites check the server. Only `npm test` runs without a Manager; the others call a real Manager and send **read operations only**.
+
+| Command | Needs a Manager | What it checks | Runs in CI |
+|---|---|---|---|
+| `npm test` | No (simulated vManage) | 247 checks: every tool family, spec coverage of all routing/multicast/IPv6/CLI operations, write protection, input validation, resilience, multi-tenancy, tool-list size | Yes: Node.js 20, 22 and 24 |
+| `npm run test:control-plane -- <edge> <controller> <validator>` | Yes | 39 control-plane, OMP and Validator calls plus 3 input-validation checks | No |
+| `npm run test:ux2 -- <edge-hostname>` | Yes | UX 2.0, fabric-wide, paging and response-shaping tools; hostname resolution, parallel calls, error handling, with timings | No |
+| `npm run verify:api -- <edge> <controller> <validator>` | Yes (≈25 min) | Every read operation that needs no IDs (≈1,260 on 26.2) plus every dedicated read tool; writes [API_COVERAGE.md](API_COVERAGE.md) and [api_coverage.csv](api_coverage.csv) | No |
+
 ```bash
 npm run build                 # compile TypeScript
 npm test                      # offline tests against a simulated vManage (no lab needed; runs in CI)
 # <edge>, <controller>, <validator>: hostname or system IP of a WAN edge, Controller and Validator in your fabric
-npm run test:control-plane -- <edge> <controller> <validator>   # 39 live control-plane/OMP/validator calls + input-validation checks
-npm run test:ux2 -- <edge-hostname>   # UX 2.0, fabric-wide, paging and response-shaping tools; hostname resolution, parallel calls, error handling (with timings)
-npm run verify:api -- <edge> <controller> <validator>   # full read-only coverage run (≈25 min) → API_COVERAGE.md + api_coverage.csv
+npm run test:control-plane -- <edge> <controller> <validator>
+npm run test:ux2 -- <edge-hostname>
+npm run verify:api -- <edge> <controller> <validator>
 ```
 
-`npm test` starts a simulated Manager on localhost (HTTPS with a throwaway certificate created by `openssl`) and drives the real MCP server against it. It covers tool listing, hostname resolution, `fields`/`filter`, the fabric-wide tools, `Retry-After` retries, re-login after an expired token, statistics paging, write protection, both timeouts, fail-fast when the Manager is unreachable, session-cookie login and logout.
+### Offline tests (`npm test`)
 
-For the routing tools it also checks:
+`npm test` starts a simulated Manager on localhost (HTTPS with a throwaway certificate created by `openssl`) that serves the real 26.2.1 OpenAPI spec, and drives the real MCP server against it over stdio. GitHub Actions runs it on every push and pull request ([.github/workflows/ci.yml](.github/workflows/ci.yml)).
 
-- **Spec coverage:** every BGP, OSPF, OSPFv3, EIGRP, multicast and IPv6 read and write operation, and every UX 2.0 CLI add-on operation, in the spec is reached by a dedicated tool, and those tools call nothing outside the spec.
-- **Tool list:** a read-only server lists 115 tools in under 110 KB and hides every write tool; with writes enabled all 148 are listed.
-- **Requests:** each tool sends the right method, path, query and body, and BGP monitoring filters are passed through.
-- **Write protection:** writes are blocked by default and without `confirm`.
-- **Invalid input:** bad IDs, versions, scopes and template types are rejected before anything is sent.
+| Area | What is checked |
+|---|---|
+| Tool list | 115 tools on a read-only server with no write tool listed, 148 with `VMANAGE_ALLOW_WRITE=true`; the read-only tool list stays under 110 KB |
+| Client and resilience | Hostname resolution, `Retry-After` retries on 503, re-login after an expired token, session-cookie login and logout, fail-fast when the Manager is unreachable, real-time vs. list timeouts named in the error |
+| Response shaping | `fields`, `filter`, `count_by`, `offset`/`limit` paging, truncation with a `nextOffset` cursor on a 3,000-device inventory |
+| Fabric-wide tools | Health table and Manager deployment detection, BFD and TLOC sweeps: concurrency cap, time budget with resume, overload breaker, synced data re-checked live |
+| Multi-tenancy | Fixed tenant, per-call tenant switching, `VSessionId` reuse and renewal, cache isolation between tenants |
+| API catalog | Statistics paging with `all_pages`, refusal of paging on non-paged operations, write gate on `call_api_operation` |
+| Routing, multicast, IPv6 and CLI | Spec coverage (below), method/path/query/body of every request, per-view filters, read-only previews |
+| Write protection | Every write tool is refused while `VMANAGE_ALLOW_WRITE=false`, and refused without `confirm: true` when writes are enabled; nothing reaches the Manager in either case |
+| Input validation | Non-UUID IDs, unknown views/versions/scopes, wrong profile types and solutions, wrong template types, oversized CLI text and empty updates are rejected before any request |
 
-GitHub Actions runs it on every push and pull request ([.github/workflows/ci.yml](.github/workflows/ci.yml)).
+**Spec coverage.** For each area below, the tests read the operations from the published spec, drive every tool through every scope, and fail if an operation is not reached or a tool calls a path that is not in the spec:
 
-`verify:api` calls every read operation that needs no IDs or input (about 1,260 on 26.2) through the real MCP server. It records the result of each operation in [API_COVERAGE.md](API_COVERAGE.md) and [api_coverage.csv](api_coverage.csv). Although it only runs read operations, it sends a large number of calls, so run it against a lab Manager. The reports replace the test device IDs and the sampled group, profile and template names with placeholders such as `<edge>` and `<config-group>`, so they can be published.
+| Area | Read operations | Write operations | Tools |
+|---|---:|---:|---|
+| BGP (monitoring, UX 2.0 features, schema) | 25 | 30 | 9 |
+| OSPF and OSPFv3 (monitoring, UX 2.0 features) | 63 | 81 | 10 |
+| &nbsp;&nbsp;of which OSPFv3 IPv4/IPv6 | 38 | 54 | |
+| EIGRP (monitoring, UX 2.0 features) | 11 | 12 | 8 |
+| Multicast: IGMP, PIM, overlay multicast, MFIB, UX 2.0 features, schema | 20 | 6 | 10 |
+| IPv6: monitoring, UX 1.0 policy objects (+4 read-only previews), UX 2.0 trackers | 47 | 36 | 11 |
+| UX 2.0 CLI add-ons (SD-WAN and SD-Routing) | 4 | 6 | 5 |
+| **Total** | **170** | **171** | |
+
+UX 1.0 routing, multicast and CLI templates use the generic `/template/feature` API; the tests check each template tool's request and its template-type guard.
+
+### Live tests
+
+`test:control-plane` and `test:ux2` are regression tests against a lab Manager: each prints one PASS/FAIL line per call (with timings for `test:ux2`) and exits non-zero on any failure.
+
+`verify:api` calls every read operation that needs no IDs or input through the real MCP server, then every dedicated read tool (looking up a real configuration group, profile and template first). It records each result in [API_COVERAGE.md](API_COVERAGE.md) and [api_coverage.csv](api_coverage.csv). The reports replace device IDs and sampled group, profile and template names with placeholders such as `<edge>` and `<config-group>`, so they can be published. It sends many calls, so run it against a lab Manager.
 
 Results on Catalyst SD-WAN Manager 26.2.1:
 
 | Item | Result |
 |---|---|
 | Operations in the spec | 4,128 (2,392 read / 1,672 write / 64 blocked) |
-| Read operations live-tested | 1,261 |
-| Returned data | 1,113 |
-| Errors from Manager or lab (feature not configured, query body required, provider-only role) | 148 |
-| Dedicated tools verified live | 86 / 86 (83 by `verify:api`; the 3 fabric-wide tools by `test:ux2`). The 10 OSPF tools, 6 new BGP tools, 8 EIGRP tools, 7 UX 1.0 routing template tools, 10 CLI add-on tools, 10 multicast tools and 11 IPv6 tools were added later and are covered by the offline tests. |
+| Read operations live-tested (`verify:api`) | 1,261: 1,113 returned data, 148 errors from the Manager or lab (feature not configured, query body required, provider-only role) |
+| Dedicated tools in the last `verify:api` report | 86 / 86 verified live (83 by `verify:api`, the 3 fabric-wide tools by `test:ux2`) |
+| Tools added since (BGP, OSPF/OSPFv3, EIGRP, multicast, IPv6, routing templates, CLI add-ons) | Every read tool was run live during development; write tools were verified live only up to the write gate (writes disabled), and their requests offline. Run `verify:api` again to refresh the report. |
+| `test:control-plane` | 42 / 42 passed (39 live calls + 3 input-validation checks) |
+| `test:ux2` | 53 / 53 passed: UX 2.0 groups, profiles and preview, 6 parallel real-time calls, synced data, response shaping, fabric-wide sweeps cross-checked against per-device tools, error handling |
 
 To try individual tools interactively, use the MCP Inspector:
 
 ```bash
 npx @modelcontextprotocol/inspector node /absolute/path/to/build/index.js
 ```
+
+Set `VMANAGE_ALLOW_WRITE=true` in the environment the Inspector passes to the server to see the write tools as well.
 
 ---
 
