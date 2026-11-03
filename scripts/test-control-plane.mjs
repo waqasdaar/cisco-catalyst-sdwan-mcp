@@ -59,7 +59,7 @@ const negativeCases = [
 ];
 
 const transport = new StdioClientTransport({ command: 'node', args: ['build/index.js'], stderr: 'ignore' });
-const client = new Client({ name: 'control-plane-test', version: '1.0.0' });
+const client = new Client({ name: 'control-plane-test', version: '1.0.1' });
 await client.connect(transport);
 
 const { tools } = await client.listTools();

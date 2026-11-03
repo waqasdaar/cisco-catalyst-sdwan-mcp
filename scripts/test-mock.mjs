@@ -340,7 +340,7 @@ const baseEnv = {
   VMANAGE_LIST_TIMEOUT_MS: '1500',
 };
 async function connect(env = {}) {
-  const client = new Client({ name: 'mock-test', version: '1.0.0' });
+  const client = new Client({ name: 'mock-test', version: '1.0.1' });
   const transport = new StdioClientTransport({ command: 'node', args: ['build/index.js'], cwd: PROJECT_DIR, stderr: 'ignore', env: { ...baseEnv, ...env } });
   await client.connect(transport);
   return client;

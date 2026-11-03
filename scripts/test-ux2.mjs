@@ -11,7 +11,7 @@ if (!EDGE) {
 }
 const PROJECT_DIR = fileURLToPath(new URL('..', import.meta.url));
 
-const client = new Client({ name: 'ux2-test', version: '1.0.0' });
+const client = new Client({ name: 'ux2-test', version: '1.0.1' });
 await client.connect(new StdioClientTransport({ command: 'node', args: ['build/index.js'], cwd: PROJECT_DIR, stderr: 'ignore' }));
 
 let failures = 0;

@@ -28,7 +28,7 @@ const catalog = new ApiCatalog(new VManageApiService(loadConfig()), false);
 await catalog.load();
 const operations = catalog.allOperations();
 
-const client = new Client({ name: 'api-coverage', version: '1.0.0' });
+const client = new Client({ name: 'api-coverage', version: '1.0.1' });
 await client.connect(new StdioClientTransport({ command: 'node', args: ['build/index.js'], cwd: PROJECT_DIR, stderr: 'ignore' }));
 const { tools } = await client.listTools();
 

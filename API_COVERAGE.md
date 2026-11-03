@@ -1,6 +1,6 @@
 # Catalyst SD-WAN MCP server: vManage API coverage
 
-Generated 2026-10-27T12:15:55.262Z against vManage spec version 2.0.0 (test devices: edge <edge>, controller <controller>, validator <validator>). Regenerate with `npm run verify:api`.
+Generated 2026-11-03T15:25:20.927Z against vManage spec version 2.0.0 (test devices: edge <edge>, controller <controller>, validator <validator>). Regenerate with `npm run verify:api`.
 
 ## Summary
 
@@ -15,7 +15,7 @@ Generated 2026-10-27T12:15:55.262Z against vManage spec version 2.0.0 (test devi
 | Result: Write | 1672 |
 | Result: Read | 1131 |
 | Result: Live error | 148 |
-| Dedicated MCP tools | 83 |
+| Dedicated MCP tools | 119 |
 
 ## Dedicated MCP tools
 
@@ -25,7 +25,10 @@ Generated 2026-10-27T12:15:55.262Z against vManage spec version 2.0.0 (test devi
 | `search_api_operations` | any (validated against spec) | n/a (spec-driven) | Verified live | {"query":"omp routes"} → object |
 | `describe_api_operation` | any (validated against spec) | n/a (spec-driven) | Verified live | {"operation_id":"createReceivedRoutesList"} → object |
 | `call_api_operation` | any (validated against spec) | n/a (spec-driven) | Verified live | {"operation_id":"createOMPSummary","query":{"deviceId":"<edge>"}} → 1 rows |
-| `list_devices` | /dataservice/device | Yes | Verified live | {} → 17 rows |
+| `get_fabric_health` | /dataservice/health/devices<br>/dataservice/alarms<br>/dataservice/certificate/stats/summary | Yes | Verified live | {} → object |
+| `get_fabric_bfd_status` | /dataservice/device/bfd/sessions | Yes | Verified live | {} → object |
+| `get_fabric_tlocs` | /dataservice/device/control/{…}<br>/dataservice/device<br>/dataservice/clusterManagement/tenancy/mode<br>/dataservice/clusterManagement/list<br>/dataservice/clusterManagement/health/status<br>/dataservice/tenant<br>/dataservice/v1/{…}<br>/dataservice/v1/network-hierarchy<br>/dataservice/v1/feature-profile/{…} | No: /v1/network-hierarchy | Verified live | {} → object |
+| `list_devices` | any (validated against spec) | n/a (spec-driven) | Verified live | {} → 17 rows |
 | `get_device_details` | /dataservice/device | Yes | Verified live | {"device_id":"<edge>"} → object |
 | `list_reachable_devices` | /dataservice/device/reachable | Yes | Verified live | {} → 0 rows |
 | `list_controllers` | /dataservice/system/device/controllers | Yes | Verified live | {} → 4 rows |
@@ -51,23 +54,45 @@ Generated 2026-10-27T12:15:55.262Z against vManage spec version 2.0.0 (test devi
 | `get_omp_links` | /dataservice/device/omp/links | Yes | Verified live | {"state":"up"} → 0 rows |
 | `get_omp_status` | /dataservice/device/omp/status | Yes | Verified live | {} → 1 rows |
 | `get_omp_summary` | /dataservice/device/omp/summary | Yes | Verified live | {"device_id":"<edge>"} → 1 rows |
-| `get_validator_connections` | /dataservice/device/orchestrator/{…} | Yes | Verified live | {"device_id":"<validator>"} → 16 rows |
+| `get_validator_connections` | /dataservice/device/orchestrator/{…} | Yes | Verified live | {"device_id":"<validator>"} → 14 rows |
 | `get_validator_summary` | /dataservice/device/orchestrator/summary | Yes | Verified live | {"device_id":"<validator>"} → 2 rows |
 | `get_validator_statistics` | /dataservice/device/orchestrator/statistics | Yes | Verified live | {"device_id":"<validator>"} → 1 rows |
 | `get_validator_local_properties` | /dataservice/device/orchestrator/localproperties | Yes | Verified live | {"device_id":"<validator>"} → 1 rows |
 | `get_validator_valid_devices` | /dataservice/device/orchestrator/{…} | Yes | Verified live | {"device_id":"<validator>"} → 47 rows |
 | `get_validator_proxy_mapping` | /dataservice/device/orchestrator/proxymapping | Yes | Verified live | {"device_id":"<validator>"} → 0 rows |
-| `get_bfd_sessions` | /dataservice/device/bfd/sessions | Yes | Verified live | {"device_id":"<edge>"} → 6 rows |
+| `get_bfd_sessions` | /dataservice/device/bfd/synced/sessions<br>/dataservice/device/bfd/sessions | Yes | Verified live | {"device_id":"<edge>"} → 6 rows |
 | `get_bfd_summary` | /dataservice/device/bfd/summary | Yes | Verified live | {"device_id":"<edge>"} → 1 rows |
 | `get_bfd_tloc` | /dataservice/device/bfd/tloc | Yes | Verified live | {"device_id":"<edge>"} → 2 rows |
-| `get_device_interfaces` | /dataservice/device/interface | Yes | Verified live | {"device_id":"<edge>"} → 12 rows |
-| `get_system_status` | /dataservice/device/system/status | Yes | Verified live | {"device_id":"<edge>"} → 1 rows |
+| `get_device_interfaces` | /dataservice/device/interface/synced<br>/dataservice/device/interface | Yes | Verified live | {"device_id":"<edge>"} → 12 rows |
+| `get_system_status` | /dataservice/device/system/synced/status<br>/dataservice/device/system/status | Yes | Verified live | {"device_id":"<edge>"} → 1 rows |
 | `get_device_arp` | /dataservice/device/arp | Yes | Verified live | {"device_id":"<edge>"} → 27 rows |
 | `get_app_route_statistics` | /dataservice/device/app-route/statistics | Yes | Verified live | {"device_id":"<edge>"} → 36 rows |
 | `get_app_route_sla_class` | /dataservice/device/app-route/sla-class | Yes | Verified live | {"device_id":"<edge>"} → 1 rows |
 | `get_bgp_neighbors` | /dataservice/device/bgp/neighbors | Yes | Verified live | {"device_id":"<edge>"} → 2 rows |
 | `get_bgp_routes` | /dataservice/device/bgp/routes | Yes | Verified live | {"device_id":"<edge>"} → 16 rows |
 | `get_bgp_summary` | /dataservice/device/bgp/summary | Yes | Verified live | {"device_id":"<edge>"} → 2 rows |
+| `get_bgp_config` | any (validated against spec) | n/a (spec-driven) | Verified live | {"profile_type":"service","profile":"<service-profile>"} → 2 rows |
+| `get_bgp_feature_schema` | /dataservice/v1/feature-profile/sdwan/service/routing/bgp/schema<br>/dataservice/v1/feature-profile/sdwan/transport/routing/bgp/schema | Yes | Verified live | {"profile_type":"service"} → object |
+| `get_ospf_process` | /dataservice/device/ospf/process | Yes | Verified live | {"device_id":"<edge>"} → 0 rows |
+| `get_ospf_neighbors` | /dataservice/device/ospf/neighbor<br>/dataservice/device/ospf/v3neighbor | Yes | Verified live | {"device_id":"<edge>"} → 1 rows |
+| `get_ospf_interfaces` | /dataservice/device/ospf/interface<br>/dataservice/device/ospf/v3interface | Yes | Verified live | {"device_id":"<edge>"} → 1 rows |
+| `get_ospf_routes` | /dataservice/device/ospf/routes | Yes | Verified live | {"device_id":"<edge>"} → 0 rows |
+| `get_ospf_database` | /dataservice/device/ospf/databasesummary<br>/dataservice/device/ospf/database<br>/dataservice/device/ospf/databaseexternal | Yes | Verified live | {"device_id":"<edge>"} → 0 rows |
+| `get_ospf_config` | any (validated against spec) | n/a (spec-driven) | Verified live | {"profile_type":"service","profile":"<service-profile>"} → 1 rows |
+| `get_eigrp_interfaces` | /dataservice/device/eigrp/interface | Yes | Verified live | {"device_id":"<edge>"} → 0 rows |
+| `get_eigrp_routes` | /dataservice/device/eigrp/route | Yes | Verified live | {"device_id":"<edge>"} → 0 rows |
+| `get_eigrp_topology` | /dataservice/device/eigrp/topology | Yes | Verified live | {"device_id":"<edge>"} → 0 rows |
+| `get_eigrp_config` | any (validated against spec) | n/a (spec-driven) | Verified live | {"profile_type":"service","profile":"<service-profile>"} → 0 rows |
+| `get_igmp_status` | /dataservice/device/igmp/groups<br>/dataservice/device/igmp/interface<br>/dataservice/device/igmp/statistics<br>/dataservice/device/igmp/summary | Yes | Verified live | {"device_id":"<edge>"} → 0 rows |
+| `get_pim_status` | /dataservice/device/pim/neighbor<br>/dataservice/device/pim/interface<br>/dataservice/device/pim/rp-mapping<br>/dataservice/device/pim/statistics | Yes | Verified live | {"device_id":"<edge>"} → 0 rows |
+| `get_multicast_status` | /dataservice/device/multicast/topology<br>/dataservice/device/multicast/rpf<br>/dataservice/device/multicast/replicator<br>/dataservice/device/multicast/tunnel | Yes | Verified live | {"device_id":"<edge>"} → 0 rows |
+| `get_mfib` | /dataservice/device/ip/mfibsummary<br>/dataservice/device/ip/mfiboil<br>/dataservice/device/ip/mfibstats | Yes | Verified live | {"device_id":"<edge>"} → 0 rows |
+| `get_multicast_config` | any (validated against spec) | n/a (spec-driven) | Verified live | {"profile_type":"service","profile":"<service-profile>"} → 0 rows |
+| `get_multicast_feature_schema` | /dataservice/v1/feature-profile/sdwan/service/routing/multicast/schema | Yes | Verified live | {} → object |
+| `get_ipv6_status` | any (validated against spec) | n/a (spec-driven) | Verified live | {"device_id":"<edge>"} → 4 rows |
+| `get_ipv6_policy_status` | any (validated against spec) | n/a (spec-driven) | Verified live | {"device_id":"<edge>"} → 0 rows |
+| `get_ipv6_policy_object` | any (validated against spec) | n/a (spec-driven) | Verified live | {"kind":"prefix-list"} → 0 rows |
+| `get_ipv6_tracker` | /dataservice/v1/feature-profile/sdwan/transport/{…} | Yes | Verified live | {"schema_type":"post"} → object |
 | `get_cflowd_flows` | /dataservice/device/cflowd/flows | Yes | Verified live | {"device_id":"<edge>"} → 0 rows |
 | `get_cflowd_statistics` | /dataservice/device/cflowd/statistics | Yes | Verified live | {"device_id":"<edge>"} → 0 rows |
 | `get_app_log_flows` | /dataservice/device/app/log/flows | Yes | Verified live | {"device_id":"<edge>"} → 0 rows |
@@ -82,13 +107,24 @@ Generated 2026-10-27T12:15:55.262Z against vManage spec version 2.0.0 (test devi
 | `get_policy_group` | /dataservice/v1/{…} | Yes | Verified live | {"policy_group":"<policy-group>"} → object |
 | `list_topology_groups` | any (validated against spec) | n/a (spec-driven) | Verified live | {} → 1 rows |
 | `get_topology_group` | /dataservice/v1/topology-group/{…} | Yes | Verified live | {"topology_group":"<topology-group>"} → object |
+| `get_group_variables` | any (validated against spec) | n/a (spec-driven) | Needs IDs (not live-tested) | requires group_type, group |
+| `get_group_rules` | any (validated against spec) | n/a (spec-driven) | Needs IDs (not live-tested) | requires group_type, group |
+| `preview_group_device_config` | any (validated against spec) | n/a (spec-driven) | Needs IDs (not live-tested) | requires group_type, group, device |
 | `list_feature_profiles` | /dataservice/v1/feature-profile/{…} | Yes | Verified live | {} → object |
 | `get_feature_profile` | /dataservice/v1/feature-profile/{…} | Yes | Verified live | {"profile_type":"system","profile":"<feature-profile>"} → object |
-| `get_network_hierarchy` | /dataservice/v1/network-hierarchy<br>/dataservice/device<br>/dataservice/v1/{…} | No: /v1/network-hierarchy | Verified live | {} → 14 rows |
+| `get_network_hierarchy` | /dataservice/v1/network-hierarchy/{…} | Yes | Verified live | {} → 14 rows |
+| `get_hierarchy_cybervision` | any (validated against spec) | n/a (spec-driven) | Verified live | {} → 0 rows |
 | `list_device_templates` | /dataservice/template/device | Yes | Verified live | {} → 21 rows |
 | `list_feature_templates` | /dataservice/template/feature | Yes | Verified live | {} → 137 rows |
 | `get_attached_devices` | /dataservice/template/device/config/attached/{…} | Yes | Verified live | {"template_id":"<template-id>"} → 0 rows |
 | `get_template_definition` | /dataservice/template/device/object/{…}<br>/dataservice/template/feature/object/{…} | Yes | Verified live | {"template_id":"<template-id>","template_type":"device"} → object |
+| `list_routing_templates` | /dataservice/template/feature | Yes | Verified live | {} → 0 rows |
+| `get_routing_template` | /dataservice/template/feature/devicetemplates/{…} | Yes | Needs IDs (not live-tested) | requires template_id |
+| `get_routing_template_schema` | /dataservice/template/feature/types/definition/{…} | Yes | Verified live | {"template_type":"cisco_bgp"} → object |
+| `list_cli_addons` | /dataservice/v1/feature-profile/{…} | Yes | Verified live | {"contains":"router rip"} → 0 rows |
+| `get_cli_addon` | any (validated against spec) | n/a (spec-driven) | Needs IDs (not live-tested) | requires profile, feature_id |
+| `list_cli_templates` | /dataservice/template/feature<br>/dataservice/template/feature/object/{…} | Yes | Verified live | {} → 0 rows |
+| `get_cli_template` | /dataservice/template/feature/devicetemplates/{…} | Yes | Needs IDs (not live-tested) | requires template_id |
 | `list_policy_lists` | /dataservice/template/policy/list<br>/dataservice/template/policy/list/{…} | Yes | Verified live | {} → 33 rows |
 | `list_policy_definitions` | /dataservice/template/policy/definition/{…} | Yes | Verified live | {"definition_type":"control"} → 0 rows |
 | `list_policies` | /dataservice/template/policy/{…} | Yes | Verified live | {} → object |
@@ -533,7 +569,7 @@ Generated 2026-10-27T12:15:55.262Z against vManage spec version 2.0.0 (test devi
 | POST | `/dataservice/admin/user` | createUser_AdministrationUserGroup_1104 | Administration - User and Group | write | Write (not executed) | Enabled with VMANAGE_ALLOW_WRITE=true + confirm |
 | DELETE | `/dataservice/admin/user/{userName}` | deleteUser_AdministrationUserGroup_2206 | Administration - User and Group | write | Write (not executed) | Enabled with VMANAGE_ALLOW_WRITE=true + confirm |
 | PUT | `/dataservice/admin/user/{userName}` | updateUser_AdministrationUserGroup_2203 | Administration - User and Group | write | Write (not executed) | Enabled with VMANAGE_ALLOW_WRITE=true + confirm |
-| GET | `/dataservice/admin/user/activeSessions` | getActiveSessions_AdministrationUserGroup_2603 | Administration - User and Group | read | Verified live | 15 rows |
+| GET | `/dataservice/admin/user/activeSessions` | getActiveSessions_AdministrationUserGroup_2603 | Administration - User and Group | read | Verified live | 3 rows |
 | POST | `/dataservice/admin/user/admin/password` | updateAdminPassword_AdministrationUserGroup_2604 | Administration - User and Group | blocked | Blocked | Issues or exposes tokens, passwords, credentials or bootstrap secrets |
 | PUT | `/dataservice/admin/user/lockUser/{userName}` | lockUser | Administration - User and Group | write (deprecated) | Write (not executed) | Enabled with VMANAGE_ALLOW_WRITE=true + confirm |
 | PUT | `/dataservice/admin/user/password/{userName}` | updatePassword_AdministrationUserGroup_3103 | Administration - User and Group | blocked | Blocked | Issues or exposes tokens, passwords, credentials or bootstrap secrets |
@@ -3143,7 +3179,7 @@ Generated 2026-10-27T12:15:55.262Z against vManage spec version 2.0.0 (test devi
 | PUT | `/dataservice/notifications/rule/{type}` | updateNotificationRuleByType | Monitoring - Alarms Notification | write | Write (not executed) | Enabled with VMANAGE_ALLOW_WRITE=true + confirm |
 | DELETE | `/dataservice/notifications/rules` | deleteNotificationRule | Monitoring - Alarms Notification | write | Write (not executed) | Enabled with VMANAGE_ALLOW_WRITE=true + confirm |
 | GET | `/dataservice/notifications/rules` | getNotificationRule | Monitoring - Alarms Notification | read | Verified live | 0 rows |
-| GET | `/dataservice/statistics/apphosting` | getStatDataRawData_MonitoringAppHosting_2203 | Monitoring - App Hosting | read | Verified live | 4768 rows |
+| GET | `/dataservice/statistics/apphosting` | getStatDataRawData_MonitoringAppHosting_2203 | Monitoring - App Hosting | read | Verified live | 4788 rows |
 | POST | `/dataservice/statistics/apphosting` | getStatsRawData_MonitoringAppHosting_2204 | Monitoring - App Hosting | read | Read (needs input) | query body |
 | GET | `/dataservice/statistics/apphosting/aggregation` | getAggregationDataByQuery_MonitoringAppHosting_3403 | Monitoring - App Hosting | read | Live error (HTTP 400) | vManage API error 400: {"error":{"message":"Empty query.","code":"STATS_VALIDATION0005","details":"","type":"error"}} |
 | POST | `/dataservice/statistics/apphosting/aggregation` | getPostAggregationDataByQuery_MonitoringAppHosting_3404 | Monitoring - App Hosting | read | Read (needs input) | query body |
@@ -3234,8 +3270,8 @@ Generated 2026-10-27T12:15:55.262Z against vManage spec version 2.0.0 (test devi
 | GET | `/dataservice/statistics/bridgemac/query/fields` | getStatQueryFields_MonitoringBridge_3403 | Monitoring - Bridge | read | Verified live | 1 rows |
 | GET | `/dataservice/device/cdp/neighbors` | getCdpNeighbors | Monitoring - CDP | read | Verified live | 13 rows |
 | POST | `/dataservice/device/cdp/neighbors` | postCdpNeighbors | Monitoring - CDP | write | Write (not executed) | Enabled with VMANAGE_ALLOW_WRITE=true + confirm |
-| GET | `/dataservice/device/cedgecflowd/app-fwd-cflowd-flows` | createAppFwdCflowdFlowsList | Monitoring - Cedge Cflowd | read | Verified live | deviceId=<edge>: 4 rows |
-| GET | `/dataservice/device/cedgecflowd/app-fwd-cflowd-v6-flows` | createAppFwdCflowdV6FlowsList | Monitoring - Cedge Cflowd | read | Verified live | deviceId=<edge>: 4 rows |
+| GET | `/dataservice/device/cedgecflowd/app-fwd-cflowd-flows` | createAppFwdCflowdFlowsList | Monitoring - Cedge Cflowd | read | Verified live | deviceId=<edge>: 8 rows |
+| GET | `/dataservice/device/cedgecflowd/app-fwd-cflowd-v6-flows` | createAppFwdCflowdV6FlowsList | Monitoring - Cedge Cflowd | read | Verified live | deviceId=<edge>: 0 rows |
 | GET | `/dataservice/device/redundancy-group/app-group` | getRedundancyGroupAppGroup | Monitoring - Cedge Cflowd | read | Verified live | deviceId=<edge>: 0 rows |
 | GET | `/dataservice/statistics/eiolte` | getStatDataRawData_MonitoringCellularEiolte_1803 | Monitoring - Cellular-EIOLTE | read | Verified live | 0 rows |
 | POST | `/dataservice/statistics/eiolte` | getStatsRawData_MonitoringCellularEiolte_1804 | Monitoring - Cellular-EIOLTE | read | Read (needs input) | query body |
@@ -3478,7 +3514,7 @@ Generated 2026-10-27T12:15:55.262Z against vManage spec version 2.0.0 (test devi
 | GET | `/dataservice/statistics/ppl/reordering/page` | getStatsPaginationRawData_MonitoringPpl_3103 | Monitoring - PPL | read | Live error (HTTP 400) | vManage API error 400: {"error":{"message":"Empty query.","code":"CLICKHOUSE0005","details":"","type":"error"}} |
 | POST | `/dataservice/statistics/ppl/reordering/page` | getPostStatsPaginationRawData_MonitoringPpl_3104 | Monitoring - PPL | read | Read (needs input) | query body |
 | GET | `/dataservice/statistics/ppl/reordering/query/fields` | getStatQueryFields_MonitoringPpl_3903 | Monitoring - PPL | read | Verified live | 1 rows |
-| GET | `/dataservice/statistics/qfp` | getStatDataRawData_MonitoringQfp_1503 | Monitoring - Qfp | read | Verified live | 9252 rows |
+| GET | `/dataservice/statistics/qfp` | getStatDataRawData_MonitoringQfp_1503 | Monitoring - Qfp | read | Verified live | 9258 rows |
 | POST | `/dataservice/statistics/qfp` | getStatsRawData_MonitoringQfp_1504 | Monitoring - Qfp | read | Read (needs input) | query body |
 | GET | `/dataservice/statistics/qfp/aggregation` | getAggregationDataByQuery_MonitoringQfp_2703 | Monitoring - Qfp | read | Live error (HTTP 400) | vManage API error 400: {"error":{"message":"Empty query.","code":"CLICKHOUSE0005","details":"","type":"error"}} |
 | POST | `/dataservice/statistics/qfp/aggregation` | getPostAggregationDataByQuery_MonitoringQfp_2704 | Monitoring - Qfp | read | Read (needs input) | query body |
@@ -3489,7 +3525,7 @@ Generated 2026-10-27T12:15:55.262Z against vManage spec version 2.0.0 (test devi
 | GET | `/dataservice/statistics/qfp/page` | getStatsPaginationRawData_MonitoringQfp_2003 | Monitoring - Qfp | read | Live error (HTTP 400) | vManage API error 400: {"error":{"message":"Empty query.","code":"CLICKHOUSE0005","details":"","type":"error"}} |
 | POST | `/dataservice/statistics/qfp/page` | getPostStatsPaginationRawData_MonitoringQfp_2004 | Monitoring - Qfp | read | Read (needs input) | query body |
 | GET | `/dataservice/statistics/qfp/query/fields` | getStatQueryFields_MonitoringQfp_2803 | Monitoring - Qfp | read | Verified live | 1 rows |
-| GET | `/dataservice/statistics/qfpdrop` | getStatDataRawData_MonitoringQfpDropStatistics_1903 | Monitoring - Qfp Drop Statistics | read | Verified live | 6165 rows |
+| GET | `/dataservice/statistics/qfpdrop` | getStatDataRawData_MonitoringQfpDropStatistics_1903 | Monitoring - Qfp Drop Statistics | read | Verified live | 6074 rows |
 | POST | `/dataservice/statistics/qfpdrop` | getStatsRawData_MonitoringQfpDropStatistics_1904 | Monitoring - Qfp Drop Statistics | read | Read (needs input) | query body |
 | GET | `/dataservice/statistics/qfpdrop/aggregation` | getAggregationDataByQuery_MonitoringQfpDropStatistics_3103 | Monitoring - Qfp Drop Statistics | read | Live error (HTTP 400) | vManage API error 400: {"error":{"message":"Empty query.","code":"CLICKHOUSE0005","details":"","type":"error"}} |
 | POST | `/dataservice/statistics/qfpdrop/aggregation` | getPostAggregationDataByQuery_MonitoringQfpDropStatistics_3104 | Monitoring - Qfp Drop Statistics | read | Read (needs input) | query body |
@@ -3953,7 +3989,7 @@ Generated 2026-10-27T12:15:55.262Z against vManage spec version 2.0.0 (test devi
 | GET | `/dataservice/device/appqoe/status` | getAppqoeStatus | Real-Time Monitoring - Appqoe | read | Verified live | deviceId=<edge>: 0 rows |
 | GET | `/dataservice/device/appqoe/vpn-id` | createAppqoeVpnIdList | Real-Time Monitoring - Appqoe | read | Read (needs input) | query: vpn-id |
 | GET | `/dataservice/device/arp` | getARPInterface | Real-Time Monitoring - ARP | read | Verified live | deviceId=<edge>: 27 rows |
-| GET | `/dataservice/device/bfd/history` | createBFDHistoryList | Real-Time Monitoring - BFD | read | Verified live | deviceId=<edge>: 12 rows |
+| GET | `/dataservice/device/bfd/history` | createBFDHistoryList | Real-Time Monitoring - BFD | read | Verified live | deviceId=<edge>: 22 rows |
 | GET | `/dataservice/device/bfd/links` | createBFDLinkList | Real-Time Monitoring - BFD | read | Read (needs input) | query: state |
 | GET | `/dataservice/device/bfd/sessions` | createBFDSessions | Real-Time Monitoring - BFD | read | Verified live | deviceId=<edge>: 6 rows |
 | GET | `/dataservice/device/bfd/sites/detail` | getBFDSiteStateDetail | Real-Time Monitoring - BFD | read | Verified live | 0 rows |
@@ -4008,7 +4044,7 @@ Generated 2026-10-27T12:15:55.262Z against vManage spec version 2.0.0 (test devi
 | GET | `/dataservice/device/crashlog/details` | getAllDeviceCrashLogs | Real-Time Monitoring - Crash Log | read | Verified live | 1 rows |
 | GET | `/dataservice/device/crashlog/log` | getDeviceCrashInformation | Real-Time Monitoring - Crash Log | read | Read (needs input) | query: filename |
 | GET | `/dataservice/device/crashlog/synced` | getDeviceCrashLogsSynced | Real-Time Monitoring - Crash Log | read | Verified live | deviceId=<edge>: 0 rows |
-| GET | `/dataservice/device/ipv6/nd6` | getIpv6Data | Real-Time Monitoring - Device | read | Verified live | deviceId=<edge>: 2 rows |
+| GET | `/dataservice/device/ipv6/nd6` | getIpv6Data | Real-Time Monitoring - Device | read | Verified live | deviceId=<edge>: 4 rows |
 | GET | `/dataservice/device/control/affinity/config` | getAffinityConfig | Real-Time Monitoring - Device Control | read | Verified live | deviceId=<edge>: 2 rows |
 | GET | `/dataservice/device/control/affinity/status` | getAffinityStatus | Real-Time Monitoring - Device Control | read | Verified live | deviceId=<edge>: 2 rows |
 | GET | `/dataservice/device/control/connections` | createRealTimeConnectionList_RealTimeMonitoringDeviceControl_2703 | Real-Time Monitoring - Device Control | read | Verified live | deviceId=<edge>: 5 rows |
@@ -4116,7 +4152,7 @@ Generated 2026-10-27T12:15:55.262Z against vManage spec version 2.0.0 (test devi
 | GET | `/dataservice/device/ip/nat/filter` | createNatFilterList | Real-Time Monitoring - IP | read | Verified live | deviceId=<edge>: 0 rows |
 | GET | `/dataservice/device/ip/nat/interface` | createNatInterfaceList | Real-Time Monitoring - IP | read | Verified live | deviceId=<edge>: 0 rows |
 | GET | `/dataservice/device/ip/nat/interfacestatistics` | createNatInterfaceStatisticsList | Real-Time Monitoring - IP | read | Verified live | deviceId=<edge>: 1 rows |
-| GET | `/dataservice/device/ip/nat/translation` | createNatTranslationList | Real-Time Monitoring - IP | read | Verified live | deviceId=<edge>: 402 rows |
+| GET | `/dataservice/device/ip/nat/translation` | createNatTranslationList | Real-Time Monitoring - IP | read | Verified live | deviceId=<edge>: 343 rows |
 | GET | `/dataservice/device/ip/nat64/translation` | createNat64TranslationList | Real-Time Monitoring - IP | read | Verified live | deviceId=<edge>: 0 rows |
 | GET | `/dataservice/device/ip/routetable` | createRouteTableList | Real-Time Monitoring - IP | read | Verified live | deviceId=<edge>: 0 rows |
 | GET | `/dataservice/device/ipsec/identity` | createCryptoIpsecIdentity | Real-Time Monitoring - IPsec | read | Verified live | deviceId=<edge>: 2 rows |
@@ -4178,8 +4214,8 @@ Generated 2026-10-27T12:15:55.262Z against vManage spec version 2.0.0 (test devi
 | GET | `/dataservice/device/omp/synced/peers` | createSyncedOMPSessionList | Real-Time Monitoring - OMP | read | Verified live | deviceId=<edge>: 2 rows |
 | GET | `/dataservice/device/omp/tlocs/advertised` | createAdvertisedTlocsList | Real-Time Monitoring - OMP | read | Verified live | deviceId=<edge>: 4 rows |
 | GET | `/dataservice/device/omp/tlocs/received` | createReceivedTlocsList | Real-Time Monitoring - OMP | read | Verified live | deviceId=<edge>: 14 rows |
-| GET | `/dataservice/device/orchestrator/connections` | createConnectionListFromDevice | Real-Time Monitoring - Orchestrator | read | Verified live | deviceId=<validator>: 16 rows |
-| GET | `/dataservice/device/orchestrator/connectionshistory` | createConnectionHistoryList | Real-Time Monitoring - Orchestrator | read | Verified live | deviceId=<validator>: 312 rows |
+| GET | `/dataservice/device/orchestrator/connections` | createConnectionListFromDevice | Real-Time Monitoring - Orchestrator | read | Verified live | deviceId=<validator>: 15 rows |
+| GET | `/dataservice/device/orchestrator/connectionshistory` | createConnectionHistoryList | Real-Time Monitoring - Orchestrator | read | Verified live | deviceId=<validator>: 338 rows |
 | GET | `/dataservice/device/orchestrator/localproperties` | createLocalPropertiesListList | Real-Time Monitoring - Orchestrator | read | Verified live | deviceId=<validator>: 1 rows |
 | GET | `/dataservice/device/orchestrator/proxymapping` | createReverseProxyMappingList | Real-Time Monitoring - Orchestrator | read | Verified live | deviceId=<validator>: 0 rows |
 | GET | `/dataservice/device/orchestrator/statistics` | getStatistics | Real-Time Monitoring - Orchestrator | read | Verified live | deviceId=<validator>: 1 rows |
@@ -4195,7 +4231,7 @@ Generated 2026-10-27T12:15:55.262Z against vManage spec version 2.0.0 (test devi
 | GET | `/dataservice/device/ospf/process` | createOSPFProcess | Real-Time Monitoring - OSPF | read | Verified live | deviceId=<edge>: 0 rows |
 | GET | `/dataservice/device/ospf/routes` | createOSPFRoutesList | Real-Time Monitoring - OSPF | read | Verified live | deviceId=<edge>: 0 rows |
 | GET | `/dataservice/device/ospf/v3interface` | createOSPFv3Interface | Real-Time Monitoring - OSPF | read | Verified live | deviceId=<edge>: 1 rows |
-| GET | `/dataservice/device/ospf/v3neighbor` | createOSPFv3Neighbors | Real-Time Monitoring - OSPF | read | Verified live | deviceId=<edge>: 1 rows |
+| GET | `/dataservice/device/ospf/v3neighbor` | createOSPFv3Neighbors | Real-Time Monitoring - OSPF | read | Verified live | deviceId=<edge>: 0 rows |
 | GET | `/dataservice/device/pim/interface` | createPIMInterfaceList | Real-Time Monitoring - PIM | read | Verified live | deviceId=<edge>: 0 rows |
 | GET | `/dataservice/device/pim/neighbor` | createPIMNeighborList | Real-Time Monitoring - PIM | read | Verified live | deviceId=<edge>: 0 rows |
 | GET | `/dataservice/device/pim/rp-mapping` | createPIMRpMappingList | Real-Time Monitoring - PIM | read | Verified live | deviceId=<edge>: 0 rows |
@@ -4239,15 +4275,15 @@ Generated 2026-10-27T12:15:55.262Z against vManage spec version 2.0.0 (test devi
 | GET | `/dataservice/device/qfp/cpustat` | cpustat | Real-Time Monitoring - QFP | read | Verified live | deviceId=<edge>: 4 rows |
 | GET | `/dataservice/device/qfp/memstat` | memstat | Real-Time Monitoring - QFP | read | Verified live | deviceId=<edge>: 1 rows |
 | GET | `/dataservice/device/qfp/qfpdrop` | getQfpDrop | Real-Time Monitoring - QFP | read | Verified live | deviceId=<edge>: 1 rows |
-| GET | `/dataservice/device/qos/session/details` | getPerTunnelQosDetailedInfo | Real-Time Monitoring - QoS | read | Verified live | deviceId=<edge>: 0 rows |
-| GET | `/dataservice/device/qos/session/summary` | getPerTunnelQosSummary | Real-Time Monitoring - QoS | read | Verified live | deviceId=<edge>: 0 rows |
+| GET | `/dataservice/device/qos/session/details` | getPerTunnelQosDetailedInfo | Real-Time Monitoring - QoS | read | Verified live | deviceId=<edge>: 5 rows |
+| GET | `/dataservice/device/qos/session/summary` | getPerTunnelQosSummary | Real-Time Monitoring - QoS | read | Verified live | deviceId=<edge>: 1 rows |
 | POST | `/dataservice/device/qos/session/summary` | getPerTunnelQosSummaryPost | Real-Time Monitoring - QoS | read | Read (needs input) | query body |
 | GET | `/dataservice/device/csp/pnic` | getPnicStats | Real-Time Monitoring - RBAC | read | Verified live | deviceId=<edge>: 0 rows |
 | GET | `/dataservice/device/csp/pnic/synced` | getPNICStatsFromDevice | Real-Time Monitoring - RBAC | read | Verified live | deviceId=<edge>: 0 rows |
 | GET | `/dataservice/device/csp/rbac` | getRBACInterface | Real-Time Monitoring - RBAC | read | Live error (HTTP 400) | deviceId=<controller>: vManage API error 400: {"error":{"message":"Device data error","code":"DEV0001","details":"Failed to get data for device - Invalid data type |
 | GET | `/dataservice/device/reboothistory` | createRebootHistoryList | Real-Time Monitoring - Reboot History | read | Verified live | deviceId=<edge>: 10 rows |
-| GET | `/dataservice/device/reboothistory/details` | getRebootHistoryDetails | Real-Time Monitoring - Reboot History | read | Verified live | 1 rows |
-| GET | `/dataservice/device/reboothistory/synced` | createSyncedRebootHistoryList | Real-Time Monitoring - Reboot History | read | Verified live | deviceId=<edge>: 4 rows |
+| GET | `/dataservice/device/reboothistory/details` | getRebootHistoryDetails | Real-Time Monitoring - Reboot History | read | Verified live | 2 rows |
+| GET | `/dataservice/device/reboothistory/synced` | createSyncedRebootHistoryList | Real-Time Monitoring - Reboot History | read | Verified live | deviceId=<edge>: 3 rows |
 | GET | `/dataservice/device/sdwan-global-drop-statistics` | getSDWanGlobalDropStatistics | Real-Time Monitoring - SDWAN Statistics | read | Verified live | deviceId=<edge>: 1 rows |
 | GET | `/dataservice/device/sdwan-stats` | getSDWanStats | Real-Time Monitoring - SDWAN Statistics | read | Verified live | deviceId=<edge>: 1 rows |
 | GET | `/dataservice/device/security/information` | createSessionList | Real-Time Monitoring - Security | read | Verified live | deviceId=<edge>: 1 rows |
@@ -4613,7 +4649,7 @@ Generated 2026-10-27T12:15:55.262Z against vManage spec version 2.0.0 (test devi
 | GET | `/dataservice/util/configdb/metrics/listmetrics` | getMetricsList | Utility - Configuration DB | read | Verified live | 79 rows |
 | GET | `/dataservice/util/configdb/size` | getDBSizeOnFile | Utility - Configuration DB | read | Verified live | object |
 | GET | `/dataservice/util/logfile/appserver` | listLogFileDetails | Utility - Logging | read | Verified live | object |
-| GET | `/dataservice/util/logfile/appserver/lastnlines` | listVManageServerLogLastNLines | Utility - Logging | read | Verified live | 27-Oct-2026 13:10:06 |
+| GET | `/dataservice/util/logfile/appserver/lastnlines` | listVManageServerLogLastNLines | Utility - Logging | read | Verified live | 03-Nov-2026 16:17:44 |
 | GET | `/dataservice/util/logging/configurations` | listConfigurations | Utility - Logging | read | Verified live | 5 rows |
 | POST | `/dataservice/util/logging/debuglog` | debugLog | Utility - Logging | write (deprecated) | Write (not executed) | Enabled with VMANAGE_ALLOW_WRITE=true + confirm |
 | POST | `/dataservice/util/logging/level` | setLogLevel | Utility - Logging | write | Write (not executed) | Enabled with VMANAGE_ALLOW_WRITE=true + confirm |

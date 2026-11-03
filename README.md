@@ -1,6 +1,8 @@
 # Cisco Catalyst SD-WAN MCP Server
 
+[![Version](https://img.shields.io/badge/version-1.0.1-blue.svg)](https://github.com/waqasdaar/cisco-catalyst-sdwan-mcp)
 [![CI](https://github.com/waqasdaar/cisco-catalyst-sdwan-mcp/actions/workflows/ci.yml/badge.svg)](https://github.com/waqasdaar/cisco-catalyst-sdwan-mcp/actions/workflows/ci.yml)
+
 
 A [Model Context Protocol (MCP)](https://modelcontextprotocol.io/) server for **Cisco Catalyst SD-WAN Manager (vManage)**. It lets AI assistants such as OpenChamber/OpenCode, GitHub Copilot in VS Code and Visual Studio, Cursor and Claude query the SD-WAN fabric in natural language: devices, control plane, OMP, BFD, routing, templates, policies, alarms and the rest of the vManage REST API.
 
@@ -190,7 +192,7 @@ See [Installation](#installation), [Configuration](#configuration) and [Integrat
 
 | Component | Version | Notes |
 |---|---|---|
-| MCP server | **1.0.0** | `package.json` version, reported in the MCP `initialize` response |
+| MCP server | **1.0.1** | `package.json` version, reported in the MCP `initialize` response |
 | Catalyst SD-WAN Manager | **Tested on 26.2.1** | Controllers 26.2.1, WAN edges Catalyst 8000V IOS XE 26.02.01 |
 | Catalyst SD-WAN Manager (auth) | 20.18.1+ for JWT | Older releases: set `VMANAGE_USE_JWT=false` (session cookie + XSRF token) |
 | Node.js | 20.12+ | CI runs the offline tests on Node.js 20, 22 and 24; tested live on Node.js 26 |
@@ -1343,7 +1345,7 @@ npm run verify:api -- <edge> <controller> <validator>
 
 #### Coverage by area
 
-Every one of the 160 tools belongs to one area below. **Offline** is what `npm test` checks against the simulated Manager. **Live** is the suite that runs the tools against a real 26.2.1 Manager. Tools marked "run live during development" were added after the last `verify:api` report and were checked by hand against the lab.
+Every one of the 160 tools belongs to one area below. **Offline** is what `npm test` checks against the simulated Manager. **Live** is the suite that runs the tools against a real 26.2.1 Manager. Read tools are verified live; write tools only up to the write gate, because writes are disabled on the lab.
 
 | Area | UX | Tools | vManage APIs the tools call | Offline (`npm test`) | Live |
 |---|---|---:|---|---|---|
@@ -1353,18 +1355,18 @@ Every one of the 160 tools belongs to one area below. **Offline** is what `npm t
 | Control plane, OMP, Validator | – | 28 | `/device/control/*`, `/device/omp/*`, `/device/orchestrator/*` | `Retry-After` retry, re-login after an expired token | `test:control-plane` (42/42) |
 | Data plane, interfaces, system | – | 9 | `/device/bfd/*`, `/device/interface`, `/device/system/status`, `/device/arp`, `/device/vpn`, `/device/tloc`, `/device/bridge/table` | Real-time timeout, unknown-device rejection | `test:ux2`, `verify:api` |
 | App-aware routing, flows, statistics | – | 7 | `/device/app-route/*`, `/device/cflowd/*`, `/device/app/log/*`, `/device/sdwan-stats` | – | `verify:api` |
-| BGP | 2.0 | 9 | `/device/bgp/*`, `/v1/feature-profile/{sdwan,sd-routing}/{service,transport}/.../routing/bgp` | Full spec sweep (see next table) | Run live during development |
-| OSPF and OSPFv3 | 2.0 | 10 | `/device/ospf/*`, `/v1/feature-profile/.../routing/{ospf,ospfv3/ipv4,ospfv3/ipv6}` | Full spec sweep | Run live during development |
-| EIGRP | 2.0 | 8 | `/device/eigrp/*`, `/v1/feature-profile/.../service/.../routing/eigrp` | Full spec sweep | Run live during development |
-| Multicast: IGMP, PIM, MFIB | 2.0 | 10 | `/device/{igmp,pim,multicast}/*`, `/device/ip/mfib*`, `/v1/feature-profile/sdwan/service/.../routing/multicast` | Full spec sweep | Run live during development |
-| IPv6 | 1.0 and 2.0 | 11 | `/device/ipv6/*`, `/device/ip/ipRoutes`, `/template/policy/{list,definition}/*v6*`, `/v1/feature-profile/sdwan/transport/.../ipv6-tracker*` | Full spec sweep | Run live during development |
-| **Configuration groups, policy groups, topology groups** | 2.0 | 18 | `/v1/config-group`, `/v1/policy-group`, `/v1/topology-group`, with `/{id}`, `/device/associate`, `/device/variables[/schema]`, `/device/deploy`, `/rules[/preview]` and `/device/{id}/preview` (read-only render) | Full spec sweep (40 operations), device-name to UUID resolution, write protection, cache invalidation after a write | `test:ux2` (9 original tools); new read tools run live during development |
-| **Feature profiles and network hierarchy** | 2.0 | 6 | `/v1/feature-profile/{solution}/{type}[/{id}]`, `/v1/network-hierarchy[/{id}]`, `/v1/network-hierarchy/{id}/network-settings/cybervisioncenters[/id, /{cvId}]` | Full spec sweep of the network hierarchy (4 operations), node lookup by ID, path, site ID and name (ambiguous names refused), `label` filter, Global default, profile-name lookup | `test:ux2` (3 original tools); hierarchy tools run live during development |
-| UX 2.0 CLI add-ons | 2.0 | 5 | `/v1/feature-profile/{sdwan,sd-routing}/cli/{id}/config` | Full spec sweep | Run live during development |
+| BGP | 2.0 | 9 | `/device/bgp/*`, `/v1/feature-profile/{sdwan,sd-routing}/{service,transport}/.../routing/bgp` | Full spec sweep (see next table) | `verify:api` (read tools) |
+| OSPF and OSPFv3 | 2.0 | 10 | `/device/ospf/*`, `/v1/feature-profile/.../routing/{ospf,ospfv3/ipv4,ospfv3/ipv6}` | Full spec sweep | `verify:api` (read tools) |
+| EIGRP | 2.0 | 8 | `/device/eigrp/*`, `/v1/feature-profile/.../service/.../routing/eigrp` | Full spec sweep | `verify:api` (read tools) |
+| Multicast: IGMP, PIM, MFIB | 2.0 | 10 | `/device/{igmp,pim,multicast}/*`, `/device/ip/mfib*`, `/v1/feature-profile/sdwan/service/.../routing/multicast` | Full spec sweep | `verify:api` (read tools) |
+| IPv6 | 1.0 and 2.0 | 11 | `/device/ipv6/*`, `/device/ip/ipRoutes`, `/template/policy/{list,definition}/*v6*`, `/v1/feature-profile/sdwan/transport/.../ipv6-tracker*` | Full spec sweep | `verify:api` (read tools) |
+| **Configuration groups, policy groups, topology groups** | 2.0 | 18 | `/v1/config-group`, `/v1/policy-group`, `/v1/topology-group`, with `/{id}`, `/device/associate`, `/device/variables[/schema]`, `/device/deploy`, `/rules[/preview]` and `/device/{id}/preview` (read-only render) | Full spec sweep (40 operations), device-name to UUID resolution, write protection, cache invalidation after a write | `test:ux2`, `verify:api`; the 3 tools that need a group were run by hand |
+| **Feature profiles and network hierarchy** | 2.0 | 6 | `/v1/feature-profile/{solution}/{type}[/{id}]`, `/v1/network-hierarchy[/{id}]`, `/v1/network-hierarchy/{id}/network-settings/cybervisioncenters[/id, /{cvId}]` | Full spec sweep of the network hierarchy (4 operations), node lookup by ID, path, site ID and name (ambiguous names refused), `label` filter, Global default, profile-name lookup | `test:ux2`, `verify:api` |
+| UX 2.0 CLI add-ons | 2.0 | 5 | `/v1/feature-profile/{sdwan,sd-routing}/cli/{id}/config` | Full spec sweep | `verify:api`; `get_cli_addon` run by hand |
 | **Device and feature templates** | 1.0 | 4 | `/template/device`, `/template/feature`, `/template/device/config/attached/{id}`, `/template/{device,feature}/object/{id}` | List timeout | `verify:api` |
 | **Policies, policy lists, policy definitions** | 1.0 | 3 | `/template/policy/{vsmart,vedge,security}`, `/template/policy/list/{type}`, `/template/policy/definition/{type}` | – | `verify:api` |
-| Routing and multicast feature templates | 1.0 | 7 | `/template/feature` (list, object, device templates, type definition, create, update, delete, clone) | Requests, template-type guard | Run live during development |
-| CLI add-on templates | 1.0 | 5 | `/template/feature` (list, object, device templates, create, update, delete) | Requests, template-type guard, `contains` search | Run live during development |
+| Routing and multicast feature templates | 1.0 | 7 | `/template/feature` (list, object, device templates, type definition, create, update, delete, clone) | Requests, template-type guard | `verify:api` (list and schema; the lab has no routing templates to read) |
+| CLI add-on templates | 1.0 | 5 | `/template/feature` (list, object, device templates, create, update, delete) | Requests, template-type guard, `contains` search | `verify:api` (list; the lab has no CLI templates to read) |
 | Cloud OnRamp and administration | – | 8 | `/template/cloudx/*`, `/alarms`, `/certificate/stats/summary`, `/clusterManagement/health/status`, `/template/policy/customapp` | – | `verify:api` |
 | **Total** | | **160** | | | |
 
@@ -1414,8 +1416,8 @@ Results on Catalyst SD-WAN Manager 26.2.1:
 |---|---|
 | Operations in the spec | 4,128 (2,392 read / 1,672 write / 64 blocked) |
 | Read operations live-tested (`verify:api`) | 1,261: 1,113 returned data, 148 errors from the Manager or lab (feature not configured, query body required, provider-only role) |
-| Dedicated tools in the last `verify:api` report | 86 / 86 verified live (83 by `verify:api`, the 3 fabric-wide tools by `test:ux2`) |
-| Tools added since (BGP, OSPF/OSPFv3, EIGRP, multicast, IPv6, routing templates, CLI add-ons, UX 2.0 group reads and writes, network hierarchy) | Every read tool was run live during development; write tools were verified live only up to the write gate (writes disabled), and their requests offline. Run `verify:api` again to refresh the report. |
+| Read tools (`verify:api`, server 1.0.1) | 113 / 119 verified live. The 6 that need IDs were run by hand: 4 passed; `get_routing_template` and `get_cli_template` had nothing to read (no UX 1.0 routing or CLI templates on the lab) and are covered offline |
+| Write tools (41) | Verified live only up to the write gate (writes disabled on the lab); their method, path and body are checked offline |
 | `test:control-plane` | 42 / 42 passed (39 live calls + 3 input-validation checks) |
 | `test:ux2` | 53 / 53 passed: UX 2.0 groups, profiles and preview, 6 parallel real-time calls, synced data, response shaping, fabric-wide sweeps cross-checked against per-device tools, error handling |
 
@@ -1500,4 +1502,4 @@ Dockerfile, docker-compose.yml
 
 MIT. See [LICENSE](LICENSE).
 
-[![MCP Badge](https://lobehub.com/badge/mcp/sdntechforum-catalyst-sdwan-mcp)](https://lobehub.com/mcp/sdntechforum-catalyst-sdwan-mcp)
+
