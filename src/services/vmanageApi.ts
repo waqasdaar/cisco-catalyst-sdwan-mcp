@@ -354,7 +354,11 @@ export class VManageApiService {
    */
   async request(method: HttpMethod, path: string, options: RequestOptions = {}): Promise<ApiResponse> {
     options = { ...options, tenant: this.tenantFor(path) };
-    if (method !== 'GET') return this.execute(method, path, options);
+    if (method !== 'GET') {
+      const result = await this.execute(method, path, options);
+      this.invalidateCached(path, options.tenant);
+      return result;
+    }
 
     // The tenant is part of the key, so cached data never crosses tenants.
     const key = `${options.tenant ?? ''}|${path}|${JSON.stringify(options.query ?? {})}|${options.accept ?? ''}`;
@@ -384,6 +388,15 @@ export class VManageApiService {
     const result = await pending;
     if (options.cacheTtlMs) this.cacheSet(key, result, options.cacheTtlMs);
     return result;
+  }
+
+  /** Drops cached GETs of the API area a POST/PUT/DELETE touched (e.g. /dataservice/v1/config-group), so lookups see the change. */
+  private invalidateCached(path: string, tenant: string | undefined): void {
+    const area = path.split('?')[0].split('/').slice(0, 4).join('/');
+    for (const key of [...this.cache.keys()]) {
+      const [keyTenant, keyPath] = key.split('|');
+      if (keyTenant === (tenant ?? '') && keyPath.startsWith(area)) this.cache.delete(key);
+    }
   }
 
   private cacheSet(key: string, value: ApiResponse, ttlMs: number): void {

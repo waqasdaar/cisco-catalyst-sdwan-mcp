@@ -35,7 +35,12 @@ const tlocs = () => [
   { color: 'biz-internet', interface: 'GigabitEthernet2', 'operation-state': 'up', 'admin-state': 'up', 'public-ip': '203.0.113.1', 'private-ip': '203.0.113.1' },
 ];
 
-const stats = { logins: 0, sessionLogins: 0, logouts: 0, ompStatusCalls: 0, ompSummaryCalls: 0, deviceIds: [], ospfPaths: [], ospfWrites: [], bgpPaths: [], bgpWrites: [], eigrpPaths: [], eigrpWrites: [], templateWrites: [], cliPaths: [], cliWrites: [], mcPaths: [], mcWrites: [], v6Paths: [], v6Writes: [], v6Previews: [] };
+const stats = { logins: 0, sessionLogins: 0, logouts: 0, ompStatusCalls: 0, ompSummaryCalls: 0, deviceIds: [], ospfPaths: [], ospfWrites: [], bgpPaths: [], bgpWrites: [], eigrpPaths: [], eigrpWrites: [], templateWrites: [], cliPaths: [], cliWrites: [], mcPaths: [], mcWrites: [], v6Paths: [], v6Writes: [], v6Previews: [], grpPaths: [], grpPosts: [] };
+const GROUPS = {
+  'config-group': [{ id: '19191919-1919-4191-8191-191919191919', name: 'Branch-CG', solution: 'sdwan' }],
+  'policy-group': [{ id: '20202020-2020-4202-8202-202020202020', name: 'Branch-PG', solution: 'sdwan' }],
+  'topology-group': [{ id: '21212121-2121-4212-8212-212121212121', name: 'Hub-Spoke', solution: 'sdwan' }],
+};
 const CLI_PROFILE_ID = 'cccccccc-cccc-4ccc-8ccc-cccccccccccc';
 const CLI_FEATURE = 'dddddddd-dddd-4ddd-8ddd-dddddddddddd';
 const CLI_TEMPLATE = 'eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee';
@@ -143,6 +148,23 @@ function handler(req, res) {
       }
       stats.bgpPaths.push(p);
       return send(200, { data: [{ path: p, query: Object.fromEntries(url.searchParams) }] });
+    }
+    const groupPath = /^\/dataservice\/v1\/(config-group|policy-group|topology-group)(\/.*)?$/.exec(p);
+    if (groupPath) {
+      const [, kind, rest = ''] = groupPath;
+      if (req.method !== 'GET') {
+        const body = raw ? JSON.parse(raw) : undefined;
+        stats.grpPosts.push({ method: req.method, path: p, query: Object.fromEntries(url.searchParams), body });
+        if (req.method === 'POST' && rest === '') {
+          const id = '22222222-0000-4000-8000-00000000000' + GROUPS[kind].length;
+          GROUPS[kind].push({ id, name: body?.name, solution: 'sdwan' });
+          return send(200, { id });
+        }
+        return send(200, { id: 'task-1', path: p });
+      }
+      stats.grpPaths.push(p);
+      if (rest === '') return send(200, GROUPS[kind]);
+      return send(200, { path: p, query: Object.fromEntries(url.searchParams), devices: [] });
     }
     if (p === '/dataservice/v1/feature-profile/sdwan/transport') return send(200, [{ profileId: OSPF_PROFILE, profileName: 'Branch-Transport' }]);
     if (p === '/dataservice/device/ip/ipRoutes') {
@@ -323,10 +345,10 @@ async function tool(client, name, args = {}) {
 // ---------- Tests ----------
 const c = await connect();
 const { tools } = await c.listTools();
-check('tool list (read-only server: write tools hidden)', tools.length === 115, `${tools.length} tools`);
+check('tool list (read-only server: write tools hidden)', tools.length === 118, `${tools.length} tools`);
 check(
   'write tools hidden when writes are disabled; call_api_operation kept',
-  !tools.some((x) => /^(create|update|delete|associate|clone)_/.test(x.name)) && tools.some((x) => x.name === 'call_api_operation')
+  !tools.some((x) => /^(create|update|delete|associate|clone|deploy)_/.test(x.name)) && tools.some((x) => x.name === 'call_api_operation')
 );
 check('tool list stays compact', JSON.stringify(tools).length < 110_000, `${JSON.stringify(tools).length} bytes`);
 
@@ -1152,7 +1174,7 @@ check('IPv6 writes disabled by default', /VMANAGE_ALLOW_WRITE=true/.test(r.error
 await cv.close();
 
 const wv = await connect({ VMANAGE_ALLOW_WRITE: 'true' });
-check('tool list with writes enabled', (await wv.listTools()).tools.length === 148);
+check('tool list with writes enabled', (await wv.listTools()).tools.length === 157);
 const lastV6Write = () => stats.v6Writes.at(-1);
 const PREFIX_LIST = { name: 'Branch-v6', description: 'test', entries: [{ ipv6Prefix: '2001:db8:10::/48' }] };
 r = await tool(wv, 'create_ipv6_policy_object', { kind: 'prefix-list', body: PREFIX_LIST });
@@ -1220,6 +1242,118 @@ const missingV6Writes = specV6Writes.filter((op) => !v6Written.has(op));
 check(`all ${specV6Writes.length} IPv6 write operations in the spec covered`, specV6Writes.length === 36 && missingV6Writes.length === 0, missingV6Writes.join(', '));
 check('IPv6 write tools only call operations from the spec', [...v6Written].every((op) => specV6Writes.includes(op)), [...v6Written].filter((op) => !specV6Writes.includes(op)).join(', '));
 await wv.close();
+
+// UX 2.0 configuration, policy and topology groups: reads, read-only renders and writes.
+const [CG, PG, TG] = [GROUPS['config-group'][0], GROUPS['policy-group'][0], GROUPS['topology-group'][0]];
+const cg = await connect();
+r = await tool(cg, 'get_group_variables', { group_type: 'policy', group: 'branch-pg', device: 'Branch-1', suggestions: true });
+check(
+  'get_group_variables policy group, one device',
+  r.value?.path === `/dataservice/v1/policy-group/${PG.id}/device/variables` && r.value.query['device-id'] === 'u-11' && r.value.query.suggestions === 'true',
+  JSON.stringify(r.value ?? r.error)
+);
+r = await tool(cg, 'get_group_variables', { group_type: 'config', group: 'Branch-CG', schema: true });
+check('get_group_variables schema', r.value?.path === `/dataservice/v1/config-group/${CG.id}/device/variables/schema`, JSON.stringify(r.value ?? r.error));
+r = await tool(cg, 'get_group_variables', { group_type: 'config', group: CG.id, fetch_body: { deviceIds: ['u-11'] } });
+check(
+  'get_group_variables fetch_body is read-only',
+  !r.error && stats.grpPosts.at(-1)?.method === 'POST' && stats.grpPosts.at(-1).path === `/dataservice/v1/config-group/${CG.id}/device/variables`,
+  JSON.stringify(r.value ?? r.error)
+);
+r = await tool(cg, 'get_group_rules', { group_type: 'topology', group: 'Hub-Spoke' });
+check('get_group_rules topology preview', r.value?.path === `/dataservice/v1/topology-group/${TG.id}/rules/preview`, JSON.stringify(r.value ?? r.error));
+r = await tool(cg, 'preview_group_device_config', { group_type: 'topology', group: 'Hub-Spoke', device: 'Branch-2' });
+check('preview_group_device_config works read-only', !r.error && stats.grpPosts.at(-1)?.path === `/dataservice/v1/topology-group/${TG.id}/device/u-12/preview`, JSON.stringify(r.value ?? r.error));
+for (const [label, name, args, pattern] of [
+  ['get_group_variables refuses topology groups', 'get_group_variables', { group_type: 'topology', group: 'Hub-Spoke' }, /group_type must be one of: config, policy/],
+  ['unknown group lists the available ones', 'get_group_rules', { group_type: 'config', group: 'nope' }, /No config-group "nope"\. Available: Branch-CG/],
+  ['preview_group_device_config refuses config groups', 'preview_group_device_config', { group_type: 'config', group: 'Branch-CG', device: 'Branch-1' }, /group_type must be one of: policy, topology/],
+]) {
+  r = await tool(cg, name, args);
+  check(label, pattern.test(r.error ?? ''), r.error ?? 'not rejected');
+}
+const postsBefore = stats.grpPosts.length;
+r = await tool(cg, 'deploy_group', { group_type: 'config', group: 'Branch-CG', devices: ['Branch-1'], confirm: true });
+check('deploy_group disabled by default', /VMANAGE_ALLOW_WRITE=true/.test(r.error ?? '') && stats.grpPosts.length === postsBefore, r.error ?? 'not rejected');
+await cg.close();
+
+const wg = await connect({ VMANAGE_ALLOW_WRITE: 'true' });
+const lastGroupWrite = () => stats.grpPosts.at(-1);
+r = await tool(wg, 'list_config_groups');
+r = await tool(wg, 'create_group', { group_type: 'config', body: { name: 'Lab-CG', description: 'test', solution: 'sdwan', profiles: [] } });
+check('create_group needs confirm: true', /confirm: true/.test(r.error ?? ''), r.error ?? 'not rejected');
+r = await tool(wg, 'create_group', { group_type: 'config', body: { name: 'Lab-CG', description: 'test', solution: 'sdwan', profiles: [] }, confirm: true });
+check('create_group', r.value?.operationId === 'CreateConfigGroup' && lastGroupWrite()?.path === '/dataservice/v1/config-group' && lastGroupWrite().body.name === 'Lab-CG', JSON.stringify(r.value ?? r.error));
+r = await tool(wg, 'get_config_group', { config_group: 'Lab-CG' });
+check('a group created by a tool is found by name right away (cache invalidated)', !r.error, r.error ?? '');
+r = await tool(wg, 'update_group', { group_type: 'topology', group: 'Hub-Spoke', body: { name: 'Hub-Spoke', profiles: [] }, confirm: true });
+check('update_group', r.value?.operationId === 'EditTopologyGroup' && lastGroupWrite()?.method === 'PUT', JSON.stringify(r.value ?? r.error));
+r = await tool(wg, 'associate_group_devices', { group_type: 'policy', group: 'Branch-PG', devices: ['Branch-1', '192.0.2.12', 'branch-1'], confirm: true });
+check(
+  'associate_group_devices add (resolved to UUIDs, de-duplicated)',
+  r.value?.operationId === 'CreatePolicyGroupAssociation' && JSON.stringify(lastGroupWrite()?.body) === JSON.stringify({ devices: [{ id: 'u-11' }, { id: 'u-12' }] }),
+  JSON.stringify(lastGroupWrite() ?? r.error)
+);
+r = await tool(wg, 'associate_group_devices', { group_type: 'config', group: 'Branch-CG', devices: ['Branch-2'], mode: 'remove', confirm: true });
+check('associate_group_devices remove', r.value?.operationId === 'DeleteConfigGroupAssociation' && lastGroupWrite()?.method === 'DELETE', JSON.stringify(r.value ?? r.error));
+r = await tool(wg, 'update_group_variables', { group_type: 'config', group: 'Branch-CG', body: { solution: 'sdwan', devices: [] }, confirm: true });
+check('update_group_variables', r.value?.operationId === 'createConfigGroupDeviceVariables' && lastGroupWrite()?.method === 'PUT', JSON.stringify(r.value ?? r.error));
+r = await tool(wg, 'deploy_group', { group_type: 'config', group: 'Branch-CG', devices: ['Branch-1'], confirm: true });
+check(
+  'deploy_group',
+  r.value?.operationId === 'deployConfigGroup' && lastGroupWrite()?.path === `/dataservice/v1/config-group/${CG.id}/device/deploy` && lastGroupWrite().body.devices[0].id === 'u-11',
+  JSON.stringify(r.value ?? r.error)
+);
+r = await tool(wg, 'delete_group', { group_type: 'policy', group: 'Branch-PG', delete_profiles: true, confirm: true });
+check('delete_group with delete_profiles', r.value?.operationId === 'DeletePolicyGroup' && lastGroupWrite()?.query?.deleteProfiles === 'true', JSON.stringify(lastGroupWrite() ?? r.error));
+for (const [label, name, args, pattern] of [
+  ['deploy_group needs confirm: true', 'deploy_group', { group_type: 'config', group: 'Branch-CG', devices: ['Branch-1'] }, /confirm: true/],
+  ['deploy_group rejects unknown devices', 'deploy_group', { group_type: 'config', group: 'Branch-CG', devices: ['no-such-edge'], confirm: true }, /Unknown device/],
+  ['deploy_group requires devices', 'deploy_group', { group_type: 'topology', group: 'Hub-Spoke', devices: [], confirm: true }, /devices must be a non-empty list/],
+  ['delete_group: delete_profiles not for topology groups', 'delete_group', { group_type: 'topology', group: 'Hub-Spoke', delete_profiles: true, confirm: true }, /delete_profiles applies only/],
+  ['associate_group_devices refuses topology groups', 'associate_group_devices', { group_type: 'topology', group: 'Hub-Spoke', devices: ['Branch-1'], confirm: true }, /group_type must be one of: config, policy/],
+  ['create_group requires an object body', 'create_group', { group_type: 'policy', body: 'x', confirm: true }, /body must be an object/],
+]) {
+  const before = stats.grpPosts.length;
+  r = await tool(wg, name, args);
+  check(label, pattern.test(r.error ?? '') && stats.grpPosts.length === before, r.error ?? 'not rejected');
+}
+
+// Every configuration, policy and topology group operation in the spec is reachable through a dedicated tool.
+const specGroups = Object.entries(spec.paths)
+  .filter(([path]) => /^\/v1\/(config-group|policy-group|topology-group)/.test(path))
+  .flatMap(([path, ops]) => ['get', 'post', 'put', 'delete'].filter((m) => ops[m]).map((m) => `${m.toUpperCase()} ${template(path)}`));
+stats.grpPaths = [];
+stats.grpPosts = [];
+for (const [type, group] of [['config', 'Branch-CG'], ['policy', 'Lab-CG'], ['topology', 'Hub-Spoke']]) {
+  const groupName = type === 'policy' ? GROUPS['policy-group'][0].name : group;
+  const scope = { group_type: type, group: groupName, confirm: true };
+  await tool(wg, `list_${type}_groups`);
+  if (type === 'topology') await tool(wg, 'get_topology_group', { topology_group: groupName });
+  else await tool(wg, `get_${type}_group`, { [`${type}_group`]: groupName });
+  await tool(wg, 'get_group_rules', scope);
+  await tool(wg, 'create_group', { group_type: type, body: { name: `${type}-new` }, confirm: true });
+  await tool(wg, 'update_group', { ...scope, body: { name: groupName } });
+  await tool(wg, 'deploy_group', { ...scope, devices: ['Branch-1'] });
+  if (type === 'config') await tool(wg, 'preview_config_group_device_config', { config_group: groupName, device: 'Branch-1' });
+  else await tool(wg, 'preview_group_device_config', { group_type: type, group: groupName, device: 'Branch-1' });
+  if (type !== 'topology') {
+    for (const view of [{}, { schema: true }, { fetch_body: { deviceIds: [] } }]) await tool(wg, 'get_group_variables', { group_type: type, group: groupName, ...view });
+    await tool(wg, 'update_group_variables', { ...scope, body: { devices: [] } });
+    for (const mode of ['add', 'replace', 'remove']) await tool(wg, 'associate_group_devices', { ...scope, devices: ['Branch-1'], mode });
+  }
+  await tool(wg, 'delete_group', scope);
+}
+// The mock's device IDs (u-11) are not UUIDs, so they are normalized here.
+const groupTemplate = (path) => template(path.replace(/\/device\/[^/]+\/preview$/, '/device/{id}/preview'));
+const groupReached = new Set([
+  ...stats.grpPaths.map((path) => `GET ${groupTemplate(path)}`),
+  ...stats.grpPosts.map((x) => `${x.method} ${groupTemplate(x.path)}`),
+]);
+const missingGroupOps = specGroups.filter((op) => !groupReached.has(op));
+check(`all ${specGroups.length} configuration/policy/topology group operations in the spec covered`, specGroups.length === 40 && missingGroupOps.length === 0, missingGroupOps.join(', '));
+check('group tools only call operations from the spec', [...groupReached].every((op) => specGroups.includes(op)), [...groupReached].filter((op) => !specGroups.includes(op)).join(', '));
+await wg.close();
 
 // Unreachable Manager: the first call fails, the next ones fail immediately.
 const closedPort = await new Promise((resolve) => {

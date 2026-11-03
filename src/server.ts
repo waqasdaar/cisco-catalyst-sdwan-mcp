@@ -241,6 +241,12 @@ const NO_ROW_OPTIONS = new Set([
   'update_routing_template',
   'delete_routing_template',
   'clone_routing_template',
+  'create_group',
+  'update_group',
+  'delete_group',
+  'associate_group_devices',
+  'update_group_variables',
+  'deploy_group',
   'create_cli_addon',
   'update_cli_addon',
   'delete_cli_addon',
@@ -291,7 +297,19 @@ const WRITE_CONFIRM = {
   confirm: { type: 'boolean', description: 'Must be true, only after the user explicitly approves this change' },
 };
 const WRITE_NOTE = 'Changes configuration: needs VMANAGE_ALLOW_WRITE=true on the server and confirm: true after explicit user approval.';
-const WRITE_TOOL = /^(create|update|delete|associate|clone)_/;
+const WRITE_TOOL = /^(create|update|delete|associate|clone|deploy)_/;
+const GROUP_KINDS: Record<string, 'config-group' | 'policy-group' | 'topology-group'> = {
+  config: 'config-group',
+  policy: 'policy-group',
+  topology: 'topology-group',
+};
+const GROUP_SCOPE = {
+  group_type: { type: 'string', enum: Object.keys(GROUP_KINDS), description: 'config (configuration group), policy (policy group) or topology (topology group)' },
+  group: { type: 'string', description: 'Group ID or exact name' },
+};
+const GROUP_DEVICES = {
+  devices: { type: 'array', items: { type: 'string' }, description: 'Devices: hostnames, system IPs, UUIDs or chassis numbers' },
+};
 
 // IPv6 real-time views: endpoint and the filters it accepts (tool argument -> query parameter).
 const IPV6_VIEWS: Record<string, { path: string; filters?: Record<string, string>; local?: string[] }> = {
@@ -1832,6 +1850,119 @@ export class CatalystSdwanMCPServer {
         },
       },
       {
+        name: 'get_group_variables',
+        description:
+          'Get device-specific variables of a configuration or policy group: values (all devices or one), the variables schema, or a vManage-side fetch with a query body. Use before update_group_variables.',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            group_type: { type: 'string', enum: ['config', 'policy'], description: 'config (configuration group) or policy (policy group)' },
+            group: GROUP_SCOPE.group,
+            device: { type: 'string', description: 'Only this device: hostname, system IP, UUID or chassis number' },
+            schema: { type: 'boolean', description: 'Return the variables schema instead of values' },
+            suggestions: { type: 'boolean', description: 'Include suggested values (values view)' },
+            fetch_body: { type: 'object', description: 'Fetch variables with this query body (POST .../device/variables; read-only)' },
+          },
+          required: ['group_type', 'group'],
+        },
+      },
+      {
+        name: 'get_group_rules',
+        description: 'Get the automatic device-association rules of a configuration or policy group, or the bulk rule-association preview of a topology group.',
+        inputSchema: { type: 'object', properties: { ...GROUP_SCOPE }, required: ['group_type', 'group'] },
+      },
+      {
+        name: 'preview_group_device_config',
+        description:
+          'Read-only: render the configuration a policy group or topology group would push to one device, compared with its running configuration (line diff by default). Nothing is deployed. For configuration groups use preview_config_group_device_config.',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            group_type: { type: 'string', enum: ['policy', 'topology'], description: 'policy (policy group) or topology (topology group)' },
+            group: GROUP_SCOPE.group,
+            device: { type: 'string', description: 'Device hostname, system IP, UUID or chassis number' },
+            view: { type: 'string', enum: ['diff', 'new', 'existing', 'both'], description: 'What to return (default: diff)' },
+          },
+          required: ['group_type', 'group', 'device'],
+        },
+      },
+      {
+        name: 'create_group',
+        description: `Create a UX 2.0 configuration, policy or topology group. Returns its ID. Associate devices with associate_group_devices, then deploy_group. ${WRITE_NOTE}`,
+        inputSchema: {
+          type: 'object',
+          properties: {
+            group_type: GROUP_SCOPE.group_type,
+            body: {
+              type: 'object',
+              description: 'Group definition: { name, description, solution, profiles: [{ id }] } (same shape as get_config_group / get_policy_group / get_topology_group output)',
+            },
+            ...WRITE_CONFIRM,
+          },
+          required: ['group_type', 'body', 'confirm'],
+        },
+      },
+      {
+        name: 'update_group',
+        description: `Replace a configuration, policy or topology group definition (name, description, profiles). Devices are not changed until deploy_group. ${WRITE_NOTE}`,
+        inputSchema: {
+          type: 'object',
+          properties: { ...GROUP_SCOPE, body: { type: 'object', description: 'Complete group definition' }, ...WRITE_CONFIRM },
+          required: ['group_type', 'group', 'body', 'confirm'],
+        },
+      },
+      {
+        name: 'delete_group',
+        description: `Delete a configuration, policy or topology group. vManage refuses groups that still have associated devices. ${WRITE_NOTE}`,
+        inputSchema: {
+          type: 'object',
+          properties: {
+            ...GROUP_SCOPE,
+            delete_profiles: { type: 'boolean', description: 'Configuration and policy groups: also delete their feature profiles (default: false)' },
+            ...WRITE_CONFIRM,
+          },
+          required: ['group_type', 'group', 'confirm'],
+        },
+      },
+      {
+        name: 'associate_group_devices',
+        description: `Add, replace or remove the devices associated with a configuration or policy group. Devices are not reconfigured until deploy_group. ${WRITE_NOTE}`,
+        inputSchema: {
+          type: 'object',
+          properties: {
+            group_type: { type: 'string', enum: ['config', 'policy'], description: 'config (configuration group) or policy (policy group)' },
+            group: GROUP_SCOPE.group,
+            ...GROUP_DEVICES,
+            mode: { type: 'string', enum: ['add', 'replace', 'remove'], description: 'add (default), replace the whole list, or remove these devices' },
+            ...WRITE_CONFIRM,
+          },
+          required: ['group_type', 'group', 'devices', 'confirm'],
+        },
+      },
+      {
+        name: 'update_group_variables',
+        description: `Set device-specific variable values of a configuration or policy group (see get_group_variables for the current values and schema). Devices get them on deploy_group. ${WRITE_NOTE}`,
+        inputSchema: {
+          type: 'object',
+          properties: {
+            group_type: { type: 'string', enum: ['config', 'policy'], description: 'config (configuration group) or policy (policy group)' },
+            group: GROUP_SCOPE.group,
+            body: { type: 'object', description: 'Variables body: { solution, devices: [{ device-id, variables: [{ name, value }] }] }' },
+            ...WRITE_CONFIRM,
+          },
+          required: ['group_type', 'group', 'body', 'confirm'],
+        },
+      },
+      {
+        name: 'deploy_group',
+        description: `DEPLOY a configuration, policy or topology group to devices: vManage pushes the rendered configuration to them. Preview first (preview_config_group_device_config / preview_group_device_config). Returns the vManage task. ${WRITE_NOTE}`,
+        inputSchema: {
+          type: 'object',
+          properties: { ...GROUP_SCOPE, ...GROUP_DEVICES, ...WRITE_CONFIRM },
+          required: ['group_type', 'group', 'devices', 'confirm'],
+        },
+      },
+      {
         name: 'list_feature_profiles',
         description:
           'List UX 2.0 feature profiles. Without profile_type, returns every profile type of the solution (system, transport, service, cli, policy-object, application-priority, embedded-security, ...).',
@@ -2305,7 +2436,7 @@ export class CatalystSdwanMCPServer {
     };
     const writeBody = () => {
       const body = args.body;
-      if (!body || typeof body !== 'object' || Array.isArray(body)) throw new Error('body must be an object (the feature definition)');
+      if (!body || typeof body !== 'object' || Array.isArray(body)) throw new Error('body must be an object');
       return body;
     };
     // Goes through the catalog so the write gate, confirm check and spec validation apply.
@@ -2349,6 +2480,33 @@ export class CatalystSdwanMCPServer {
       if (typeof args.config !== 'string' || !args.config.trim()) throw new Error('config must be non-empty configuration text');
       if (args.config.length > CLI_CONFIG_MAX) throw new Error(`config must be at most ${CLI_CONFIG_MAX} characters`);
       return args.config;
+    };
+    const groupTarget = async (allowed: string[]) => {
+      const type = pick('group_type', Object.fromEntries(allowed.map((k) => [k, k])), '');
+      const kind = GROUP_KINDS[type];
+      const group = await this.findGroup(kind, args.group);
+      return { kind, group, path: `/dataservice/v1/${kind}/${encodeURIComponent(group.id)}` };
+    };
+    // Read-only render on vManage (POST with an empty body); it does not deploy anything.
+    const renderPreview = async (groupPath: string, uuid: string, label: Record<string, unknown>) => {
+      const view = pick('view', { diff: 'diff', new: 'new', existing: 'existing', both: 'both' }, 'diff');
+      const preview = (await this.apiService.request('POST', `${groupPath}/device/${encodeURIComponent(uuid)}/preview`, { body: {} }))
+        .body as { newConfig?: string; existingConfig?: string; [key: string]: unknown };
+      const { newConfig = '', existingConfig = '', ...meta } = preview ?? {};
+      const head = { ...label, device: uuid, ...meta };
+      if (view === 'new') return { ...head, newConfig };
+      if (view === 'existing') return { ...head, existingConfig };
+      if (view === 'both') return { ...head, newConfig, existingConfig };
+      return { ...head, ...lineDiff(existingConfig, newConfig) };
+    };
+    // UX 2.0 association and deploy bodies list devices by UUID.
+    const groupDevices = async () => {
+      const list = args.devices;
+      if (!Array.isArray(list) || !list.length || list.length > 1000 || !list.every((d) => typeof d === 'string' && d.trim())) {
+        throw new Error('devices must be a non-empty list (at most 1000) of hostnames, system IPs, UUIDs or chassis numbers');
+      }
+      const ids = await Promise.all(list.map((d) => this.resolveDeviceUuid(String(d))));
+      return { devices: [...new Set(ids)].map((id) => ({ id })) };
     };
     const optionalId = (arg: string, what: string) => {
       const value = args[arg];
@@ -3132,26 +3290,63 @@ export class CatalystSdwanMCPServer {
         return this.apiService.get(`/dataservice/v1/config-group/${encodeURIComponent(group.id)}/device/variables`, query);
       }
       case 'preview_config_group_device_config': {
-        const view = pick('view', { diff: 'diff', new: 'new', existing: 'existing', both: 'both' }, 'diff');
         const group = await this.findGroup('config-group', args.config_group);
         const uuid = await this.resolveDeviceUuid(String(args.device ?? ''));
-        // Read-only render on vManage (POST with an empty body); it does not deploy anything.
-        const preview = (
-          await this.apiService.request(
-            'POST',
-            `/dataservice/v1/config-group/${encodeURIComponent(group.id)}/device/${encodeURIComponent(uuid)}/preview`,
-            { body: {} }
-          )
-        ).body as { newConfig?: string; existingConfig?: string; [key: string]: unknown };
-        const { newConfig = '', existingConfig = '', ...meta } = preview ?? {};
-        if (view === 'new') return { configGroup: group.name, device: uuid, ...meta, newConfig };
-        if (view === 'existing') return { configGroup: group.name, device: uuid, ...meta, existingConfig };
-        if (view === 'both') return { configGroup: group.name, device: uuid, ...meta, newConfig, existingConfig };
-        return { configGroup: group.name, device: uuid, ...meta, ...lineDiff(existingConfig, newConfig) };
+        return renderPreview(`/dataservice/v1/config-group/${encodeURIComponent(group.id)}`, uuid, { configGroup: group.name });
       }
       case 'get_topology_group': {
         const group = await this.findGroup('topology-group', args.topology_group);
         return this.apiService.get(`/dataservice/v1/topology-group/${encodeURIComponent(group.id)}`);
+      }
+
+      case 'get_group_variables': {
+        const { path } = await groupTarget(['config', 'policy']);
+        if (args.fetch_body !== undefined) {
+          const body = args.fetch_body;
+          if (!body || typeof body !== 'object' || Array.isArray(body)) throw new Error('fetch_body must be an object');
+          // Read-only query sent as POST (fetchConfigGroupDeviceVariables / fetchPolicyGroupDeviceVariables).
+          return (await this.apiService.request('POST', `${path}/device/variables`, { body })).body;
+        }
+        if (args.schema === true) return this.apiService.get(`${path}/device/variables/schema`);
+        const query: Record<string, string> = {};
+        if (args.device !== undefined) query['device-id'] = await this.resolveDeviceUuid(String(args.device));
+        if (args.suggestions === true) query.suggestions = 'true';
+        return this.apiService.get(`${path}/device/variables`, query);
+      }
+      case 'get_group_rules': {
+        const { kind, path } = await groupTarget(['config', 'policy', 'topology']);
+        return this.apiService.get(kind === 'topology-group' ? `${path}/rules/preview` : `${path}/rules`);
+      }
+      case 'preview_group_device_config': {
+        const { kind, group, path } = await groupTarget(['policy', 'topology']);
+        const uuid = await this.resolveDeviceUuid(String(args.device ?? ''));
+        return renderPreview(path, uuid, { [kind === 'policy-group' ? 'policyGroup' : 'topologyGroup']: group.name });
+      }
+      case 'create_group': {
+        const kind = GROUP_KINDS[pick('group_type', Object.fromEntries(Object.keys(GROUP_KINDS).map((k) => [k, k])), '')];
+        return routingWrite('POST', `/dataservice/v1/${kind}`, writeBody());
+      }
+      case 'update_group': {
+        const { path } = await groupTarget(['config', 'policy', 'topology']);
+        return routingWrite('PUT', path, writeBody());
+      }
+      case 'delete_group': {
+        const { kind, path } = await groupTarget(['config', 'policy', 'topology']);
+        if (args.delete_profiles !== undefined && kind === 'topology-group') throw new Error('delete_profiles applies only to configuration and policy groups');
+        return routingWrite('DELETE', path, undefined, args.delete_profiles === true ? { deleteProfiles: true } : undefined);
+      }
+      case 'associate_group_devices': {
+        const { path } = await groupTarget(['config', 'policy']);
+        const method = { add: 'POST', replace: 'PUT', remove: 'DELETE' }[pick('mode', { add: 'add', replace: 'replace', remove: 'remove' }, 'add')] as HttpMethod;
+        return routingWrite(method, `${path}/device/associate`, await groupDevices());
+      }
+      case 'update_group_variables': {
+        const { path } = await groupTarget(['config', 'policy']);
+        return routingWrite('PUT', `${path}/device/variables`, writeBody());
+      }
+      case 'deploy_group': {
+        const { path } = await groupTarget(['config', 'policy', 'topology']);
+        return routingWrite('POST', `${path}/device/deploy`, await groupDevices());
       }
       case 'list_feature_profiles': {
         const solution = String(args.solution ?? 'sdwan');
