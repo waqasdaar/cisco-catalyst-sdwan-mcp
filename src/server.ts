@@ -15,7 +15,7 @@ import {
   ListToolsRequestSchema,
   Tool,
 } from '@modelcontextprotocol/sdk/types.js';
-import { VManageApiService } from './services/vmanageApi.js';
+import { VManageApiService, type HttpMethod } from './services/vmanageApi.js';
 import { ApiCatalog, shapeResponse } from './services/apiCatalog.js';
 import { loadConfig, type VManageConfig } from './utils/config.js';
 
@@ -215,7 +215,119 @@ const NO_ROW_OPTIONS = new Set([
   'get_fabric_health',
   'get_fabric_bfd_status',
   'get_fabric_tlocs',
+  'create_ospf_feature',
+  'update_ospf_feature',
+  'delete_ospf_feature',
+  'associate_ospf_feature',
+  'create_bgp_feature',
+  'update_bgp_feature',
+  'delete_bgp_feature',
+  'associate_bgp_feature',
+  'create_routing_template',
+  'update_routing_template',
+  'delete_routing_template',
+  'clone_routing_template',
 ]);
+// UX 1.0 feature template types for BGP, OSPF and OSPFv3 (cisco_* for IOS XE, plain names for vEdge), by protocol.
+const ROUTING_TEMPLATE_TYPES = new Map([
+  ['cisco_bgp', 'bgp'],
+  ['bgp', 'bgp'],
+  ['cisco_ospf', 'ospf'],
+  ['ospf', 'ospf'],
+  ['cisco_ospfv3', 'ospfv3'],
+]);
+const ROUTING_TEMPLATE_TYPE = {
+  type: 'string',
+  enum: [...ROUTING_TEMPLATE_TYPES.keys()],
+  description: 'Template type: cisco_bgp, cisco_ospf, cisco_ospfv3 (IOS XE / cEdge) or bgp, ospf (vEdge)',
+};
+const ROUTING_PROFILE_SCOPE = {
+  profile_type: { type: 'string', enum: ['service', 'transport'], description: 'Feature profile type' },
+  profile: { type: 'string', description: 'Feature profile ID or exact profile name' },
+  solution: { type: 'string', enum: ['sdwan', 'sd-routing'], description: 'Solution family (default: sdwan)' },
+};
+const OSPF_VERSION = {
+  version: { type: 'string', enum: ['ospf', 'ospfv3-ipv4', 'ospfv3-ipv6'], description: 'OSPF feature type (default: ospf)' },
+};
+const VPN_SCOPE = {
+  vpn_feature_id: {
+    type: 'string',
+    description: 'VPN feature ID (sdwan: LAN VPN for service, WAN VPN for transport) or VRF feature ID (sd-routing)',
+  },
+  global_vrf: {
+    type: 'boolean',
+    description: 'sd-routing transport only: use the global VRF instead of a VRF (vpn_feature_id is then the global VRF feature)',
+  },
+};
+const WRITE_CONFIRM = {
+  confirm: { type: 'boolean', description: 'Must be true, only after the user explicitly approves this change' },
+};
+const WRITE_NOTE = 'Changes configuration: needs VMANAGE_ALLOW_WRITE=true on the server and confirm: true after explicit user approval.';
+
+/** Read and write tools for the routing features (parcels) of UX 2.0 service and transport profiles. */
+function routingFeatureTools(protocol: 'ospf' | 'bgp'): Tool[] {
+  const label = protocol === 'ospf' ? 'OSPF / OSPFv3' : 'BGP';
+  const scope = { ...ROUTING_PROFILE_SCOPE, ...(protocol === 'ospf' ? OSPF_VERSION : {}) };
+  const featureId = (suffix = '') => ({ feature_id: { type: 'string', description: `${label} feature ID${suffix}` } });
+  return [
+    {
+      name: `get_${protocol}_config`,
+      description: `Get ${label} routing features configured in a UX 2.0 service or transport feature profile. Without vpn_feature_id, lists the ${label} features of the profile; with it, those associated with that VPN/VRF feature. feature_id returns one feature.`,
+      inputSchema: {
+        type: 'object',
+        properties: { ...scope, ...VPN_SCOPE, ...featureId(' to return a single feature') },
+        required: ['profile_type', 'profile'],
+      },
+    },
+    {
+      name: `create_${protocol}_feature`,
+      description: `Create a ${label} routing feature in a UX 2.0 service or transport feature profile. Returns the new feature ID; attach it to a VPN/VRF with associate_${protocol}_feature. ${WRITE_NOTE}`,
+      inputSchema: {
+        type: 'object',
+        properties: {
+          ...scope,
+          ...(protocol === 'bgp' ? { global_vrf: VPN_SCOPE.global_vrf } : {}),
+          body: { type: 'object', description: `Feature definition: { name, description, data } as in get_${protocol}_config output` },
+          ...WRITE_CONFIRM,
+        },
+        required: ['profile_type', 'profile', 'body', 'confirm'],
+      },
+    },
+    {
+      name: `update_${protocol}_feature`,
+      description: `Replace a ${label} routing feature (full definition, not a patch). With vpn_feature_id, edits the feature's association with that VPN/VRF instead. ${WRITE_NOTE}`,
+      inputSchema: {
+        type: 'object',
+        properties: {
+          ...scope,
+          ...VPN_SCOPE,
+          ...featureId(),
+          body: { type: 'object', description: 'Complete feature definition: { name, description, data }' },
+          ...WRITE_CONFIRM,
+        },
+        required: ['profile_type', 'profile', 'feature_id', 'body', 'confirm'],
+      },
+    },
+    {
+      name: `delete_${protocol}_feature`,
+      description: `Delete a ${label} routing feature from a feature profile. With vpn_feature_id, only removes its association with that VPN/VRF; the feature itself is kept. ${WRITE_NOTE}`,
+      inputSchema: {
+        type: 'object',
+        properties: { ...scope, ...VPN_SCOPE, ...featureId(), ...WRITE_CONFIRM },
+        required: ['profile_type', 'profile', 'feature_id', 'confirm'],
+      },
+    },
+    {
+      name: `associate_${protocol}_feature`,
+      description: `Associate an existing ${label} routing feature with a VPN feature (sdwan) or VRF feature (sd-routing) in the same profile. ${WRITE_NOTE}`,
+      inputSchema: {
+        type: 'object',
+        properties: { ...scope, ...VPN_SCOPE, ...featureId(' to associate'), ...WRITE_CONFIRM },
+        required: ['profile_type', 'profile', 'vpn_feature_id', 'feature_id', 'confirm'],
+      },
+    },
+  ];
+}
 const ROW_OPTIONS = {
   fields: {
     type: 'array',
@@ -1097,18 +1209,63 @@ export class CatalystSdwanMCPServer {
       // === Real-time Monitoring - BGP ===
       {
         name: 'get_bgp_neighbors',
-        description: 'Get BGP neighbors for a device.',
+        description: 'Get BGP neighbors for a device (real time).',
         inputSchema: {
           type: 'object',
           properties: {
             device_id: { type: 'string', description: 'Device ID or system-ip' },
+            vpn_id: { type: 'string', description: 'Only neighbors in this VPN' },
+            peer_addr: { type: 'string', description: 'Only this neighbor address' },
+            as: { type: 'string', description: 'Only neighbors with this AS number' },
           },
           required: ['device_id'],
         },
       },
       {
         name: 'get_bgp_routes',
-        description: 'Get BGP routes for a device.',
+        description: 'Get BGP routes for a device (real time).',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            device_id: { type: 'string', description: 'Device ID or system-ip' },
+            vpn_id: { type: 'string', description: 'Only routes in this VPN' },
+            prefix: { type: 'string', description: 'Only this prefix, e.g. 10.1.0.0/16' },
+            nexthop: { type: 'string', description: 'Only routes with this next hop' },
+          },
+          required: ['device_id'],
+        },
+      },
+      {
+        name: 'get_bgp_summary',
+        description: 'Get BGP summary for a device (real time).',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            device_id: { type: 'string', description: 'Device ID or system-ip' },
+          },
+          required: ['device_id'],
+        },
+      },
+      ...routingFeatureTools('bgp'),
+      {
+        name: 'get_bgp_feature_schema',
+        description:
+          'Get the JSON schema vManage expects for an SD-WAN BGP feature body (create or update). Use it to build the body for create_bgp_feature / update_bgp_feature.',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            profile_type: { type: 'string', enum: ['service', 'transport'], description: 'Feature profile type' },
+            schema_type: { type: 'string', enum: ['post', 'put'], description: 'Schema for create (post, default) or update (put)' },
+          },
+          required: ['profile_type'],
+        },
+      },
+
+      // === Real-time Monitoring - OSPF ===
+      {
+        name: 'get_ospf_process',
+        description:
+          'Get OSPF process details of a device (real time). Can be empty even when OSPF runs in a service VPN; use get_ospf_interfaces or get_ospf_neighbors to confirm whether OSPF is enabled.',
         inputSchema: {
           type: 'object',
           properties: {
@@ -1118,8 +1275,32 @@ export class CatalystSdwanMCPServer {
         },
       },
       {
-        name: 'get_bgp_summary',
-        description: 'Get BGP summary for a device.',
+        name: 'get_ospf_neighbors',
+        description: 'Get OSPF (v2) or OSPFv3 neighbors of a device (real time).',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            device_id: { type: 'string', description: 'Device ID or system-ip' },
+            version: { type: 'string', enum: ['ospfv2', 'ospfv3'], description: 'OSPF version (default: ospfv2)' },
+          },
+          required: ['device_id'],
+        },
+      },
+      {
+        name: 'get_ospf_interfaces',
+        description: 'Get OSPF (v2) or OSPFv3 enabled interfaces of a device (real time).',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            device_id: { type: 'string', description: 'Device ID or system-ip' },
+            version: { type: 'string', enum: ['ospfv2', 'ospfv3'], description: 'OSPF version (default: ospfv2)' },
+          },
+          required: ['device_id'],
+        },
+      },
+      {
+        name: 'get_ospf_routes',
+        description: 'Get OSPF routes of a device (real time).',
         inputSchema: {
           type: 'object',
           properties: {
@@ -1128,6 +1309,19 @@ export class CatalystSdwanMCPServer {
           required: ['device_id'],
         },
       },
+      {
+        name: 'get_ospf_database',
+        description: 'Get the OSPF link-state database of a device (real time): summary, full database, or external LSAs.',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            device_id: { type: 'string', description: 'Device ID or system-ip' },
+            view: { type: 'string', enum: ['summary', 'full', 'external'], description: 'Which database view (default: summary)' },
+          },
+          required: ['device_id'],
+        },
+      },
+      ...routingFeatureTools('ospf'),
 
       // === Real-time Monitoring - Cflowd ===
       {
@@ -1372,6 +1566,92 @@ export class CatalystSdwanMCPServer {
         },
       },
 
+      // === BGP / OSPF / OSPFv3 feature templates (UX 1.0) ===
+      {
+        name: 'list_routing_templates',
+        description: 'List UX 1.0 feature templates for BGP, OSPF and OSPFv3 (cisco_bgp, cisco_ospf, cisco_ospfv3, bgp, ospf), with the number of devices attached.',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            protocol: { type: 'string', enum: ['all', 'bgp', 'ospf', 'ospfv3'], description: 'Only this protocol (default: all)' },
+          },
+        },
+      },
+      {
+        name: 'get_routing_template',
+        description: 'Get one UX 1.0 BGP, OSPF or OSPFv3 feature template: its definition and the device templates that use it.',
+        inputSchema: {
+          type: 'object',
+          properties: { template_id: { type: 'string', description: 'Feature template ID' } },
+          required: ['template_id'],
+        },
+      },
+      {
+        name: 'get_routing_template_schema',
+        description:
+          'Get the field definition vManage uses for a BGP, OSPF or OSPFv3 feature template type. Use it to build templateDefinition for create_routing_template / update_routing_template.',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            template_type: ROUTING_TEMPLATE_TYPE,
+            version: { type: 'string', description: 'Template definition version (default: 15.0.0)' },
+          },
+          required: ['template_type'],
+        },
+      },
+      {
+        name: 'create_routing_template',
+        description: `Create a UX 1.0 BGP, OSPF or OSPFv3 feature template. body.templateType must be one of the routing template types. ${WRITE_NOTE}`,
+        inputSchema: {
+          type: 'object',
+          properties: {
+            body: {
+              type: 'object',
+              description:
+                'Template: { templateName, templateDescription, templateType, deviceType: [models], templateMinVersion, templateDefinition, factoryDefault: false }',
+            },
+            ...WRITE_CONFIRM,
+          },
+          required: ['body', 'confirm'],
+        },
+      },
+      {
+        name: 'update_routing_template',
+        description: `Replace a UX 1.0 BGP, OSPF or OSPFv3 feature template (full definition; its template type cannot change). Devices using it are not updated until their device templates are pushed again. ${WRITE_NOTE}`,
+        inputSchema: {
+          type: 'object',
+          properties: {
+            template_id: { type: 'string', description: 'Feature template ID' },
+            body: { type: 'object', description: 'Complete template, same fields as for create_routing_template' },
+            ...WRITE_CONFIRM,
+          },
+          required: ['template_id', 'body', 'confirm'],
+        },
+      },
+      {
+        name: 'delete_routing_template',
+        description: `Delete a UX 1.0 BGP, OSPF or OSPFv3 feature template. vManage refuses templates still used by a device template. ${WRITE_NOTE}`,
+        inputSchema: {
+          type: 'object',
+          properties: { template_id: { type: 'string', description: 'Feature template ID' }, ...WRITE_CONFIRM },
+          required: ['template_id', 'confirm'],
+        },
+      },
+      {
+        name: 'clone_routing_template',
+        description: `Copy a UX 1.0 BGP, OSPF or OSPFv3 feature template under a new name. Returns the new template ID; the copy is not attached to any device template. ${WRITE_NOTE}`,
+        inputSchema: {
+          type: 'object',
+          properties: {
+            template_id: { type: 'string', description: 'ID of the feature template to copy' },
+            name: { type: 'string', description: 'Name of the new template' },
+            description: { type: 'string', description: 'Description of the new template (default: "Clone of <source name>")' },
+            ...WRITE_CONFIRM,
+          },
+          required: ['template_id', 'name', 'confirm'],
+        },
+      },
+
       // === Policy ===
       {
         name: 'list_policy_lists',
@@ -1541,6 +1821,60 @@ export class CatalystSdwanMCPServer {
       return stateParams();
     };
     const synced = args.synced === true;
+    // Routing feature path up to /routing/<protocol>, shared by the OSPF and BGP configuration tools.
+    const routingTarget = async (protocol: 'ospf' | 'bgp') => {
+      const solution = pick('solution', { sdwan: 'sdwan', 'sd-routing': 'sd-routing' }, 'sdwan');
+      const type = pick('profile_type', { service: 'service', transport: 'transport' }, '');
+      const routing =
+        protocol === 'bgp' ? 'bgp' : pick('version', { ospf: 'ospf', 'ospfv3-ipv4': 'ospfv3/ipv4', 'ospfv3-ipv6': 'ospfv3/ipv6' }, 'ospf');
+      const featureIdArg = (arg: string) => {
+        const value = args[arg];
+        if (value === undefined || value === null || value === '') return undefined;
+        if (!UUID.test(String(value))) throw new Error(`${arg} must be a feature ID (UUID)`);
+        return String(value);
+      };
+      const vpnId = featureIdArg('vpn_feature_id');
+      const featureId = featureIdArg('feature_id');
+      const globalVrf = args.global_vrf === true;
+      if (globalVrf && !(solution === 'sd-routing' && type === 'transport')) {
+        throw new Error('global_vrf applies only to sd-routing transport profiles');
+      }
+      if (globalVrf && !vpnId && protocol === 'ospf') throw new Error('global_vrf requires vpn_feature_id (the global VRF feature ID)');
+      const profileId = await this.resolveFeatureProfileId(solution, type, args.profile);
+      let path = `/dataservice/v1/feature-profile/${solution}/${type}/${encodeURIComponent(profileId)}`;
+      const vrf = globalVrf ? 'global-vrf' : 'vrf';
+      if (solution === 'sdwan') {
+        if (vpnId) path += `/${type === 'service' ? 'lan/vpn' : 'wan/vpn'}/${vpnId}`;
+      } else if (vpnId) {
+        path += `/${vrf}/${vpnId}`;
+      } else if (protocol === 'bgp') {
+        // SD-Routing keeps profile-level BGP features under the VRF or global-VRF section.
+        path += `/${vrf}`;
+      }
+      return { path: `${path}/routing/${routing}`, vpnId, featureId };
+    };
+    const writeBody = () => {
+      const body = args.body;
+      if (!body || typeof body !== 'object' || Array.isArray(body)) throw new Error('body must be an object (the feature definition)');
+      return body;
+    };
+    // Goes through the catalog so the write gate, confirm check and spec validation apply.
+    const routingWrite = async (method: HttpMethod, path: string, body?: unknown, query?: Record<string, unknown>) => {
+      const { op, pathParams } = await this.catalog.match(method, path.replace(/^\/dataservice/, ''));
+      const result = await this.catalog.call({ operationId: op.operationId, pathParams, query, body, confirm: args.confirm === true });
+      return { operationId: op.operationId, method, path, result };
+    };
+    const routingProtocol = name.includes('_bgp_') ? 'bgp' : 'ospf';
+    // A UX 1.0 feature template, refused unless it is a BGP / OSPF / OSPFv3 template.
+    const routingTemplate = async () => {
+      const id = String(args.template_id ?? '');
+      if (!UUID.test(id)) throw new Error('template_id must be a feature template ID (UUID)');
+      const template = await this.apiService.get<Record<string, unknown>>(`/dataservice/template/feature/object/${id}`);
+      if (!ROUTING_TEMPLATE_TYPES.has(String(template?.templateType))) {
+        throw new Error(`Template ${id} is a ${template?.templateType} template, not a BGP, OSPF or OSPFv3 template`);
+      }
+      return { id, template };
+    };
 
     switch (name) {
       case 'list_api_categories':
@@ -1709,11 +2043,75 @@ export class CatalystSdwanMCPServer {
         return this.apiService.get(addDeviceId('/dataservice/device/app-route/sla-class'));
 
       case 'get_bgp_neighbors':
-        return this.apiService.get(addDeviceId('/dataservice/device/bgp/neighbors'));
+        return deviceGet('/dataservice/device/bgp/neighbors', { 'vpn-id': args.vpn_id, 'peer-addr': args.peer_addr, as: args.as });
       case 'get_bgp_routes':
-        return this.apiService.get(addDeviceId('/dataservice/device/bgp/routes'));
+        return deviceGet('/dataservice/device/bgp/routes', { 'vpn-id': args.vpn_id, prefix: args.prefix, nexthop: args.nexthop });
       case 'get_bgp_summary':
-        return this.apiService.get(addDeviceId('/dataservice/device/bgp/summary'));
+        return deviceGet('/dataservice/device/bgp/summary');
+      case 'get_bgp_feature_schema':
+        return this.apiService.get(
+          pick(
+            'profile_type',
+            {
+              service: '/dataservice/v1/feature-profile/sdwan/service/routing/bgp/schema',
+              transport: '/dataservice/v1/feature-profile/sdwan/transport/routing/bgp/schema',
+            },
+            ''
+          ),
+          { schemaType: pick('schema_type', { post: 'post', put: 'put' }, 'post') }
+        );
+
+      case 'get_ospf_process':
+        return deviceGet('/dataservice/device/ospf/process');
+      case 'get_ospf_neighbors':
+        return deviceGet(pick('version', { ospfv2: '/dataservice/device/ospf/neighbor', ospfv3: '/dataservice/device/ospf/v3neighbor' }, 'ospfv2'));
+      case 'get_ospf_interfaces':
+        return deviceGet(pick('version', { ospfv2: '/dataservice/device/ospf/interface', ospfv3: '/dataservice/device/ospf/v3interface' }, 'ospfv2'));
+      case 'get_ospf_routes':
+        return deviceGet('/dataservice/device/ospf/routes');
+      case 'get_ospf_database':
+        return deviceGet(
+          pick(
+            'view',
+            {
+              summary: '/dataservice/device/ospf/databasesummary',
+              full: '/dataservice/device/ospf/database',
+              external: '/dataservice/device/ospf/databaseexternal',
+            },
+            'summary'
+          )
+        );
+      case 'get_ospf_config':
+      case 'get_bgp_config': {
+        const { path, featureId } = await routingTarget(routingProtocol);
+        return this.apiService.get(`${path}${featureId ? `/${featureId}` : ''}`);
+      }
+      case 'create_ospf_feature':
+      case 'create_bgp_feature': {
+        const { path, vpnId, featureId } = await routingTarget(routingProtocol);
+        if (vpnId || featureId) {
+          throw new Error(`${name} creates a profile-level feature; use associate_${routingProtocol}_feature to attach it to a VPN/VRF`);
+        }
+        return routingWrite('POST', path, writeBody());
+      }
+      case 'update_ospf_feature':
+      case 'update_bgp_feature': {
+        const { path, featureId } = await routingTarget(routingProtocol);
+        if (!featureId) throw new Error('feature_id is required');
+        return routingWrite('PUT', `${path}/${featureId}`, writeBody());
+      }
+      case 'delete_ospf_feature':
+      case 'delete_bgp_feature': {
+        const { path, featureId } = await routingTarget(routingProtocol);
+        if (!featureId) throw new Error('feature_id is required');
+        return routingWrite('DELETE', `${path}/${featureId}`);
+      }
+      case 'associate_ospf_feature':
+      case 'associate_bgp_feature': {
+        const { path, vpnId, featureId } = await routingTarget(routingProtocol);
+        if (!vpnId || !featureId) throw new Error('vpn_feature_id and feature_id are required');
+        return routingWrite('POST', path, { parcelId: featureId });
+      }
 
       case 'get_cflowd_flows':
         return this.apiService.get(addDeviceId('/dataservice/device/cflowd/flows'));
@@ -1760,6 +2158,55 @@ export class CatalystSdwanMCPServer {
             ? `/dataservice/template/device/object/${encodeURIComponent(templateId)}`
             : `/dataservice/template/feature/object/${encodeURIComponent(templateId)}`;
         return this.apiService.get(path);
+      }
+
+      case 'list_routing_templates': {
+        const protocol = pick('protocol', { all: 'all', bgp: 'bgp', ospf: 'ospf', ospfv3: 'ospfv3' }, 'all');
+        const list = await this.apiService.get<{ data?: Array<Record<string, unknown>> }>('/dataservice/template/feature');
+        const rows = (list.data ?? []).filter((t) => {
+          const p = ROUTING_TEMPLATE_TYPES.get(String(t.templateType));
+          return p !== undefined && (protocol === 'all' || p === protocol);
+        });
+        return { ...list, data: rows };
+      }
+      case 'get_routing_template': {
+        const { id, template } = await routingTemplate();
+        const usedBy = await this.apiService
+          .get(`/dataservice/template/feature/devicetemplates/${id}`)
+          .catch((e: Error) => ({ error: e.message }));
+        return { ...template, deviceTemplates: dataOf(usedBy) };
+      }
+      case 'get_routing_template_schema': {
+        const type = pick('template_type', Object.fromEntries([...ROUTING_TEMPLATE_TYPES.keys()].map((t) => [t, t])), '');
+        const version = String(args.version ?? '15.0.0');
+        if (!/^\d+(\.\d+){0,3}$/.test(version)) throw new Error('version must look like 15.0.0');
+        return this.apiService.get(`/dataservice/template/feature/types/definition/${type}/${version}`);
+      }
+      case 'create_routing_template': {
+        const body = writeBody() as Record<string, unknown>;
+        if (!ROUTING_TEMPLATE_TYPES.has(String(body.templateType))) {
+          throw new Error(`body.templateType must be one of: ${[...ROUTING_TEMPLATE_TYPES.keys()].join(', ')}`);
+        }
+        return routingWrite('POST', '/dataservice/template/feature', body);
+      }
+      case 'update_routing_template': {
+        const body = writeBody() as Record<string, unknown>;
+        const { id, template } = await routingTemplate();
+        if (body.templateType !== undefined && body.templateType !== template.templateType) {
+          throw new Error(`body.templateType must stay ${template.templateType}`);
+        }
+        return routingWrite('PUT', `/dataservice/template/feature/${id}`, { ...body, templateType: template.templateType });
+      }
+      case 'delete_routing_template': {
+        const { id } = await routingTemplate();
+        return routingWrite('DELETE', `/dataservice/template/feature/${id}`);
+      }
+      case 'clone_routing_template': {
+        const newName = String(args.name ?? '').trim();
+        if (!newName || newName.length > 128) throw new Error('name is required (at most 128 characters)');
+        const { id, template } = await routingTemplate();
+        const desc = String(args.description ?? '').trim() || `Clone of ${template.templateName}`;
+        return routingWrite('POST', '/dataservice/template/feature/clone', undefined, { id, name: newName, desc });
       }
 
       case 'list_policy_lists': {
@@ -1911,17 +2358,7 @@ export class CatalystSdwanMCPServer {
         const solution = String(args.solution ?? 'sdwan');
         const type = this.checkProfileType(await this.featureProfileTypesFor(solution), solution, args.profile_type);
         const listPath = `/dataservice/v1/feature-profile/${solution}/${type}`;
-        const ref = String(args.profile ?? '').trim();
-        if (!ref) throw new Error('profile is required (profile ID or name)');
-        let profileId = ref;
-        if (!UUID.test(ref)) {
-          const rows = await this.apiService.get<Array<Record<string, unknown>>>(listPath, undefined, GROUP_LIST_TTL_MS);
-          const match = rows.find((p) => String(p.profileName).toLowerCase() === ref.toLowerCase());
-          if (!match) {
-            throw new Error(`No ${solution} ${type} profile named "${ref}". Available: ${rows.map((p) => p.profileName).join(', ') || 'none'}`);
-          }
-          profileId = String(match.profileId);
-        }
+        const profileId = await this.resolveFeatureProfileId(solution, type, args.profile);
         const withDetails = await this.catalog.hasQueryParam(`/v1/feature-profile/${solution}/${type}/{id}`, 'details');
         return this.apiService.get(`${listPath}/${encodeURIComponent(profileId)}`, withDetails ? { details: 'true' } : undefined);
       }
@@ -2293,6 +2730,22 @@ export class CatalystSdwanMCPServer {
       throw new Error(`Unknown solution "${solution}". Available: ${solutions.join(', ')}`);
     }
     return types;
+  }
+
+  private async resolveFeatureProfileId(solution: string, type: string, value: unknown): Promise<string> {
+    const ref = String(value ?? '').trim();
+    if (!ref) throw new Error('profile is required (profile ID or name)');
+    if (UUID.test(ref)) return ref;
+    const rows = await this.apiService.get<Array<Record<string, unknown>>>(
+      `/dataservice/v1/feature-profile/${solution}/${type}`,
+      undefined,
+      GROUP_LIST_TTL_MS
+    );
+    const match = rows.find((p) => String(p.profileName).toLowerCase() === ref.toLowerCase());
+    if (!match) {
+      throw new Error(`No ${solution} ${type} profile named "${ref}". Available: ${rows.map((p) => p.profileName).join(', ') || 'none'}`);
+    }
+    return String(match.profileId);
   }
 
   private checkProfileType(types: string[], solution: string, value: unknown): string {

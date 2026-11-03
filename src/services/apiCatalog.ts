@@ -346,6 +346,27 @@ export class ApiCatalog {
     return op;
   }
 
+  /** The spec operation for a method and concrete path (without /dataservice), plus its path parameter values. */
+  async match(method: HttpMethod, path: string): Promise<{ op: ApiOperation; pathParams: Record<string, string> }> {
+    await this.load();
+    let best: { op: ApiOperation; pathParams: Record<string, string> } | undefined;
+    for (const op of this.operations) {
+      if (op.method !== method) continue;
+      const names: string[] = [];
+      const pattern = op.path.replace(/[.*+?^$()|[\]\\]/g, '\\$&').replace(/\{([^}]+)\}/g, (_, n: string) => {
+        names.push(n);
+        return '([^/]+)';
+      });
+      const m = new RegExp(`^${pattern}$`).exec(path);
+      // Prefer literal segments over placeholders when several templates match.
+      if (m && (!best || names.length < Object.keys(best.pathParams).length)) {
+        best = { op, pathParams: Object.fromEntries(names.map((n, i) => [n, decodeURIComponent(m[i + 1])])) };
+      }
+    }
+    if (!best) throw new Error(`${method} /dataservice${path} is not in the API spec of this Manager`);
+    return best;
+  }
+
   async describe(operationId: string) {
     const op = await this.get(operationId);
     const media = Object.entries(op.spec.requestBody?.content ?? {})[0];

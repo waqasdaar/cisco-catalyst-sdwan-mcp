@@ -140,6 +140,8 @@ const toolSamples = {
   get_control_links: { state: 'up' },
   get_omp_links: { state: 'up' },
   list_policy_definitions: { definition_type: 'control' },
+  get_bgp_feature_schema: { profile_type: 'service' },
+  get_routing_template_schema: { template_type: 'cisco_bgp' },
   list_api_categories: {},
   search_api_operations: { query: 'omp routes' },
   describe_api_operation: { operation_id: 'createReceivedRoutesList' },
@@ -161,6 +163,11 @@ try {
   if (overview.topologyGroups?.[0]) toolSamples.get_topology_group = { topology_group: overview.topologyGroups[0].name };
   const profiles = JSON.parse((await client.callTool({ name: 'list_feature_profiles', arguments: { profile_type: 'system' } }, undefined, { timeout: CALL_TIMEOUT_MS })).content[0].text);
   if (profiles.system?.[0]) toolSamples.get_feature_profile = { profile_type: 'system', profile: profiles.system[0].profileName };
+  const services = JSON.parse((await client.callTool({ name: 'list_feature_profiles', arguments: { profile_type: 'service' } }, undefined, { timeout: CALL_TIMEOUT_MS })).content[0].text);
+  if (services.service?.[0]) {
+    toolSamples.get_ospf_config = { profile_type: 'service', profile: services.service[0].profileName };
+    toolSamples.get_bgp_config = { profile_type: 'service', profile: services.service[0].profileName };
+  }
 } catch (err) {
   console.error(`UX 2.0 sample lookup failed: ${err.message}`);
 }
@@ -200,6 +207,7 @@ for (const [value, label] of [
   [toolSamples.get_policy_group?.policy_group, '<policy-group>'],
   [toolSamples.get_topology_group?.topology_group, '<topology-group>'],
   [toolSamples.get_feature_profile?.profile, '<feature-profile>'],
+  [toolSamples.get_ospf_config?.profile, '<service-profile>'],
   [toolSamples.get_attached_devices?.template_id, '<template-id>'],
 ]) {
   if (value) redactions.set(value, label);

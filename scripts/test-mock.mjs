@@ -35,10 +35,19 @@ const tlocs = () => [
   { color: 'biz-internet', interface: 'GigabitEthernet2', 'operation-state': 'up', 'admin-state': 'up', 'public-ip': '203.0.113.1', 'private-ip': '203.0.113.1' },
 ];
 
-const stats = { logins: 0, sessionLogins: 0, logouts: 0, ompStatusCalls: 0, ompSummaryCalls: 0, deviceIds: [] };
+const stats = { logins: 0, sessionLogins: 0, logouts: 0, ompStatusCalls: 0, ompSummaryCalls: 0, deviceIds: [], ospfPaths: [], ospfWrites: [], bgpPaths: [], bgpWrites: [], templateWrites: [] };
+const BGP_TEMPLATE = '66666666-6666-4666-8666-666666666666';
+const OSPFV3_TEMPLATE = '77777777-7777-4777-8777-777777777777';
+const VPN_TEMPLATE = '88888888-8888-4888-8888-888888888888';
+const FEATURE_TEMPLATES = [
+  { templateId: BGP_TEMPLATE, templateName: 'BGP-Hub', templateType: 'cisco_bgp', devicesAttached: 2 },
+  { templateId: OSPFV3_TEMPLATE, templateName: 'OSPFv3-Branch', templateType: 'cisco_ospfv3', devicesAttached: 0 },
+  { templateId: VPN_TEMPLATE, templateName: 'VPN-10', templateType: 'cisco_vpn', devicesAttached: 4 },
+];
+const OSPF_PROFILE = '11111111-1111-4111-8111-111111111111';
 const tokens = new Set();
 // Large-fabric mode for the fan-out tests: extra healthy edges, slow or overloaded BFD queries.
-const mock = { extraEdges: 0, bfdDelayMs: 0, bfdStatus: 200, bfdCalls: 0, bfdInFlight: 0, bfdMaxInFlight: 0 };
+const mock = { extraEdges: 0, bfdDelayMs: 0, bfdStatus: 200, bfdCalls: 0, bfdInFlight: 0, bfdMaxInFlight: 0, templateListDelayMs: 3000 };
 // Multi-tenant Manager: provider account switches tenants with a VSessionId header.
 const TENANTS = [
   { tenantId: 't-1', name: 'Tenant-A', orgName: 'Org A', subDomain: 'a.example.com' },
@@ -102,6 +111,43 @@ function handler(req, res) {
 
     const deviceId = url.searchParams.get('deviceId');
     if (deviceId) stats.deviceIds.push(deviceId);
+    if (p.startsWith('/dataservice/device/ospf/')) {
+      stats.ospfPaths.push(p);
+      return send(200, { data: [{ 'vdevice-name': deviceId, view: p.slice('/dataservice/device/ospf/'.length) }] });
+    }
+    if (p === '/dataservice/v1/feature-profile/sdwan/service') return send(200, [{ profileId: OSPF_PROFILE, profileName: 'Branch-Service' }]);
+    if (p.startsWith('/dataservice/v1/feature-profile/') && p.includes('/routing/ospf')) {
+      if (req.method !== 'GET') {
+        stats.ospfWrites.push({ method: req.method, path: p, body: raw ? JSON.parse(raw) : undefined });
+        return send(200, req.method === 'POST' ? { parcelId: '44444444-4444-4444-8444-444444444444' } : {});
+      }
+      stats.ospfPaths.push(p);
+      return send(200, { data: [{ path: p }] });
+    }
+    if (p.startsWith('/dataservice/device/bgp/') || (p.startsWith('/dataservice/v1/feature-profile/') && p.includes('/routing/bgp'))) {
+      if (req.method !== 'GET') {
+        stats.bgpWrites.push({ method: req.method, path: p, body: raw ? JSON.parse(raw) : undefined });
+        return send(200, req.method === 'POST' ? { parcelId: '55555555-5555-4555-8555-555555555555' } : {});
+      }
+      stats.bgpPaths.push(p);
+      return send(200, { data: [{ path: p, query: Object.fromEntries(url.searchParams) }] });
+    }
+    if (p.startsWith('/dataservice/template/feature')) {
+      const id = p.split('/').pop();
+      if (req.method !== 'GET') {
+        stats.templateWrites.push({ method: req.method, path: p, query: Object.fromEntries(url.searchParams), body: raw ? JSON.parse(raw) : undefined });
+        return send(200, req.method === 'POST' ? { templateId: '99999999-9999-4999-8999-999999999999' } : {});
+      }
+      if (p === '/dataservice/template/feature') {
+        return setTimeout(() => send(200, { data: FEATURE_TEMPLATES }), mock.templateListDelayMs);
+      }
+      if (p.startsWith('/dataservice/template/feature/object/')) {
+        const t = FEATURE_TEMPLATES.find((x) => x.templateId === id);
+        return t ? send(200, { ...t, templateDefinition: {} }) : send(404, { error: 'no template' });
+      }
+      if (p.startsWith('/dataservice/template/feature/devicetemplates/')) return send(200, { data: [{ templateName: 'DT-Hub' }] });
+      if (p.startsWith('/dataservice/template/feature/types/definition/')) return send(200, { path: p });
+    }
     switch (p) {
       case '/dataservice/device':
         return send(200, { data: allDevices() });
@@ -135,8 +181,6 @@ function handler(req, res) {
       case '/dataservice/device/system/status':
         if (deviceId === '192.0.2.11') return setTimeout(() => send(200, { data: [] }), 3000);
         return send(200, { data: [{ state: 'green' }] });
-      case '/dataservice/template/feature':
-        return setTimeout(() => send(200, { data: [] }), 3000);
       case '/dataservice/device/control/status':
         return send(200, { data: [{ name: 'up', count: 5 }] });
       case '/dataservice/network/connectionssummary':
@@ -222,7 +266,7 @@ async function tool(client, name, args = {}) {
 // ---------- Tests ----------
 const c = await connect();
 const { tools } = await c.listTools();
-check('tool list', tools.length === 86, `${tools.length} tools`);
+check('tool list', tools.length === 109, `${tools.length} tools`);
 
 let t = Date.now();
 let r = await tool(c, 'get_omp_status');
@@ -303,7 +347,345 @@ check('real-time timeout names VMANAGE_TIMEOUT_MS', /VMANAGE_TIMEOUT_MS/.test(r.
 
 r = await tool(c, 'list_feature_templates');
 check('list timeout names VMANAGE_LIST_TIMEOUT_MS', /VMANAGE_LIST_TIMEOUT_MS/.test(r.error ?? ''));
+
+// OSPF: real-time monitoring and UX 2.0 configuration reads.
+const ospfView = async (name, args) => (await tool(c, name, { device_id: 'Branch-1', ...args })).value?.data?.[0];
+let v = await ospfView('get_ospf_process');
+check('get_ospf_process', v?.view === 'process' && v['vdevice-name'] === '192.0.2.11', JSON.stringify(v));
+check('get_ospf_neighbors (default v2)', (await ospfView('get_ospf_neighbors'))?.view === 'neighbor');
+check('get_ospf_neighbors v3', (await ospfView('get_ospf_neighbors', { version: 'ospfv3' }))?.view === 'v3neighbor');
+check('get_ospf_interfaces (default v2)', (await ospfView('get_ospf_interfaces'))?.view === 'interface');
+check('get_ospf_interfaces v3', (await ospfView('get_ospf_interfaces', { version: 'ospfv3' }))?.view === 'v3interface');
+check('get_ospf_routes', (await ospfView('get_ospf_routes'))?.view === 'routes');
+check('get_ospf_database (default summary)', (await ospfView('get_ospf_database'))?.view === 'databasesummary');
+check('get_ospf_database full', (await ospfView('get_ospf_database', { view: 'full' }))?.view === 'database');
+check('get_ospf_database external', (await ospfView('get_ospf_database', { view: 'external' }))?.view === 'databaseexternal');
+
+const VPN = '22222222-2222-4222-8222-222222222222';
+const FEATURE = '33333333-3333-4333-8333-333333333333';
+r = await tool(c, 'get_ospf_config', { profile_type: 'service', profile: 'branch-service' });
+check(
+  'get_ospf_config by profile name',
+  r.value?.data?.[0]?.path === `/dataservice/v1/feature-profile/sdwan/service/${OSPF_PROFILE}/routing/ospf`,
+  JSON.stringify(r.value ?? r.error)
+);
+r = await tool(c, 'get_ospf_config', { profile_type: 'service', profile: OSPF_PROFILE, vpn_feature_id: VPN, version: 'ospfv3-ipv6', feature_id: FEATURE });
+check(
+  'get_ospf_config LAN VPN OSPFv3 IPv6 feature',
+  r.value?.data?.[0]?.path === `/dataservice/v1/feature-profile/sdwan/service/${OSPF_PROFILE}/lan/vpn/${VPN}/routing/ospfv3/ipv6/${FEATURE}`,
+  JSON.stringify(r.value ?? r.error)
+);
+
+// Every OSPF read operation in the published spec must be reachable through a dedicated tool.
+const spec = JSON.parse(SPEC.toString());
+const template = (path) => path.replace(/^\/dataservice/, '').replace(/\{[^}]+\}|[0-9a-f]{8}-[0-9a-f-]{27}/g, '{id}');
+const specOspfGets = Object.entries(spec.paths).filter(([path, ops]) => /ospf/i.test(path) && ops.get).map(([path]) => template(path));
+stats.ospfPaths = [];
+for (const [name, args] of [
+  ['get_ospf_process', {}], ['get_ospf_routes', {}],
+  ...['ospfv2', 'ospfv3'].flatMap((version) => [['get_ospf_neighbors', { version }], ['get_ospf_interfaces', { version }]]),
+  ...['summary', 'full', 'external'].map((view) => ['get_ospf_database', { view }]),
+]) await tool(c, name, { device_id: 'Branch-1', ...args });
+for (const solution of ['sdwan', 'sd-routing']) {
+  for (const profile_type of ['service', 'transport']) {
+    const extra = solution === 'sd-routing' && profile_type === 'transport' ? [{ vpn_feature_id: VPN, global_vrf: true }] : [];
+    for (const scope of [{}, { vpn_feature_id: VPN }, ...extra]) {
+      for (const version of ['ospf', 'ospfv3-ipv4', 'ospfv3-ipv6']) {
+        for (const one of [{}, { feature_id: FEATURE }]) {
+          await tool(c, 'get_ospf_config', { solution, profile_type, profile: OSPF_PROFILE, version, ...scope, ...one });
+        }
+      }
+    }
+  }
+}
+const reached = new Set(stats.ospfPaths.map(template));
+const missing = specOspfGets.filter((path) => !reached.has(path));
+check(`all ${specOspfGets.length} OSPF read operations in the spec covered`, specOspfGets.length === 63 && missing.length === 0, missing.join(', '));
+const offSpec = [...reached].filter((path) => !specOspfGets.includes(path));
+check('OSPF tools only call paths from the spec', offSpec.length === 0, offSpec.join(', '));
+const isV3 = (path) => /ospfv3|\/v3(interface|neighbor)/.test(path);
+const specV3Gets = specOspfGets.filter(isV3);
+check(
+  `all ${specV3Gets.length} OSPFv3 read operations covered (2 real-time + 36 IPv4/IPv6 features)`,
+  specV3Gets.length === 38 && specV3Gets.every((path) => reached.has(path)),
+  specV3Gets.filter((path) => !reached.has(path)).join(', ')
+);
+
+for (const [label, name, args, pattern] of [
+  ['get_ospf_neighbors rejects unknown version', 'get_ospf_neighbors', { device_id: 'Branch-1', version: '../bgp' }, /version must be one of/],
+  ['get_ospf_database rejects unknown view', 'get_ospf_database', { device_id: 'Branch-1', view: 'constructor' }, /view must be one of/],
+  ['get_ospf_process requires device_id', 'get_ospf_process', {}, /device_id is required/],
+  ['get_ospf_config rejects non-UUID vpn_feature_id', 'get_ospf_config', { profile_type: 'service', profile: OSPF_PROFILE, vpn_feature_id: '../../x' }, /vpn_feature_id must be a feature ID/],
+  ['get_ospf_config rejects global_vrf outside sd-routing transport', 'get_ospf_config', { profile_type: 'service', profile: OSPF_PROFILE, vpn_feature_id: VPN, global_vrf: true }, /global_vrf applies only/],
+  ['get_ospf_config rejects unknown profile_type', 'get_ospf_config', { profile_type: 'system', profile: OSPF_PROFILE }, /profile_type must be one of/],
+  ['get_ospf_config unknown profile name', 'get_ospf_config', { profile_type: 'service', profile: 'nope' }, /No sdwan service profile named "nope"/],
+]) {
+  stats.ospfPaths = [];
+  r = await tool(c, name, args);
+  check(label, pattern.test(r.error ?? '') && stats.ospfPaths.length === 0, r.error ?? 'not rejected');
+}
+r = await tool(c, 'create_ospf_feature', { profile_type: 'service', profile: OSPF_PROFILE, body: { name: 'x' }, confirm: true });
+check('OSPF writes disabled by default', /VMANAGE_ALLOW_WRITE=true/.test(r.error ?? '') && stats.ospfWrites.length === 0, r.error ?? 'not rejected');
 await c.close();
+
+// OSPF writes with VMANAGE_ALLOW_WRITE=true.
+const w = await connect({ VMANAGE_ALLOW_WRITE: 'true' });
+const OSPF_BODY = { name: 'OSPF-Area0', description: 'test', data: { routerId: { optionType: 'global', value: '10.0.0.1' } } };
+const lastWrite = () => stats.ospfWrites.at(-1);
+const base = `/dataservice/v1/feature-profile/sdwan/service/${OSPF_PROFILE}`;
+
+r = await tool(w, 'create_ospf_feature', { profile_type: 'service', profile: 'Branch-Service', body: OSPF_BODY });
+check('create_ospf_feature needs confirm: true', /confirm: true/.test(r.error ?? '') && stats.ospfWrites.length === 0, r.error ?? 'not rejected');
+r = await tool(w, 'create_ospf_feature', { profile_type: 'service', profile: 'Branch-Service', body: OSPF_BODY, confirm: true });
+check(
+  'create_ospf_feature',
+  !r.error && lastWrite()?.method === 'POST' && lastWrite().path === `${base}/routing/ospf` &&
+    JSON.stringify(lastWrite().body) === JSON.stringify(OSPF_BODY) && r.value?.result?.parcelId,
+  JSON.stringify(r.value ?? r.error)
+);
+r = await tool(w, 'update_ospf_feature', { profile_type: 'service', profile: OSPF_PROFILE, feature_id: FEATURE, version: 'ospfv3-ipv4', body: OSPF_BODY, confirm: true });
+check('update_ospf_feature', !r.error && lastWrite()?.method === 'PUT' && lastWrite().path === `${base}/routing/ospfv3/ipv4/${FEATURE}`, JSON.stringify(lastWrite()));
+r = await tool(w, 'delete_ospf_feature', { profile_type: 'service', profile: OSPF_PROFILE, feature_id: FEATURE, confirm: true });
+check('delete_ospf_feature', !r.error && lastWrite()?.method === 'DELETE' && lastWrite().path === `${base}/routing/ospf/${FEATURE}` && lastWrite().body === undefined, JSON.stringify(lastWrite()));
+r = await tool(w, 'delete_ospf_feature', { profile_type: 'service', profile: OSPF_PROFILE, vpn_feature_id: VPN, feature_id: FEATURE, confirm: true });
+check('delete_ospf_feature with VPN removes only the association', lastWrite()?.method === 'DELETE' && lastWrite().path === `${base}/lan/vpn/${VPN}/routing/ospf/${FEATURE}`, JSON.stringify(lastWrite()));
+r = await tool(w, 'associate_ospf_feature', { profile_type: 'service', profile: OSPF_PROFILE, vpn_feature_id: VPN, feature_id: FEATURE, confirm: true });
+check(
+  'associate_ospf_feature',
+  !r.error && lastWrite()?.method === 'POST' && lastWrite().path === `${base}/lan/vpn/${VPN}/routing/ospf` && lastWrite().body?.parcelId === FEATURE,
+  JSON.stringify(lastWrite())
+);
+
+for (const [label, name, args, pattern] of [
+  ['create_ospf_feature rejects a VPN scope', 'create_ospf_feature', { profile_type: 'service', profile: OSPF_PROFILE, vpn_feature_id: VPN, body: OSPF_BODY, confirm: true }, /associate_ospf_feature/],
+  ['create_ospf_feature requires an object body', 'create_ospf_feature', { profile_type: 'service', profile: OSPF_PROFILE, body: [1], confirm: true }, /body must be an object/],
+  ['update_ospf_feature requires feature_id', 'update_ospf_feature', { profile_type: 'service', profile: OSPF_PROFILE, body: OSPF_BODY, confirm: true }, /feature_id is required/],
+  ['delete_ospf_feature rejects non-UUID feature_id', 'delete_ospf_feature', { profile_type: 'service', profile: OSPF_PROFILE, feature_id: '../../config-group', confirm: true }, /feature_id must be a feature ID/],
+  ['delete_ospf_feature needs confirm: true', 'delete_ospf_feature', { profile_type: 'service', profile: OSPF_PROFILE, feature_id: FEATURE }, /confirm: true/],
+  ['associate_ospf_feature requires vpn_feature_id', 'associate_ospf_feature', { profile_type: 'service', profile: OSPF_PROFILE, feature_id: FEATURE, confirm: true }, /vpn_feature_id and feature_id are required/],
+]) {
+  stats.ospfWrites = [];
+  r = await tool(w, name, args);
+  check(label, pattern.test(r.error ?? '') && stats.ospfWrites.length === 0, r.error ?? 'not rejected');
+}
+
+// Every OSPF write operation in the spec must be reachable through a dedicated tool.
+const specOspfWrites = Object.entries(spec.paths)
+  .filter(([path]) => /ospf/i.test(path))
+  .flatMap(([path, ops]) => ['post', 'put', 'delete'].filter((m) => ops[m]).map((m) => `${m.toUpperCase()} ${template(path)}`));
+stats.ospfWrites = [];
+for (const solution of ['sdwan', 'sd-routing']) {
+  for (const profile_type of ['service', 'transport']) {
+    const vpnScopes = [{ vpn_feature_id: VPN }, ...(solution === 'sd-routing' && profile_type === 'transport' ? [{ vpn_feature_id: VPN, global_vrf: true }] : [])];
+    for (const version of ['ospf', 'ospfv3-ipv4', 'ospfv3-ipv6']) {
+      const scope = { solution, profile_type, profile: OSPF_PROFILE, version, confirm: true };
+      await tool(w, 'create_ospf_feature', { ...scope, body: OSPF_BODY });
+      for (const vpn of [{}, ...vpnScopes]) {
+        await tool(w, 'update_ospf_feature', { ...scope, ...vpn, feature_id: FEATURE, body: OSPF_BODY });
+        await tool(w, 'delete_ospf_feature', { ...scope, ...vpn, feature_id: FEATURE });
+      }
+      for (const vpn of vpnScopes) await tool(w, 'associate_ospf_feature', { ...scope, ...vpn, feature_id: FEATURE });
+    }
+  }
+}
+const written = new Set(stats.ospfWrites.map((x) => `${x.method} ${template(x.path)}`));
+const missingWrites = specOspfWrites.filter((op) => !written.has(op));
+check(`all ${specOspfWrites.length} OSPF write operations in the spec covered`, specOspfWrites.length === 81 && missingWrites.length === 0, missingWrites.join(', '));
+check('OSPF write tools only call operations from the spec', [...written].every((op) => specOspfWrites.includes(op)));
+const specV3Writes = specOspfWrites.filter(isV3);
+check(
+  `all ${specV3Writes.length} OSPFv3 write operations covered (POST/PUT/DELETE, IPv4 and IPv6)`,
+  specV3Writes.length === 54 && specV3Writes.every((op) => written.has(op)),
+  specV3Writes.filter((op) => !written.has(op)).join(', ')
+);
+await w.close();
+
+// BGP: real-time monitoring with filters, feature schema, configuration reads and writes.
+const specBgp = (methods) =>
+  Object.entries(spec.paths)
+    .filter(([path]) => /bgp/i.test(path))
+    .flatMap(([path, ops]) => methods.filter((m) => ops[m]).map((m) => `${m.toUpperCase()} ${template(path)}`));
+const bgpBase = `/dataservice/v1/feature-profile/sdwan/service/${OSPF_PROFILE}`;
+const BGP_BODY = { name: 'BGP-65001', description: 'test', data: { asNum: { optionType: 'global', value: 65001 } } };
+// Profile-level and VPN/VRF-level scopes for each solution and profile type.
+const bgpScopes = [
+  ['sdwan', 'service', [{}], [{ vpn_feature_id: VPN }]],
+  ['sdwan', 'transport', [{}], [{ vpn_feature_id: VPN }]],
+  ['sd-routing', 'service', [{}], [{ vpn_feature_id: VPN }]],
+  ['sd-routing', 'transport', [{}, { global_vrf: true }], [{ vpn_feature_id: VPN }, { vpn_feature_id: VPN, global_vrf: true }]],
+];
+
+const cb = await connect();
+const bgpRow = async (name, args) => (await tool(cb, name, { device_id: 'Branch-1', ...args })).value?.data?.[0];
+let b = await bgpRow('get_bgp_neighbors', { vpn_id: '10', peer_addr: '198.51.100.9', as: '65010' });
+check(
+  'get_bgp_neighbors with filters',
+  b?.path === '/dataservice/device/bgp/neighbors' && b.query.deviceId === '192.0.2.11' && b.query['vpn-id'] === '10' && b.query['peer-addr'] === '198.51.100.9' && b.query.as === '65010',
+  JSON.stringify(b)
+);
+b = await bgpRow('get_bgp_routes', { vpn_id: '10', prefix: '10.1.0.0/16', nexthop: '198.51.100.9' });
+check('get_bgp_routes with filters', b?.path === '/dataservice/device/bgp/routes' && b.query.prefix === '10.1.0.0/16' && b.query.nexthop === '198.51.100.9', JSON.stringify(b));
+b = await bgpRow('get_bgp_routes');
+check('get_bgp_routes without filters', b?.query && Object.keys(b.query).join() === 'deviceId', JSON.stringify(b));
+check('get_bgp_summary', (await bgpRow('get_bgp_summary'))?.path === '/dataservice/device/bgp/summary');
+r = await tool(cb, 'get_bgp_feature_schema', { profile_type: 'transport', schema_type: 'put' });
+check('get_bgp_feature_schema', r.value?.data?.[0]?.path === '/dataservice/v1/feature-profile/sdwan/transport/routing/bgp/schema' && r.value.data[0].query.schemaType === 'put', JSON.stringify(r.value ?? r.error));
+r = await tool(cb, 'get_bgp_config', { profile_type: 'service', profile: 'Branch-Service' });
+check('get_bgp_config by profile name', r.value?.data?.[0]?.path === `${bgpBase}/routing/bgp`, JSON.stringify(r.value ?? r.error));
+r = await tool(cb, 'get_bgp_config', { solution: 'sd-routing', profile_type: 'transport', profile: OSPF_PROFILE, global_vrf: true });
+check(
+  'get_bgp_config sd-routing global VRF',
+  r.value?.data?.[0]?.path === `/dataservice/v1/feature-profile/sd-routing/transport/${OSPF_PROFILE}/global-vrf/routing/bgp`,
+  JSON.stringify(r.value ?? r.error)
+);
+
+const specBgpGets = specBgp(['get']);
+stats.bgpPaths = [];
+for (const args of [{}, { vpn_id: '1' }]) {
+  for (const name of ['get_bgp_neighbors', 'get_bgp_routes', 'get_bgp_summary']) await tool(cb, name, { device_id: 'Branch-1', ...args });
+}
+for (const profile_type of ['service', 'transport']) for (const schema_type of ['post', 'put']) await tool(cb, 'get_bgp_feature_schema', { profile_type, schema_type });
+for (const [solution, profile_type, profileScopes, vpnScopes] of bgpScopes) {
+  for (const scope of [...profileScopes, ...vpnScopes]) {
+    for (const one of [{}, { feature_id: FEATURE }]) await tool(cb, 'get_bgp_config', { solution, profile_type, profile: OSPF_PROFILE, ...scope, ...one });
+  }
+}
+const bgpReached = new Set(stats.bgpPaths.map((path) => `GET ${template(path)}`));
+const missingBgpReads = specBgpGets.filter((op) => !bgpReached.has(op));
+check(`all ${specBgpGets.length} BGP read operations in the spec covered`, specBgpGets.length === 25 && missingBgpReads.length === 0, missingBgpReads.join(', '));
+check('BGP tools only call read paths from the spec', [...bgpReached].every((op) => specBgpGets.includes(op)), [...bgpReached].filter((op) => !specBgpGets.includes(op)).join(', '));
+
+for (const [label, name, args, pattern] of [
+  ['get_bgp_neighbors requires device_id', 'get_bgp_neighbors', {}, /device_id is required/],
+  ['get_bgp_feature_schema rejects unknown profile_type', 'get_bgp_feature_schema', { profile_type: '../system' }, /profile_type must be one of/],
+  ['get_bgp_feature_schema rejects unknown schema_type', 'get_bgp_feature_schema', { profile_type: 'service', schema_type: 'delete' }, /schema_type must be one of/],
+  ['get_bgp_config rejects non-UUID feature_id', 'get_bgp_config', { profile_type: 'service', profile: OSPF_PROFILE, feature_id: '../x' }, /feature_id must be a feature ID/],
+  ['get_bgp_config rejects global_vrf for sdwan', 'get_bgp_config', { profile_type: 'transport', profile: OSPF_PROFILE, global_vrf: true }, /global_vrf applies only/],
+]) {
+  stats.bgpPaths = [];
+  r = await tool(cb, name, args);
+  check(label, pattern.test(r.error ?? '') && stats.bgpPaths.length === 0, r.error ?? 'not rejected');
+}
+r = await tool(cb, 'create_bgp_feature', { profile_type: 'service', profile: OSPF_PROFILE, body: BGP_BODY, confirm: true });
+check('BGP writes disabled by default', /VMANAGE_ALLOW_WRITE=true/.test(r.error ?? '') && stats.bgpWrites.length === 0, r.error ?? 'not rejected');
+await cb.close();
+
+const wb = await connect({ VMANAGE_ALLOW_WRITE: 'true' });
+const lastBgpWrite = () => stats.bgpWrites.at(-1);
+r = await tool(wb, 'create_bgp_feature', { profile_type: 'service', profile: 'Branch-Service', body: BGP_BODY });
+check('create_bgp_feature needs confirm: true', /confirm: true/.test(r.error ?? '') && stats.bgpWrites.length === 0, r.error ?? 'not rejected');
+r = await tool(wb, 'create_bgp_feature', { profile_type: 'service', profile: 'Branch-Service', body: BGP_BODY, confirm: true });
+check(
+  'create_bgp_feature',
+  !r.error && r.value?.operationId === 'CreateRoutingBgpProfileParcelForService' && lastBgpWrite()?.path === `${bgpBase}/routing/bgp` &&
+    JSON.stringify(lastBgpWrite().body) === JSON.stringify(BGP_BODY),
+  JSON.stringify(r.value ?? r.error)
+);
+r = await tool(wb, 'update_bgp_feature', { profile_type: 'service', profile: OSPF_PROFILE, feature_id: FEATURE, body: BGP_BODY, confirm: true });
+check('update_bgp_feature', !r.error && lastBgpWrite()?.method === 'PUT' && lastBgpWrite().path === `${bgpBase}/routing/bgp/${FEATURE}`, JSON.stringify(lastBgpWrite()));
+r = await tool(wb, 'delete_bgp_feature', { profile_type: 'service', profile: OSPF_PROFILE, vpn_feature_id: VPN, feature_id: FEATURE, confirm: true });
+check('delete_bgp_feature with VPN removes only the association', lastBgpWrite()?.method === 'DELETE' && lastBgpWrite().path === `${bgpBase}/lan/vpn/${VPN}/routing/bgp/${FEATURE}`, JSON.stringify(lastBgpWrite()));
+r = await tool(wb, 'associate_bgp_feature', { profile_type: 'service', profile: OSPF_PROFILE, vpn_feature_id: VPN, feature_id: FEATURE, confirm: true });
+check('associate_bgp_feature', !r.error && lastBgpWrite()?.method === 'POST' && lastBgpWrite().path === `${bgpBase}/lan/vpn/${VPN}/routing/bgp` && lastBgpWrite().body?.parcelId === FEATURE, JSON.stringify(lastBgpWrite()));
+for (const [label, name, args, pattern] of [
+  ['create_bgp_feature rejects a VPN scope', 'create_bgp_feature', { profile_type: 'service', profile: OSPF_PROFILE, vpn_feature_id: VPN, body: BGP_BODY, confirm: true }, /associate_bgp_feature/],
+  ['update_bgp_feature requires an object body', 'update_bgp_feature', { profile_type: 'service', profile: OSPF_PROFILE, feature_id: FEATURE, body: 'x', confirm: true }, /body must be an object/],
+  ['delete_bgp_feature needs confirm: true', 'delete_bgp_feature', { profile_type: 'service', profile: OSPF_PROFILE, feature_id: FEATURE }, /confirm: true/],
+  ['associate_bgp_feature requires feature_id', 'associate_bgp_feature', { profile_type: 'service', profile: OSPF_PROFILE, vpn_feature_id: VPN, confirm: true }, /vpn_feature_id and feature_id are required/],
+]) {
+  stats.bgpWrites = [];
+  r = await tool(wb, name, args);
+  check(label, pattern.test(r.error ?? '') && stats.bgpWrites.length === 0, r.error ?? 'not rejected');
+}
+
+const specBgpWrites = specBgp(['post', 'put', 'delete']);
+stats.bgpWrites = [];
+for (const [solution, profile_type, profileScopes, vpnScopes] of bgpScopes) {
+  const scope = { solution, profile_type, profile: OSPF_PROFILE, confirm: true };
+  for (const s of profileScopes) await tool(wb, 'create_bgp_feature', { ...scope, ...s, body: BGP_BODY });
+  for (const s of vpnScopes) await tool(wb, 'associate_bgp_feature', { ...scope, ...s, feature_id: FEATURE });
+  for (const s of [...profileScopes, ...vpnScopes]) {
+    await tool(wb, 'update_bgp_feature', { ...scope, ...s, feature_id: FEATURE, body: BGP_BODY });
+    await tool(wb, 'delete_bgp_feature', { ...scope, ...s, feature_id: FEATURE });
+  }
+}
+const bgpWritten = new Set(stats.bgpWrites.map((x) => `${x.method} ${template(x.path)}`));
+const missingBgpWrites = specBgpWrites.filter((op) => !bgpWritten.has(op));
+check(`all ${specBgpWrites.length} BGP write operations in the spec covered`, specBgpWrites.length === 30 && missingBgpWrites.length === 0, missingBgpWrites.join(', '));
+check('BGP write tools only call operations from the spec', [...bgpWritten].every((op) => specBgpWrites.includes(op)));
+await wb.close();
+
+// UX 1.0 feature templates for BGP, OSPF and OSPFv3.
+mock.templateListDelayMs = 0;
+const ct = await connect();
+r = await tool(ct, 'list_routing_templates');
+check('list_routing_templates keeps only BGP/OSPF/OSPFv3 templates', r.value?.data?.map((t) => t.templateName).join() === 'BGP-Hub,OSPFv3-Branch', JSON.stringify(r.value ?? r.error));
+r = await tool(ct, 'list_routing_templates', { protocol: 'ospfv3' });
+check('list_routing_templates protocol filter', r.value?.data?.map((t) => t.templateName).join() === 'OSPFv3-Branch', JSON.stringify(r.value ?? r.error));
+r = await tool(ct, 'get_routing_template', { template_id: BGP_TEMPLATE });
+check('get_routing_template with device templates', r.value?.templateType === 'cisco_bgp' && r.value.deviceTemplates?.[0]?.templateName === 'DT-Hub', JSON.stringify(r.value ?? r.error));
+r = await tool(ct, 'get_routing_template_schema', { template_type: 'cisco_ospfv3' });
+check('get_routing_template_schema', r.value?.path === '/dataservice/template/feature/types/definition/cisco_ospfv3/15.0.0', JSON.stringify(r.value ?? r.error));
+for (const [label, name, args, pattern] of [
+  ['get_routing_template refuses non-routing templates', 'get_routing_template', { template_id: VPN_TEMPLATE }, /cisco_vpn template, not a BGP, OSPF or OSPFv3/],
+  ['get_routing_template rejects non-UUID ID', 'get_routing_template', { template_id: '../device/x' }, /must be a feature template ID/],
+  ['get_routing_template_schema rejects other types', 'get_routing_template_schema', { template_type: 'cisco_vpn' }, /template_type must be one of/],
+  ['get_routing_template_schema rejects bad version', 'get_routing_template_schema', { template_type: 'cisco_bgp', version: '../../x' }, /version must look like/],
+]) {
+  r = await tool(ct, name, args);
+  check(label, pattern.test(r.error ?? ''), r.error ?? 'not rejected');
+}
+const TEMPLATE_BODY = { templateName: 'BGP-New', templateDescription: 'test', templateType: 'cisco_bgp', deviceType: ['vedge-C8000V'], templateMinVersion: '15.0.0', templateDefinition: {}, factoryDefault: false };
+r = await tool(ct, 'create_routing_template', { body: TEMPLATE_BODY, confirm: true });
+check('routing template writes disabled by default', /VMANAGE_ALLOW_WRITE=true/.test(r.error ?? '') && stats.templateWrites.length === 0, r.error ?? 'not rejected');
+r = await tool(ct, 'clone_routing_template', { template_id: BGP_TEMPLATE, name: 'BGP-Copy', confirm: true });
+check('clone_routing_template disabled by default', /VMANAGE_ALLOW_WRITE=true/.test(r.error ?? '') && stats.templateWrites.length === 0, r.error ?? 'not rejected');
+await ct.close();
+
+const wt = await connect({ VMANAGE_ALLOW_WRITE: 'true' });
+const lastTemplateWrite = () => stats.templateWrites.at(-1);
+r = await tool(wt, 'create_routing_template', { body: TEMPLATE_BODY });
+check('create_routing_template needs confirm: true', /confirm: true/.test(r.error ?? '') && stats.templateWrites.length === 0, r.error ?? 'not rejected');
+r = await tool(wt, 'create_routing_template', { body: TEMPLATE_BODY, confirm: true });
+check(
+  'create_routing_template',
+  r.value?.operationId === 'createFeatureTemplate' && lastTemplateWrite()?.method === 'POST' && lastTemplateWrite().path === '/dataservice/template/feature' &&
+    JSON.stringify(lastTemplateWrite().body) === JSON.stringify(TEMPLATE_BODY),
+  JSON.stringify(r.value ?? r.error)
+);
+r = await tool(wt, 'update_routing_template', { template_id: OSPFV3_TEMPLATE, body: { templateName: 'OSPFv3-Branch', templateDefinition: {} }, confirm: true });
+check(
+  'update_routing_template keeps the template type',
+  r.value?.operationId === 'editFeatureTemplate' && lastTemplateWrite()?.method === 'PUT' && lastTemplateWrite().path === `/dataservice/template/feature/${OSPFV3_TEMPLATE}` &&
+    lastTemplateWrite().body.templateType === 'cisco_ospfv3',
+  JSON.stringify(lastTemplateWrite())
+);
+r = await tool(wt, 'delete_routing_template', { template_id: BGP_TEMPLATE, confirm: true });
+check('delete_routing_template', r.value?.operationId === 'deleteGeneralTemplate' && lastTemplateWrite()?.method === 'DELETE' && lastTemplateWrite().path === `/dataservice/template/feature/${BGP_TEMPLATE}`, JSON.stringify(lastTemplateWrite()));
+r = await tool(wt, 'clone_routing_template', { template_id: BGP_TEMPLATE, name: 'BGP-Hub-Copy', confirm: true });
+check(
+  'clone_routing_template (default description)',
+  r.value?.operationId === 'cloneTemplate' && lastTemplateWrite()?.method === 'POST' && lastTemplateWrite().path === '/dataservice/template/feature/clone' &&
+    JSON.stringify(lastTemplateWrite().query) === JSON.stringify({ id: BGP_TEMPLATE, name: 'BGP-Hub-Copy', desc: 'Clone of BGP-Hub' }) && r.value.result?.templateId,
+  JSON.stringify(lastTemplateWrite())
+);
+r = await tool(wt, 'clone_routing_template', { template_id: OSPFV3_TEMPLATE, name: 'OSPFv3-Lab', description: 'Lab copy', confirm: true });
+check('clone_routing_template with description', lastTemplateWrite()?.query?.desc === 'Lab copy' && lastTemplateWrite().query.id === OSPFV3_TEMPLATE, JSON.stringify(lastTemplateWrite()));
+for (const [label, name, args, pattern] of [
+  ['create_routing_template refuses other template types', 'create_routing_template', { body: { ...TEMPLATE_BODY, templateType: 'cisco_vpn' }, confirm: true }, /body.templateType must be one of/],
+  ['update_routing_template refuses a type change', 'update_routing_template', { template_id: BGP_TEMPLATE, body: { ...TEMPLATE_BODY, templateType: 'cisco_ospf' }, confirm: true }, /must stay cisco_bgp/],
+  ['update_routing_template refuses non-routing templates', 'update_routing_template', { template_id: VPN_TEMPLATE, body: TEMPLATE_BODY, confirm: true }, /not a BGP, OSPF or OSPFv3/],
+  ['delete_routing_template refuses non-routing templates', 'delete_routing_template', { template_id: VPN_TEMPLATE, confirm: true }, /not a BGP, OSPF or OSPFv3/],
+  ['delete_routing_template needs confirm: true', 'delete_routing_template', { template_id: BGP_TEMPLATE }, /confirm: true/],
+  ['clone_routing_template refuses non-routing templates', 'clone_routing_template', { template_id: VPN_TEMPLATE, name: 'VPN-Copy', confirm: true }, /not a BGP, OSPF or OSPFv3/],
+  ['clone_routing_template requires a name', 'clone_routing_template', { template_id: BGP_TEMPLATE, name: '  ', confirm: true }, /name is required/],
+  ['clone_routing_template needs confirm: true', 'clone_routing_template', { template_id: BGP_TEMPLATE, name: 'BGP-Copy' }, /confirm: true/],
+]) {
+  stats.templateWrites = [];
+  r = await tool(wt, name, args);
+  check(label, pattern.test(r.error ?? '') && stats.templateWrites.length === 0, r.error ?? 'not rejected');
+}
+await wt.close();
 
 // Unreachable Manager: the first call fails, the next ones fail immediately.
 const closedPort = await new Promise((resolve) => {

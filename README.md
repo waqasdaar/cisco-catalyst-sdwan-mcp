@@ -6,8 +6,9 @@ A [Model Context Protocol (MCP)](https://modelcontextprotocol.io/) server for **
 
 All requests go through vManage. The server never connects to routers directly.
 
-- **86 MCP tools**: 82 purpose-built tools, including fabric-wide health, BFD and TLOC checks in a single call, UX 2.0 configuration groups, feature profiles and policy and topology groups, plus 4 general tools that reach **every operation in the vManage OpenAPI spec** (4,128 operations on 26.2).
+- **109 MCP tools**: 105 purpose-built tools, including fabric-wide health, BFD and TLOC checks in a single call, BGP, OSPF and OSPFv3 monitoring and configuration (UX 2.0 features and UX 1.0 templates), UX 2.0 configuration groups, feature profiles and policy and topology groups, plus 4 general tools that reach **every operation in the vManage OpenAPI spec** (4,128 operations on 26.2).
 - **Read-only by default.** Operations that change configuration or state are disabled unless you enable them, and each call then needs explicit confirmation.
+- **BGP, OSPF and OSPFv3 end to end.** Real-time neighbors, routes, interfaces and LSDB; UX 2.0 feature reads and writes for SD-WAN and SD-Routing profiles; UX 1.0 feature templates (list, read, schema, create, update, delete, clone). Every BGP and OSPF operation in the 26.2 spec has a dedicated tool.
 - **Validated against the spec.** Calls through the general tools are checked against the OpenAPI spec published by *your* vManage before they are sent.
 - **Secrets are protected.** Endpoints that issue tokens, passwords, OTPs or credentials are blocked. Session IDs and CSRF tokens are redacted from responses.
 - **Fast and resilient.**
@@ -41,6 +42,7 @@ flowchart LR
 - [Supported functionality](#supported-functionality)
   - [General API tools](#general-api-tools-full-vmanage-api)
   - [Dedicated tools (full reference)](#dedicated-tools)
+  - [Routing protocols: BGP, OSPF, OSPFv3](#routing-protocols-at-a-glance)
 - [Installation](#installation)
 - [Configuration](#configuration)
 - [Integrating with MCP clients](#integrating-with-mcp-clients)
@@ -70,13 +72,16 @@ Ask questions about your SD-WAN fabric in plain language and get answers built f
 | **Inventory and health** | "Is my fabric healthy?" "Which edges have high CPU?" "Is the Manager a cluster or single node?" | `get_fabric_health`, `list_devices`, `list_reachable_devices` |
 | **Control-plane troubleshooting** | "Why is this edge missing control connections? Show the history." | `get_control_connections`, `get_control_connections_history`, `get_control_local_properties` |
 | **Overlay routing (OMP)** | "Which TLOCs and routes does this site advertise in VPN 10?" | `get_omp_routes`, `get_omp_tlocs`, `get_omp_peers` |
+| **OSPF and OSPFv3** | "Is OSPF running on Branch-2? Show its OSPFv3 neighbors. Which service profiles configure OSPF?" | `get_ospf_interfaces`, `get_ospf_neighbors`, `get_ospf_config` |
+| **BGP** | "Which BGP neighbors does Hub-1 have in VPN 10? Which profiles configure BGP?" | `get_bgp_neighbors`, `get_bgp_routes`, `get_bgp_config` |
+| **Routing changes (opt-in)** | "Create a BGP feature for AS 65001 and attach it to VPN 10." "Clone the OSPF-Branch template." | `create_bgp_feature`, `associate_bgp_feature`, `update_ospf_feature`, `clone_routing_template`, ... |
 | **Data plane and transport** | "Are all BFD sessions in the fabric up? How many TLOCs does site 100 have?" | `get_fabric_bfd_status`, `get_fabric_tlocs`, `get_bfd_sessions`, `get_control_wan_interfaces` |
 | **Application-aware routing** | "Show tunnel loss/latency/jitter and SLA classes." | `get_app_route_statistics`, `get_app_route_sla_class` |
 | **Configuration audit (UX 2.0)** | "Which configuration group configures the branch sites? What would a deploy change?" | `list_config_groups`, `get_config_group`, `preview_config_group_device_config` |
-| **Templates and policies (UX 1.0)** | "Which device templates and centralized policies are in use?" | `list_device_templates`, `get_attached_devices`, `list_policies` |
+| **Templates and policies (UX 1.0)** | "Which device templates and centralized policies are in use? Which BGP or OSPF templates exist?" | `list_device_templates`, `get_attached_devices`, `list_policies`, `list_routing_templates` |
 | **Operations** | "Any critical alarms? Certificates expiring? Is the Manager cluster healthy?" | `list_alarms`, `get_certificate_summary`, `get_cluster_status` |
-| **Anything else in the API** | "Show OSPF neighbors", "show IPsec/IKE sessions", "audit log for today" | `search_api_operations` → `describe_api_operation` → `call_api_operation` |
-| **Controlled changes (opt-in)** | Any POST/PUT/DELETE operation, only after you approve it | `call_api_operation` with `confirm: true` and `VMANAGE_ALLOW_WRITE=true` |
+| **Anything else in the API** | "Show IPsec/IKE sessions", "audit log for today" | `search_api_operations` → `describe_api_operation` → `call_api_operation` |
+| **Controlled changes (opt-in)** | Any POST/PUT/DELETE operation, only after you approve it | The routing write tools, or `call_api_operation`, with `confirm: true` and `VMANAGE_ALLOW_WRITE=true` |
 
 ---
 
@@ -245,7 +250,7 @@ Use the Validator's system IP or hostname as `device_id`.
 | `get_validator_valid_devices` | Authorized device lists on the Validator | `device_id`\*, `list` (`vedges`/`vsmarts`/`vmanage_id`) | "How many WAN edges are authorized on the Validator?" |
 | `get_validator_proxy_mapping` | NAT/proxy mapping table | `device_id`\* | "Show the Validator NAT mapping table." |
 
-#### Data plane, interfaces, routing and system (12)
+#### Data plane, interfaces, routing and system (9)
 
 | Tool | Description | Key parameters | Example prompt |
 |---|---|---|---|
@@ -258,9 +263,70 @@ Use the Validator's system IP or hostname as `device_id`.
 | `get_device_interfaces` | Interface status and configuration | `device_id`\*, `synced` | "Which interfaces are down on Branch-3?" |
 | `get_device_arp` | ARP table (IPv4 to MAC) | `device_id`\* | "Show the ARP table of Hub-1." |
 | `get_system_status` | CPU, memory, uptime | `device_id`\*, `synced` | "What's the CPU and memory usage on Hub-1?" |
-| `get_bgp_neighbors` | BGP neighbors | `device_id`\* | "Show BGP neighbors on Hub-1." |
-| `get_bgp_routes` | BGP routes | `device_id`\* | "Show BGP routes on Hub-2." |
+
+#### Routing protocols at a glance
+
+Every BGP, OSPF and OSPFv3 operation in the 26.2 spec has a dedicated tool. `npm test` checks this against the spec on every run.
+
+| Area | BGP | OSPF (v2) | OSPFv3 (IPv4 and IPv6) |
+|---|---|---|---|
+| Real-time monitoring | `get_bgp_neighbors`, `get_bgp_routes`, `get_bgp_summary` | `get_ospf_process`, `get_ospf_neighbors`, `get_ospf_interfaces`, `get_ospf_routes`, `get_ospf_database` | `get_ospf_neighbors` / `get_ospf_interfaces` with `version: "ospfv3"` |
+| UX 2.0 features: read | `get_bgp_config`, `get_bgp_feature_schema` | `get_ospf_config` | `get_ospf_config` with `version: "ospfv3-ipv4"` / `"ospfv3-ipv6"` |
+| UX 2.0 features: write | `create_bgp_feature`, `associate_bgp_feature`, `update_bgp_feature`, `delete_bgp_feature` | `create_ospf_feature`, `associate_ospf_feature`, `update_ospf_feature`, `delete_ospf_feature` | Same OSPF tools with `version: "ospfv3-ipv4"` / `"ospfv3-ipv6"` |
+| UX 1.0 templates | `cisco_bgp`, `bgp` | `cisco_ospf`, `ospf` | `cisco_ospfv3` |
+| Spec operations covered | 55 (25 read, 30 write) | 144 including OSPFv3 (63 read, 81 write) | 92 of the 144 (38 read, 54 write) |
+
+The UX 1.0 rows use the [routing template tools](#bgp-ospf-and-ospfv3-feature-templates--ux-10-7), which work on all five template types.
+
+UX 2.0 configuration tools address a feature by profile, never by raw URL:
+
+- `profile_type` (`service` or `transport`) and `profile` (ID or exact name) pick the feature profile; `solution` picks `sdwan` (default) or `sd-routing`.
+- `vpn_feature_id` narrows to the features associated with one VPN feature (SD-WAN: LAN VPN for service, WAN VPN for transport) or VRF feature (SD-Routing). `global_vrf: true` selects the global VRF of an SD-Routing transport profile.
+- `feature_id` addresses one feature. All IDs must be UUIDs.
+
+**Typical write workflow** (needs `VMANAGE_ALLOW_WRITE=true`; every write needs `confirm: true` after you approve it):
+
+1. Read the current state: `get_bgp_config` / `get_ospf_config`, and `get_bgp_feature_schema` for the body format.
+2. Create the feature in the profile: `create_bgp_feature` / `create_ospf_feature` returns its ID.
+3. Attach it to a VPN or VRF: `associate_bgp_feature` / `associate_ospf_feature`.
+4. Deploy the configuration group (`preview_config_group_device_config` shows what would change first). Editing a profile never pushes configuration to devices by itself.
+
+To remove a feature, first detach it (`delete_*_feature` with `vpn_feature_id`), then delete it (`delete_*_feature` without `vpn_feature_id`).
+
+#### BGP (9)
+
+The nine tools cover all 55 BGP operations in the 26.2 spec: the 3 real-time monitoring endpoints (with their filters), the 2 feature-schema reads, and the 20 read and 30 write operations for BGP features of SD-WAN and SD-Routing feature profiles. The write tools follow the same rules as the OSPF write tools below.
+
+| Tool | Description | Key parameters | Example prompt |
+|---|---|---|---|
+| `get_bgp_neighbors` | BGP neighbors | `device_id`\*, `vpn_id`, `peer_addr`, `as` | "Show BGP neighbors on Hub-1 in VPN 10." |
+| `get_bgp_routes` | BGP routes | `device_id`\*, `vpn_id`, `prefix`, `nexthop` | "Which BGP routes does Hub-2 have for 10.1.0.0/16?" |
 | `get_bgp_summary` | BGP summary | `device_id`\* | "BGP summary of Hub-1." |
+| `get_bgp_config` | BGP features of a UX 2.0 service or transport profile, optionally per VPN/VRF feature or one feature | `profile_type`\*, `profile`\*, `solution` (`sdwan`/`sd-routing`), `vpn_feature_id`, `global_vrf`, `feature_id` | "Which BGP features does the Hub-Transport profile have?" |
+| `get_bgp_feature_schema` | JSON schema vManage expects for an SD-WAN BGP feature body | `profile_type`\*, `schema_type` (`post` default/`put`) | "What fields does a BGP service feature need?" |
+| `create_bgp_feature` | **Write.** Create a BGP feature in a profile; returns its ID | `profile_type`\*, `profile`\*, `body`\*, `confirm`\*, `solution`, `global_vrf` | "Create a BGP AS 65001 feature in Branch-Service." |
+| `update_bgp_feature` | **Write.** Replace a feature (full definition); with `vpn_feature_id`, edits its VPN/VRF association | `profile_type`\*, `profile`\*, `feature_id`\*, `body`\*, `confirm`\*, `vpn_feature_id` | "Add a neighbor to the BGP feature in Branch-Service." |
+| `delete_bgp_feature` | **Write.** Delete a feature; with `vpn_feature_id`, only removes its association with that VPN/VRF | `profile_type`\*, `profile`\*, `feature_id`\*, `confirm`\*, `vpn_feature_id` | "Detach the BGP feature from VPN 10." |
+| `associate_bgp_feature` | **Write.** Attach an existing feature to a VPN feature (sdwan) or VRF feature (sd-routing) | `profile_type`\*, `profile`\*, `vpn_feature_id`\*, `feature_id`\*, `confirm`\*, `global_vrf` | "Attach the BGP feature to the VPN 10 feature." |
+
+#### OSPF and OSPFv3 (10)
+
+The ten tools cover all 144 OSPF operations in the 26.2 spec, 92 of them OSPFv3: the 9 real-time monitoring endpoints, and the 54 read and 81 write operations for OSPF / OSPFv3 features of SD-WAN and SD-Routing feature profiles. OSPFv3 is selected with `version`: `ospfv3` for the monitoring tools, `ospfv3-ipv4` or `ospfv3-ipv6` for the feature tools.
+
+The four write tools change configuration. Like `call_api_operation`, they are disabled unless `VMANAGE_ALLOW_WRITE=true`, each call needs `confirm: true` after you approve it, and the target operation is checked against the Manager's spec before it is sent. Changing a feature in a profile does not deploy it; devices get the change when their configuration group is deployed.
+
+| Tool | Description | Key parameters | Example prompt |
+|---|---|---|---|
+| `get_ospf_process` | OSPF process details. Can be empty even when OSPF runs in a service VPN; use `get_ospf_interfaces` to confirm OSPF is enabled | `device_id`\* | "Show the OSPF process on Hub-1." |
+| `get_ospf_neighbors` | OSPF or OSPFv3 neighbors | `device_id`\*, `version` (`ospfv2` default/`ospfv3`) | "Show OSPF neighbors on Hub-1." |
+| `get_ospf_interfaces` | OSPF or OSPFv3 enabled interfaces (with area, VPN, state) | `device_id`\*, `version` | "Is OSPF configured on Branch-2?" |
+| `get_ospf_routes` | OSPF routes | `device_id`\* | "Show OSPF routes on Hub-2." |
+| `get_ospf_database` | Link-state database | `device_id`\*, `view` (`summary` default/`full`/`external`) | "Show external LSAs on Hub-1." |
+| `get_ospf_config` | OSPF / OSPFv3 features of a UX 2.0 service or transport profile, optionally per VPN/VRF feature or one feature | `profile_type`\* (`service`/`transport`), `profile`\*, `solution` (`sdwan`/`sd-routing`), `version` (`ospf`/`ospfv3-ipv4`/`ospfv3-ipv6`), `vpn_feature_id`, `global_vrf`, `feature_id` | "Which OSPF features does the Branch-Service profile have?" |
+| `create_ospf_feature` | **Write.** Create an OSPF / OSPFv3 feature in a profile; returns its ID | `profile_type`\*, `profile`\*, `body`\* (`{ name, description, data }`), `confirm`\*, `solution`, `version` | "Create an OSPF area 0 feature in Branch-Service." |
+| `update_ospf_feature` | **Write.** Replace a feature (full definition); with `vpn_feature_id`, edits its VPN/VRF association | `profile_type`\*, `profile`\*, `feature_id`\*, `body`\*, `confirm`\*, `vpn_feature_id` | "Change the OSPF hello interval in Branch-Service to 5 s." |
+| `delete_ospf_feature` | **Write.** Delete a feature; with `vpn_feature_id`, only removes its association with that VPN/VRF | `profile_type`\*, `profile`\*, `feature_id`\*, `confirm`\*, `vpn_feature_id` | "Detach the OSPF feature from VPN 10 in Branch-Service." |
+| `associate_ospf_feature` | **Write.** Attach an existing feature to a VPN feature (sdwan) or VRF feature (sd-routing) | `profile_type`\*, `profile`\*, `vpn_feature_id`\*, `feature_id`\*, `confirm`\*, `global_vrf` | "Attach the OSPF feature to the VPN 10 feature." |
 
 #### Application-aware routing, flows and statistics (7)
 
@@ -304,6 +370,20 @@ The `solution` parameter selects `sdwan` (default), `sd-routing`, `nfvirtual` or
 | `list_policy_lists` | Policy lists (app, color, prefix, site, SLA, TLOC, VPN, ...) | `list_type` | "Show all site lists." |
 | `list_policy_definitions` | Policy definitions of one type | `definition_type`\* (`acl`, `approute`, `control`, `data`, `hubandspoke`, `mesh`, `qosmap`, `zonebasedfw`, ...) | "List the app-route policy definitions." |
 | `list_policies` | Centralized (vSmart), localized (vEdge) and security policies | `policy_type` (`vsmart`/`vedge`/`security`) | "Which centralized policy is active?" |
+
+#### BGP, OSPF and OSPFv3 feature templates – UX 1.0 (7)
+
+These tools only act on the routing template types `cisco_bgp`, `cisco_ospf`, `cisco_ospfv3` (IOS XE) and `bgp`, `ospf` (vEdge); other templates are refused. The write tools follow the same rules as the UX 2.0 write tools. Changing a template does not reconfigure devices until their device templates are pushed again, and vManage refuses to delete a template that a device template still uses.
+
+| Tool | Description | Key parameters | Example prompt |
+|---|---|---|---|
+| `list_routing_templates` | BGP, OSPF and OSPFv3 feature templates with attached device counts | `protocol` (`all` default/`bgp`/`ospf`/`ospfv3`) | "Which OSPF feature templates exist?" |
+| `get_routing_template` | One template's definition and the device templates using it | `template_id`\* | "Show the BGP-Hub template and where it is used." |
+| `get_routing_template_schema` | Field definition of a routing template type | `template_type`\*, `version` (default `15.0.0`) | "What fields does a Cisco OSPFv3 template have?" |
+| `create_routing_template` | **Write.** Create a routing feature template | `body`\* (`templateName`, `templateDescription`, `templateType`, `deviceType`, `templateMinVersion`, `templateDefinition`, `factoryDefault`), `confirm`\* | "Create a Cisco BGP template for AS 65001." |
+| `update_routing_template` | **Write.** Replace a routing template (type cannot change) | `template_id`\*, `body`\*, `confirm`\* | "Change the hello interval in the OSPF-Branch template." |
+| `delete_routing_template` | **Write.** Delete a routing template | `template_id`\*, `confirm`\* | "Delete the unused BGP-Lab template." |
+| `clone_routing_template` | **Write.** Copy a routing template under a new name; returns the new ID (not attached anywhere) | `template_id`\*, `name`\*, `description`, `confirm`\* | "Copy the BGP-Hub template as BGP-Hub-Lab." |
 
 #### Cloud OnRamp, administration and applications (8)
 
@@ -372,7 +452,7 @@ The server reads `.env` from the project (or deployed) root folder. You can also
 | `VMANAGE_PASSWORD` | Yes | | API password |
 | `VMANAGE_PORT` | No | `443` | HTTPS port |
 | `VMANAGE_USE_JWT` | No | `true` | `false` uses session-cookie auth (Manager releases before 20.18.1) |
-| `VMANAGE_ALLOW_WRITE` | No | `false` | `true` allows write operations through `call_api_operation` (each still needs `confirm: true`) |
+| `VMANAGE_ALLOW_WRITE` | No | `false` | `true` allows write operations through `call_api_operation` and the BGP / OSPF / routing template write tools (each call still needs `confirm: true`) |
 | `VMANAGE_TIMEOUT_MS` | No | `120000` | Timeout for real-time device queries (calls with a `deviceId`), which the Manager proxies to the device and can be slow. |
 | `VMANAGE_LIST_TIMEOUT_MS` | No | `60000` | Timeout for everything else: inventory, configuration, statistics and login. |
 | `VMANAGE_MAX_CONCURRENCY` | No | `8` | Maximum simultaneous requests sent to the Manager |
@@ -674,6 +754,19 @@ Total: 2 TLOCs, each advertised over OMP to both Controllers.
 | Hub-1, Hub-2 | Hub-CG |
 | Branch-1, Branch-2 | Branch-CG (added by tag rule) |
 
+**"Is OSPF running on Branch-1?"** → `get_ospf_interfaces` (`version: "ospfv2"` and `"ospfv3"`), `get_ospf_neighbors`
+
+| Version | Interface | VPN | Area | Network type | State |
+|---|---|---|---|---|---|
+| OSPFv2 | GigabitEthernet3 | 10 | 0 | broadcast | DR |
+| OSPFv3 (IPv6) | GigabitEthernet3 | 10 | 0 | point-to-point | point-to-point |
+
+OSPF runs in service VPN 10 with one OSPFv2 neighbor on GigabitEthernet3. `get_ospf_process` returns no rows on this device, so the answer is based on interfaces and neighbors.
+
+**"Show the BGP neighbors and routes of Branch-1, and the BGP features in its service profile."** → `get_bgp_neighbors`, `get_bgp_routes`, `get_bgp_config`
+
+2 BGP neighbors, 16 BGP routes; the service profile contains 2 BGP features.
+
 ### Natural-language prompts
 
 | Ask your assistant | Tools it uses |
@@ -688,7 +781,16 @@ Total: 2 TLOCs, each advertised over OMP to both Controllers.
 | "Which TLOCs does Branch-1 advertise, and are its BFD sessions up?" | `get_omp_tlocs`, `get_bfd_sessions` |
 | "Give me a fabric-wide control-plane summary: control connections and OMP peers per device." | `get_control_network_summary` |
 | "How many WAN edges are authorized on the validator?" | `get_validator_valid_devices` |
-| "Show OSPF neighbors on Branch-1." | `search_api_operations` → `call_api_operation` (`createOSPFNeighbors`) |
+| "Show OSPF neighbors on Branch-1." | `get_ospf_neighbors` |
+| "Which interfaces run OSPFv3 on Branch-1, and in which area?" | `get_ospf_interfaces` (`version: "ospfv3"`) |
+| "Show the external LSAs in the OSPF database of Hub-1." | `get_ospf_database` (`view: "external"`) |
+| "Which BGP neighbors does Hub-1 have in VPN 10, and which routes does it learn from 198.51.100.9?" | `get_bgp_neighbors` (`vpn_id`), `get_bgp_routes` (`nexthop`) |
+| "Which BGP and OSPF features does the *Branch-Service* profile contain, and which VPNs use them?" | `get_bgp_config`, `get_ospf_config` (with `vpn_feature_id`) |
+| "What fields do I need to create a BGP feature in a transport profile?" | `get_bgp_feature_schema` |
+| "Create a BGP feature for AS 65001 in *Branch-Service* and attach it to the VPN 10 feature." *(writes enabled)* | `create_bgp_feature`, `associate_bgp_feature` |
+| "Detach the OSPFv3 IPv6 feature from VPN 10 and delete it." *(writes enabled)* | `delete_ospf_feature` (with, then without `vpn_feature_id`) |
+| "Which BGP, OSPF and OSPFv3 feature templates exist, and which device templates use them?" | `list_routing_templates`, `get_routing_template` |
+| "Copy the *BGP-Hub* template as *BGP-Hub-Lab*." *(writes enabled)* | `clone_routing_template` |
 | "Which certificates expire soon, and are there active critical alarms?" | `get_certificate_summary`, `list_alarms` |
 | "List the centralized policies and the device templates in use." | `list_policies`, `list_device_templates` |
 
@@ -700,7 +802,101 @@ Received OMP routes in one VPN:
 { "name": "get_omp_routes", "arguments": { "device_id": "Branch-1", "direction": "received", "vpn_id": "10" } }
 ```
 
-Find an API operation, check its parameters, then call it:
+Routing protocol monitoring (BGP with filters, OSPFv3, OSPF database):
+
+```json
+{ "name": "get_bgp_neighbors", "arguments": { "device_id": "Hub-1", "vpn_id": "10", "as": "65010" } }
+```
+
+```json
+{ "name": "get_bgp_routes", "arguments": { "device_id": "Hub-1", "prefix": "10.1.0.0/16" } }
+```
+
+```json
+{ "name": "get_ospf_neighbors", "arguments": { "device_id": "Branch-1", "version": "ospfv3" } }
+```
+
+```json
+{ "name": "get_ospf_database", "arguments": { "device_id": "Hub-1", "view": "external" } }
+```
+
+UX 2.0 routing features (read):
+
+```json
+{ "name": "get_ospf_config", "arguments": { "profile_type": "service", "profile": "Branch-Service", "version": "ospfv3-ipv6" } }
+```
+
+```json
+{ "name": "get_bgp_config", "arguments": { "solution": "sd-routing", "profile_type": "transport", "profile": "WAN-Transport", "global_vrf": true } }
+```
+
+```json
+{ "name": "get_bgp_feature_schema", "arguments": { "profile_type": "service", "schema_type": "post" } }
+```
+
+UX 2.0 routing features (write; `VMANAGE_ALLOW_WRITE=true` and user approval). Create the feature, then attach it to a VPN feature with the returned ID. Take the `data` fields from `get_bgp_feature_schema` or from an existing feature in `get_bgp_config`:
+
+```json
+{
+  "name": "create_bgp_feature",
+  "arguments": {
+    "profile_type": "service",
+    "profile": "Branch-Service",
+    "body": { "name": "BGP-65001", "description": "Branch BGP", "data": { "asNum": { "optionType": "global", "value": 65001 } } },
+    "confirm": true
+  }
+}
+```
+
+```json
+{
+  "name": "associate_bgp_feature",
+  "arguments": { "profile_type": "service", "profile": "Branch-Service", "vpn_feature_id": "<lan-vpn-feature-id>", "feature_id": "<bgp-feature-id>", "confirm": true }
+}
+```
+
+```json
+{
+  "name": "delete_ospf_feature",
+  "arguments": { "profile_type": "service", "profile": "Branch-Service", "version": "ospfv3-ipv6", "vpn_feature_id": "<lan-vpn-feature-id>", "feature_id": "<ospfv3-feature-id>", "confirm": true }
+}
+```
+
+UX 1.0 routing feature templates:
+
+```json
+{ "name": "list_routing_templates", "arguments": { "protocol": "ospfv3" } }
+```
+
+```json
+{ "name": "get_routing_template_schema", "arguments": { "template_type": "cisco_ospf" } }
+```
+
+```json
+{ "name": "clone_routing_template", "arguments": { "template_id": "<template-id>", "name": "BGP-Hub-Lab", "description": "Lab copy", "confirm": true } }
+```
+
+```json
+{
+  "name": "create_routing_template",
+  "arguments": {
+    "body": {
+      "templateName": "BGP-65001",
+      "templateDescription": "Branch BGP",
+      "templateType": "cisco_bgp",
+      "deviceType": ["vedge-C8000V"],
+      "templateMinVersion": "15.0.0",
+      "templateDefinition": { },
+      "factoryDefault": false
+    },
+    "confirm": true
+  }
+}
+```
+
+Fill `templateDefinition` from `get_routing_template_schema`, or start from an existing template with `clone_routing_template` and change it with `update_routing_template`.
+
+Find an API operation, check its parameters, then call it (works for any operation, including those that also have a dedicated tool):
 
 ```json
 { "name": "search_api_operations", "arguments": { "query": "ospf neighbor" } }
@@ -766,6 +962,7 @@ Without `confirm: true`, or with writes disabled, the server refuses the call an
 ## Security
 
 - **Read-only by default.** POST, PUT and DELETE operations, and GETs documented as actions, are refused unless `VMANAGE_ALLOW_WRITE=true`. Each write call then also needs `confirm: true`, which assistants should set only after the user approves.
+- **Scoped write tools.** The BGP, OSPF and routing template write tools run through the same gate as `call_api_operation`: the request is resolved to an operation in the Manager's spec and validated before it is sent. They only reach their own protocol's features or templates; IDs must be UUIDs, and a template of another type (for example `cisco_vpn`) is refused. A template's type cannot be changed by an update. Profile and template changes are never deployed to devices by these tools.
 - **Blocked endpoints.** Operations that issue or expose tokens, passwords, OTPs, credentials or bootstrap configurations are never callable. Neither are file uploads or server-sent event streams.
 - **Validation.** Path and query parameters must exist in the spec, required ones must be present, and types and enums are checked. Path values are URL-encoded and `.`/`..` are rejected.
 - **Redaction and limits.** Values of keys such as `password`, `token`, `csrf` and `sessionId` are replaced with `***redacted***`. List responses are capped (default 200 rows, `max_items` to change) and output stays under 200,000 characters.
@@ -786,7 +983,16 @@ npm run test:ux2 -- <edge-hostname>   # UX 2.0, fabric-wide, paging and response
 npm run verify:api -- <edge> <controller> <validator>   # full read-only coverage run (≈25 min) → API_COVERAGE.md + api_coverage.csv
 ```
 
-`npm test` starts a simulated Manager on localhost (HTTPS with a throwaway certificate created by `openssl`) and drives the real MCP server against it. It covers tool listing, hostname resolution, `fields`/`filter`, the fabric-wide tools, `Retry-After` retries, re-login after an expired token, statistics paging, write protection, both timeouts, fail-fast when the Manager is unreachable, session-cookie login and logout. GitHub Actions runs it on every push and pull request ([.github/workflows/ci.yml](.github/workflows/ci.yml)).
+`npm test` starts a simulated Manager on localhost (HTTPS with a throwaway certificate created by `openssl`) and drives the real MCP server against it. It covers tool listing, hostname resolution, `fields`/`filter`, the fabric-wide tools, `Retry-After` retries, re-login after an expired token, statistics paging, write protection, both timeouts, fail-fast when the Manager is unreachable, session-cookie login and logout.
+
+For the routing tools it also checks:
+
+- **Spec coverage:** every BGP, OSPF and OSPFv3 read and write operation in the spec is reached by a dedicated tool, and those tools call nothing outside the spec.
+- **Requests:** each tool sends the right method, path, query and body, and BGP monitoring filters are passed through.
+- **Write protection:** writes are blocked by default and without `confirm`.
+- **Invalid input:** bad IDs, versions, scopes and template types are rejected before anything is sent.
+
+GitHub Actions runs it on every push and pull request ([.github/workflows/ci.yml](.github/workflows/ci.yml)).
 
 `verify:api` calls every read operation that needs no IDs or input (about 1,260 on 26.2) through the real MCP server. It records the result of each operation in [API_COVERAGE.md](API_COVERAGE.md) and [api_coverage.csv](api_coverage.csv). Although it only runs read operations, it sends a large number of calls, so run it against a lab Manager. The reports replace the test device IDs and the sampled group, profile and template names with placeholders such as `<edge>` and `<config-group>`, so they can be published.
 
@@ -798,7 +1004,7 @@ Results on Catalyst SD-WAN Manager 26.2.1:
 | Read operations live-tested | 1,261 |
 | Returned data | 1,113 |
 | Errors from Manager or lab (feature not configured, query body required, provider-only role) | 148 |
-| Dedicated tools verified live | 86 / 86 (83 by `verify:api`; the 3 fabric-wide tools by `test:ux2`) |
+| Dedicated tools verified live | 86 / 86 (83 by `verify:api`; the 3 fabric-wide tools by `test:ux2`). The 10 OSPF tools, 6 new BGP tools and 7 UX 1.0 routing template tools were added later and are covered by the offline tests. |
 
 To try individual tools interactively, use the MCP Inspector:
 
@@ -824,6 +1030,11 @@ npx @modelcontextprotocol/inspector node /absolute/path/to/build/index.js
 | `JWT authentication failed` on older Managers | Set `VMANAGE_USE_JWT=false`. |
 | `... is disabled: write operations need VMANAGE_ALLOW_WRITE=true` | Expected in read-only mode. Enable deliberately, then `npm run deploy` and restart the client. |
 | `Unknown query parameter(s)` / `Missing required ...` | The call does not match the spec. Run `describe_api_operation` for the exact parameter names. |
+| `get_ospf_process` returns no rows although OSPF is configured | Some IOS XE releases report nothing there for OSPF in a service VPN. Use `get_ospf_interfaces` or `get_ospf_neighbors`. |
+| BGP or OSPF calls on one edge take 30–60 s | Real-time queries are answered by the device itself; a busy edge (high CPU) answers slowly. Narrow with `vpn_id`, `prefix` or `peer_addr`, or raise `VMANAGE_TIMEOUT_MS`. |
+| `Template ... is a cisco_vpn template, not a BGP, OSPF or OSPFv3 template` | The routing template tools only act on `cisco_bgp`, `cisco_ospf`, `cisco_ospfv3`, `bgp` and `ospf` templates. Use `list_routing_templates` to find their IDs. |
+| `global_vrf applies only to sd-routing transport profiles` / `... must be a feature ID (UUID)` | Check the scope arguments: `global_vrf` needs `solution: "sd-routing"` and `profile_type: "transport"`; feature, VPN and template IDs are UUIDs (from `get_*_config`, `get_feature_profile` or `list_routing_templates`). |
+| `vManage API error 400` on a create or update | vManage rejected the body. Build it from `get_bgp_feature_schema` / `get_routing_template_schema`, or copy `name`, `description` and `data` from an existing feature returned by `get_bgp_config` / `get_ospf_config`. |
 | `vManage API error 400 ... Empty query` | Statistics endpoints need a query body even when the spec marks it optional. See the statistics example above. |
 | `truncated` in a response | The response was larger than the limit. Continue with `offset` set to `truncated.nextOffset`, summarize with `count_by`, or filter (for example `vpn_id`, `site_id`, `filter`) or lower `max_items`. For statistics `.../page` operations, `all_pages: true` follows the scroll pages up to `max_items` rows. |
 | Node warns about `NODE_TLS_REJECT_UNAUTHORIZED` | Comes from your shell environment, not this server. Remove the variable if you don't need it. |
@@ -837,7 +1048,7 @@ src/
   index.ts                  # entry point: loads .env, starts stdio server
   server.ts                 # MCP tool definitions and handlers
   services/vmanageApi.ts    # HTTPS client (undici), JWT/session auth, retries, caching, generic request()
-  services/apiCatalog.ts    # OpenAPI-driven catalog: search, describe, validated calls, paging, access control
+  services/apiCatalog.ts    # OpenAPI-driven catalog: search, describe, validated calls, path-to-operation matching, paging, access control
   utils/config.ts           # environment configuration
 scripts/
   deploy.mjs                # deploy runtime copy outside cloud-synced folders
