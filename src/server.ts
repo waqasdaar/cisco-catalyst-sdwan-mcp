@@ -247,6 +247,8 @@ const NO_ROW_OPTIONS = new Set([
   'associate_group_devices',
   'update_group_variables',
   'deploy_group',
+  'create_hierarchy_cybervision',
+  'delete_hierarchy_cybervision',
   'create_cli_addon',
   'update_cli_addon',
   'delete_cli_addon',
@@ -298,6 +300,11 @@ const WRITE_CONFIRM = {
 };
 const WRITE_NOTE = 'Changes configuration: needs VMANAGE_ALLOW_WRITE=true on the server and confirm: true after explicit user approval.';
 const WRITE_TOOL = /^(create|update|delete|associate|clone|deploy)_/;
+
+type HierarchyNode = Record<string, unknown> & { name?: string; hierarchyPath?: string; deviceCount?: number; data?: Record<string, unknown> };
+const hierarchyNodeId = (n: HierarchyNode) => String(n.id ?? n.uuid ?? '');
+const hierarchyLabel = (n: HierarchyNode) => String(n.data?.label ?? '').toUpperCase();
+const hierarchySiteId = (n: HierarchyNode) => (n.data?.hierarchyId as Record<string, unknown> | undefined)?.siteId;
 const GROUP_KINDS: Record<string, 'config-group' | 'policy-group' | 'topology-group'> = {
   config: 'config-group',
   policy: 'policy-group',
@@ -1990,8 +1997,54 @@ export class CatalystSdwanMCPServer {
       },
       {
         name: 'get_network_hierarchy',
-        description: 'Get the UX 2.0 network hierarchy (global, regions, areas and sites) used by configuration groups and policies.',
-        inputSchema: { type: 'object', properties: {} },
+        description:
+          'Get the UX 2.0 network hierarchy (global, regions, areas and sites) used by configuration groups and policies. With node, returns that node with its parent and children; label lists only one level.',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            node: { type: 'string', description: 'Node name, hierarchy path (e.g. Global/USA-NewYork), site ID or node ID' },
+            label: { type: 'string', enum: ['global', 'region', 'area', 'site'], description: 'Only nodes of this level' },
+          },
+        },
+      },
+      {
+        name: 'get_hierarchy_cybervision',
+        description:
+          'Get the Cisco Cyber Vision centers configured as network settings of the network hierarchy (the Global node by default; vManage 26.2 allows network settings only there), or the ID of one center by name.',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            node: { type: 'string', description: 'Node name, hierarchy path, site ID or node ID (default: Global)' },
+            center_name: { type: 'string', description: 'Return only the ID of the Cyber Vision center with this name' },
+          },
+        },
+      },
+      {
+        name: 'create_hierarchy_cybervision',
+        description: `Add a Cisco Cyber Vision center to the network settings of the network hierarchy (Global node by default). ${WRITE_NOTE}`,
+        inputSchema: {
+          type: 'object',
+          properties: {
+            node: { type: 'string', description: 'Node name, hierarchy path, site ID or node ID (default: Global)' },
+            body: { type: 'object', description: '{ data: { cvCenterInstances: [{ cvName: { value }, cvAddress: { value }, cvKey: { value }, cvVPNInterface: { value } }] } }' },
+            ...WRITE_CONFIRM,
+          },
+          required: ['body', 'confirm'],
+        },
+      },
+      {
+        name: 'delete_hierarchy_cybervision',
+        description: `Remove a Cisco Cyber Vision center from the network settings of the network hierarchy (Global node by default). ${WRITE_NOTE}`,
+        inputSchema: {
+          type: 'object',
+          properties: {
+            node: { type: 'string', description: 'Node name, hierarchy path, site ID or node ID (default: Global)' },
+            center_id: { type: 'string', description: 'Cyber Vision center ID' },
+            center_name: { type: 'string', description: 'Cyber Vision center name (looked up when center_id is not given)' },
+            ...WRITE_CONFIRM,
+          },
+          required: ['confirm'],
+        },
       },
 
       // === Templates ===
@@ -2480,6 +2533,21 @@ export class CatalystSdwanMCPServer {
       if (typeof args.config !== 'string' || !args.config.trim()) throw new Error('config must be non-empty configuration text');
       if (args.config.length > CLI_CONFIG_MAX) throw new Error(`config must be at most ${CLI_CONFIG_MAX} characters`);
       return args.config;
+    };
+    const cybervisionBase = async () => {
+      let node: HierarchyNode | undefined;
+      if (args.node === undefined) {
+        node = (await this.hierarchyNodes()).find((n) => hierarchyLabel(n) === 'GLOBAL');
+        if (!node) throw new Error('The network hierarchy has no Global node');
+      } else {
+        node = await this.findHierarchyNode(args.node);
+      }
+      return `/dataservice/v1/network-hierarchy/${encodeURIComponent(hierarchyNodeId(node))}/network-settings/cybervisioncenters`;
+    };
+    const cybervisionName = () => {
+      const value = String(args.center_name ?? '').trim();
+      if (!value || value.length > 128) throw new Error('center_name must be 1-128 characters');
+      return value;
     };
     const groupTarget = async (allowed: string[]) => {
       const type = pick('group_type', Object.fromEntries(allowed.map((k) => [k, k])), '');
@@ -3370,8 +3438,47 @@ export class CatalystSdwanMCPServer {
         const withDetails = await this.catalog.hasQueryParam(`/v1/feature-profile/${solution}/${type}/{id}`, 'details');
         return this.apiService.get(`${listPath}/${encodeURIComponent(profileId)}`, withDetails ? { details: 'true' } : undefined);
       }
-      case 'get_network_hierarchy':
-        return this.apiService.get('/dataservice/v1/network-hierarchy');
+      case 'get_network_hierarchy': {
+        const nodes = await this.hierarchyNodes();
+        if (args.label !== undefined) {
+          const label = pick('label', { global: 'GLOBAL', region: 'REGION', area: 'AREA', site: 'SITE' }, '');
+          return nodes.filter((n) => hierarchyLabel(n) === label);
+        }
+        if (args.node === undefined) return nodes;
+        const node = await this.findHierarchyNode(args.node);
+        const id = hierarchyNodeId(node);
+        const detail = await this.apiService.get<Record<string, unknown>>(`/dataservice/v1/network-hierarchy/${encodeURIComponent(id)}`);
+        const parent = nodes.find((n) => hierarchyNodeId(n) === node.data?.parentUuid);
+        const children = nodes.filter((n) => n.data?.parentUuid === id);
+        return {
+          ...detail,
+          id,
+          hierarchyPath: node.hierarchyPath,
+          deviceCount: node.deviceCount,
+          parent: parent ? { id: hierarchyNodeId(parent), name: parent.name, label: hierarchyLabel(parent) } : null,
+          children: children.map((c) => ({ id: hierarchyNodeId(c), name: c.name, label: hierarchyLabel(c), deviceCount: c.deviceCount })),
+        };
+      }
+      case 'get_hierarchy_cybervision': {
+        const base = await cybervisionBase();
+        if (args.center_name !== undefined) return this.apiService.get(`${base}/id`, { cvName: cybervisionName() });
+        return this.apiService.get(base);
+      }
+      case 'create_hierarchy_cybervision':
+        return routingWrite('POST', await cybervisionBase(), writeBody());
+      case 'delete_hierarchy_cybervision': {
+        const base = await cybervisionBase();
+        let centerId = args.center_id === undefined ? undefined : String(args.center_id);
+        if (centerId === undefined) {
+          if (args.center_name === undefined) throw new Error('Give center_id or center_name');
+          const found = await this.apiService.get<unknown>(`${base}/id`, { cvName: cybervisionName() });
+          const value = typeof found === 'string' ? found : (found as Record<string, unknown> | null)?.id ?? (found as Record<string, unknown> | null)?.cvId;
+          if (value === undefined || value === null || value === '') throw new Error(`No Cyber Vision center named "${args.center_name}" on this node`);
+          centerId = String(value);
+        }
+        if (!/^[\w.-]{1,128}$/.test(centerId)) throw new Error('center_id must be a Cyber Vision center ID');
+        return routingWrite('DELETE', `${base}/${encodeURIComponent(centerId)}`);
+      }
 
       case 'get_fabric_health': {
         if (args.detail !== undefined && !['auto', 'all', 'problems'].includes(String(args.detail))) {
@@ -3729,6 +3836,32 @@ export class CatalystSdwanMCPServer {
       throw new Error(`No ${kind} "${value}". Available: ${groups.map((g) => g.name).join(', ') || 'none'}`);
     }
     return match;
+  }
+
+  private async hierarchyNodes(): Promise<HierarchyNode[]> {
+    const body = await this.apiService.get<unknown>('/dataservice/v1/network-hierarchy', undefined, GROUP_LIST_TTL_MS);
+    const rows = dataOf(body);
+    return Array.isArray(rows) ? (rows as HierarchyNode[]) : [];
+  }
+
+  /** Finds a hierarchy node by ID, exact name, hierarchy path or site ID. */
+  private async findHierarchyNode(ref: unknown): Promise<HierarchyNode> {
+    const value = String(ref ?? '').trim();
+    if (!value) throw new Error('node is required (name, hierarchy path, site ID or node ID)');
+    const nodes = await this.hierarchyNodes();
+    const lower = value.toLowerCase();
+    const byId = nodes.find((n) => hierarchyNodeId(n) === value);
+    if (byId) return byId;
+    const byPath = nodes.find((n) => String(n.hierarchyPath ?? '').toLowerCase() === lower);
+    if (byPath) return byPath;
+    const bySite = /^\d+$/.test(value) ? nodes.filter((n) => String(hierarchySiteId(n)) === value) : [];
+    const byName = nodes.filter((n) => String(n.name ?? '').toLowerCase() === lower);
+    const matches = bySite.length ? bySite : byName;
+    if (matches.length === 1) return matches[0];
+    if (matches.length > 1) {
+      throw new Error(`"${value}" matches several nodes: ${matches.map((n) => n.hierarchyPath ?? n.name).join(', ')}. Use the hierarchy path or node ID.`);
+    }
+    throw new Error(`No network hierarchy node "${value}". Available: ${nodes.map((n) => n.hierarchyPath ?? n.name).join(', ') || 'none'}`);
   }
 
   private async featureProfileTypesFor(solution: string): Promise<string[]> {

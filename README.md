@@ -6,8 +6,8 @@ A [Model Context Protocol (MCP)](https://modelcontextprotocol.io/) server for **
 
 All requests go through vManage. The server never connects to routers directly.
 
-- **157 MCP tools** (118 listed on a read-only server, 157 with writes enabled): 153 purpose-built tools, including fabric-wide health, BFD and TLOC checks in a single call, BGP, OSPF, OSPFv3, EIGRP, multicast (IGMP, PIM, MFIB) and IPv6 monitoring and configuration (UX 2.0 features and UX 1.0 templates/policy objects), CLI add-on configuration (for example RIP/RIPng), UX 2.0 configuration, policy and topology groups (read, preview, create, change, associate devices, set variables, deploy) and feature profiles, plus 4 general tools that reach **every operation in the vManage OpenAPI spec** (4,128 operations on 26.2).
-- **Lean tool list.** Write tools are listed only when `VMANAGE_ALLOW_WRITE=true`, so a read-only server offers 118 tools (under VS Code's 128-tool limit) in a ~103 KB tool list, about a third smaller than before. Assistants answer faster and spend fewer tokens on every request.
+- **160 MCP tools** (119 listed on a read-only server, 160 with writes enabled): 156 purpose-built tools, including fabric-wide health, BFD and TLOC checks in a single call, BGP, OSPF, OSPFv3, EIGRP, multicast (IGMP, PIM, MFIB) and IPv6 monitoring and configuration (UX 2.0 features and UX 1.0 templates/policy objects), CLI add-on configuration (for example RIP/RIPng), UX 2.0 configuration, policy and topology groups (read, preview, create, change, associate devices, set variables, deploy), feature profiles and the network hierarchy (regions, areas, sites and their Cyber Vision network settings), plus 4 general tools that reach **every operation in the vManage OpenAPI spec** (4,128 operations on 26.2).
+- **Lean tool list.** Write tools are listed only when `VMANAGE_ALLOW_WRITE=true`, so a read-only server offers 119 tools (under VS Code's 128-tool limit) in a tool list under 110 KB, about a third smaller than before. Assistants answer faster and spend fewer tokens on every request.
 - **Read-only by default.** Operations that change configuration or state are disabled unless you enable them, and each call then needs explicit confirmation.
 - **BGP, OSPF, OSPFv3 and EIGRP end to end.** Real-time neighbors, routes, interfaces, topology and LSDB; UX 2.0 feature reads and writes for SD-WAN and SD-Routing profiles; UX 1.0 feature templates (list, read, schema, create, update, delete, clone). Every BGP, OSPF and EIGRP operation in the 26.2 spec has a dedicated tool.
 - **Multicast end to end.** IGMP, PIM, overlay multicast (topology, RPF, replicators, tunnels) and MFIB monitoring; UX 2.0 multicast features (read, schema, write); UX 1.0 IGMP, PIM and multicast templates. Every multicast operation in the 26.2 spec has a dedicated tool.
@@ -90,6 +90,7 @@ Ask questions about your SD-WAN fabric in plain language and get answers built f
 | **Application-aware routing** | "Show tunnel loss/latency/jitter and SLA classes." | `get_app_route_statistics`, `get_app_route_sla_class` |
 | **Configuration audit (UX 2.0)** | "Which configuration group configures the branch sites? What would a deploy change?" | `list_config_groups`, `get_config_group`, `preview_config_group_device_config` |
 | **Configuration, policy and topology group changes (UX 2.0, opt-in)** | "Add Branch-3 to Branch-CG, set its variables, preview and deploy." | `associate_group_devices`, `update_group_variables`, `preview_config_group_device_config`, `deploy_group` |
+| **Network hierarchy (UX 2.0)** | "Show the regions, areas and sites. Which devices are in site 105? Which Cyber Vision centers are configured?" | `get_network_hierarchy`, `get_hierarchy_cybervision`, `create_hierarchy_cybervision` (opt-in) |
 | **Templates and policies (UX 1.0)** | "Which device templates and centralized policies are in use? Which BGP, OSPF, EIGRP or PIM templates exist?" | `list_device_templates`, `get_attached_devices`, `list_policies`, `list_routing_templates` |
 | **Operations** | "Any critical alarms? Certificates expiring? Is the Manager cluster healthy?" | `list_alarms`, `get_certificate_summary`, `get_cluster_status` |
 | **Anything else in the API** | "Show IPsec/IKE sessions", "audit log for today" | `search_api_operations` → `describe_api_operation` → `call_api_operation` |
@@ -369,7 +370,7 @@ The eight tools cover all 23 EIGRP operations in the 26.2 spec: the 3 real-time 
 | `get_app_log_flow_count` | Number of logged flows | `device_id`\* | "How many flows are being logged on Branch-2?" |
 | `get_sdwan_stats` | SD-WAN statistics: ACL drops, data policy, device metrics | `device_id`\* | "Any data-policy drops on Branch-2?" |
 
-#### UX 2.0 configuration (21)
+#### UX 2.0 configuration (24)
 
 The `solution` parameter selects `sdwan` (default), `sd-routing`, `nfvirtual` or `mobility`. Groups and profiles can be passed by ID or exact name, and devices by hostname, system IP, UUID or chassis number. The dedicated tools cover all 40 configuration-group, policy-group and topology-group operations of the 26.2 spec.
 
@@ -386,7 +387,10 @@ The `solution` parameter selects `sdwan` (default), `sd-routing`, `nfvirtual` or
 | `get_topology_group` | One topology group with its profiles | `topology_group`\* | "Show topology group Hub-Spoke." |
 | `list_feature_profiles` | Feature profiles per type (`system`, `transport`, `service`, `cli`, `policy-object`, `application-priority`, ...) | `solution`, `profile_type` | "List all transport profiles." |
 | `get_feature_profile` | One profile with its features (parcels) | `profile_type`\*, `profile`\*, `solution` | "Show the features in the Hub-Transport profile." |
-| `get_network_hierarchy` | Global, regions, areas and sites | – | "Show the network hierarchy." |
+| `get_network_hierarchy` | Global, regions, areas and sites. With `node`: one node's details, hierarchy path, device count, parent and children. With `label`: only nodes of that level | `node` (name, hierarchy path such as `Global/EMEA/Paris`, site ID or node ID), `label` (`global`/`region`/`area`/`site`) | "Which sites are under the EMEA region?" |
+| `get_hierarchy_cybervision` | Cisco Cyber Vision centers configured in the network settings of the hierarchy, or one center's ID by name | `node` (default Global), `center_name` | "Which Cyber Vision centers are configured?" |
+| `create_hierarchy_cybervision` | **Write.** Add or edit Cyber Vision centers in the network settings | `node` (default Global), `body`\* (`{ data: { cvCenterInstances: [...] } }`), `confirm`\* | "Add Cyber Vision center CV-1 at 10.10.10.10." |
+| `delete_hierarchy_cybervision` | **Write.** Remove a Cyber Vision center (by ID, or by name, which is looked up) | `node` (default Global), `center_id` or `center_name`, `confirm`\* | "Remove Cyber Vision center CV-1." |
 | `get_group_variables` | Device variables of a configuration or policy group: values (all devices or one, optionally with suggestions), the variables schema, or a vManage-side fetch | `group_type`\* (`config`/`policy`), `group`\*, `device`, `schema`, `suggestions`, `fetch_body` | "Which variables does EMEA-Policy-Group need per device?" |
 | `get_group_rules` | Automatic device-association rules of a configuration or policy group; bulk rule-association preview of a topology group | `group_type`\* (`config`/`policy`/`topology`), `group`\* | "Which rules add devices to Branch-CG?" |
 | `preview_group_device_config` | **Read-only** preview for a policy or topology group: configuration it would push vs. running config. Nothing is deployed. | `group_type`\* (`policy`/`topology`), `group`\*, `device`\*, `view` (`diff` default/`new`/`existing`/`both`) | "What would EMEA-Policy-Group change on EMEA-Paris?" |
@@ -396,6 +400,8 @@ The `solution` parameter selects `sdwan` (default), `sd-routing`, `nfvirtual` or
 | `associate_group_devices` | **Write.** Add, replace or remove the devices of a configuration or policy group | `group_type`\* (`config`/`policy`), `group`\*, `devices`\*, `mode` (`add` default/`replace`/`remove`), `confirm`\* | "Add Branch-3 to Branch-CG." |
 | `update_group_variables` | **Write.** Set device variable values of a configuration or policy group | `group_type`\* (`config`/`policy`), `group`\*, `body`\*, `confirm`\* | "Set the site ID variable of Branch-3 to 300." |
 | `deploy_group` | **Write. Pushes configuration to devices.** Deploy a configuration, policy or topology group to the given devices; returns the vManage task | `group_type`\*, `group`\*, `devices`\*, `confirm`\* | "Deploy Branch-CG to Branch-3." |
+
+**Network hierarchy.** The hierarchy tools cover all 4 network-hierarchy operations in the 26.2 spec (the Cyber Vision network settings: 2 reads, 1 create/edit, 1 delete) plus the hierarchy list and node detail (`GET /v1/network-hierarchy[/{id}]`), which vManage serves but does not document. Nodes are found by node ID, hierarchy path, site ID or name; a name used by more than one node is refused with the matching paths. vManage 26.2 accepts network settings only on the **Global** node (other nodes return `NWHAR0005`), so the Cyber Vision tools default to it. The 26.2 API has no operation to create, rename, move or delete regions, areas or sites, so the server cannot change the hierarchy itself; do that in the Manager GUI (**Configuration → Network Hierarchy**).
 
 Recommended change workflow: `get_config_group` / `get_group_variables` → change with `update_group`, `associate_group_devices` or `update_group_variables` → `preview_config_group_device_config` or `preview_group_device_config` for each device → `deploy_group` after you approve the diff.
 
@@ -902,6 +908,8 @@ OSPF runs in service VPN 10 with one OSPFv2 neighbor on GigabitEthernet3. `get_o
 | "What would policy group *EMEA-Policy-Group* change on *EMEA-Paris*?" | `preview_group_device_config` |
 | "Add *Branch-3* to *Branch-CG*, set its variables, show me the diff, then deploy." *(writes enabled)* | `associate_group_devices`, `update_group_variables`, `preview_config_group_device_config`, `deploy_group` |
 | "Show the features in the *Branch-Transport* transport profile." | `get_feature_profile` |
+| "Which sites are in the network hierarchy, and what is under the *EMEA* region?" | `get_network_hierarchy` (`label: "site"`, then `node: "EMEA"`) |
+| "Which Cyber Vision centers are configured, and add *CV-1* at 10.10.10.10." *(writes enabled for the add)* | `get_hierarchy_cybervision`, `create_hierarchy_cybervision` |
 | "Which devices are unreachable, and what do their control connection histories show?" | `list_devices`, `get_control_connections_history` |
 | "Show the OMP routes that Branch-1 receives in VPN 10." | `get_omp_routes` (`vpn_id: "10"`) |
 | "Which TLOCs does Branch-1 advertise, and are its BFD sessions up?" | `get_omp_tlocs`, `get_bfd_sessions` |
@@ -939,6 +947,30 @@ Received OMP routes in one VPN:
 
 ```json
 { "name": "get_omp_routes", "arguments": { "device_id": "Branch-1", "direction": "received", "vpn_id": "10" } }
+```
+
+Network hierarchy: all sites, one node by name, path or site ID, and Cyber Vision centers (Global node by default):
+
+```json
+{ "name": "get_network_hierarchy", "arguments": { "label": "site", "fields": ["name", "hierarchyPath", "siteId"] } }
+```
+
+```json
+{ "name": "get_network_hierarchy", "arguments": { "node": "Global/EMEA/France" } }
+```
+
+```json
+{
+  "name": "create_hierarchy_cybervision",
+  "arguments": {
+    "body": { "data": { "cvCenterInstances": [{ "cvName": { "value": "CV-1" }, "cvAddress": { "value": "10.10.10.10" }, "cvKey": { "value": "<cyber-vision-token>" }, "cvVPNInterface": { "value": 1 } }] } },
+    "confirm": true
+  }
+}
+```
+
+```json
+{ "name": "delete_hierarchy_cybervision", "arguments": { "center_name": "CV-1", "confirm": true } }
 ```
 
 Routing protocol monitoring (BGP with filters, OSPFv3, OSPF database):
@@ -1223,7 +1255,7 @@ Four test suites check the server. Only `npm test` runs without a Manager; the o
 
 | Command | Needs a Manager | What it checks | Runs in CI |
 |---|---|---|---|
-| `npm test` | No (simulated vManage) | 273 checks: every tool family, spec coverage of all routing/multicast/IPv6/CLI and configuration/policy/topology group operations, write protection, input validation, resilience, multi-tenancy, tool-list size | Yes: Node.js 20, 22 and 24 |
+| `npm test` | No (simulated vManage) | 293 checks: every tool family, spec coverage of all routing/multicast/IPv6/CLI, configuration/policy/topology group and network-hierarchy operations, write protection, input validation, resilience, multi-tenancy, tool-list size | Yes: Node.js 20, 22 and 24 |
 | `npm run test:control-plane -- <edge> <controller> <validator>` | Yes | 39 control-plane, OMP and Validator calls plus 3 input-validation checks | No |
 | `npm run test:ux2 -- <edge-hostname>` | Yes | UX 2.0, fabric-wide, paging and response-shaping tools; hostname resolution, parallel calls, error handling, with timings | No |
 | `npm run verify:api -- <edge> <controller> <validator>` | Yes (≈25 min) | Every read operation that needs no IDs (≈1,260 on 26.2) plus every dedicated read tool; writes [API_COVERAGE.md](API_COVERAGE.md) and [api_coverage.csv](api_coverage.csv) | No |
@@ -1243,7 +1275,7 @@ npm run verify:api -- <edge> <controller> <validator>
 
 | Area | What is checked |
 |---|---|
-| Tool list | 118 tools on a read-only server with no write tool listed, 157 with `VMANAGE_ALLOW_WRITE=true`; the read-only tool list stays under 110 KB |
+| Tool list | 119 tools on a read-only server with no write tool listed, 160 with `VMANAGE_ALLOW_WRITE=true`; the read-only tool list stays under 110 KB |
 | Client and resilience | Hostname resolution, `Retry-After` retries on 503, re-login after an expired token, session-cookie login and logout, fail-fast when the Manager is unreachable, real-time vs. list timeouts named in the error |
 | Response shaping | `fields`, `filter`, `count_by`, `offset`/`limit` paging, truncation with a `nextOffset` cursor on a 3,000-device inventory |
 | Fabric-wide tools | Health table and Manager deployment detection, BFD and TLOC sweeps: concurrency cap, time budget with resume, overload breaker, synced data re-checked live |
@@ -1255,7 +1287,7 @@ npm run verify:api -- <edge> <controller> <validator>
 
 #### Coverage by area
 
-Every one of the 157 tools belongs to one area below. **Offline** is what `npm test` checks against the simulated Manager. **Live** is the suite that runs the tools against a real 26.2.1 Manager. Tools marked "run live during development" were added after the last `verify:api` report and were checked by hand against the lab.
+Every one of the 160 tools belongs to one area below. **Offline** is what `npm test` checks against the simulated Manager. **Live** is the suite that runs the tools against a real 26.2.1 Manager. Tools marked "run live during development" were added after the last `verify:api` report and were checked by hand against the lab.
 
 | Area | UX | Tools | vManage APIs the tools call | Offline (`npm test`) | Live |
 |---|---|---:|---|---|---|
@@ -1271,16 +1303,16 @@ Every one of the 157 tools belongs to one area below. **Offline** is what `npm t
 | Multicast: IGMP, PIM, MFIB | 2.0 | 10 | `/device/{igmp,pim,multicast}/*`, `/device/ip/mfib*`, `/v1/feature-profile/sdwan/service/.../routing/multicast` | Full spec sweep | Run live during development |
 | IPv6 | 1.0 and 2.0 | 11 | `/device/ipv6/*`, `/device/ip/ipRoutes`, `/template/policy/{list,definition}/*v6*`, `/v1/feature-profile/sdwan/transport/.../ipv6-tracker*` | Full spec sweep | Run live during development |
 | **Configuration groups, policy groups, topology groups** | 2.0 | 18 | `/v1/config-group`, `/v1/policy-group`, `/v1/topology-group`, with `/{id}`, `/device/associate`, `/device/variables[/schema]`, `/device/deploy`, `/rules[/preview]` and `/device/{id}/preview` (read-only render) | Full spec sweep (40 operations), device-name to UUID resolution, write protection, cache invalidation after a write | `test:ux2` (9 original tools); new read tools run live during development |
-| **Feature profiles and network hierarchy** | 2.0 | 3 | `/v1/feature-profile/{solution}/{type}[/{id}]`, `/v1/network-hierarchy` | Profile-name lookup (shared with the routing tools) | `test:ux2` (all 3) |
+| **Feature profiles and network hierarchy** | 2.0 | 6 | `/v1/feature-profile/{solution}/{type}[/{id}]`, `/v1/network-hierarchy[/{id}]`, `/v1/network-hierarchy/{id}/network-settings/cybervisioncenters[/id, /{cvId}]` | Full spec sweep of the network hierarchy (4 operations), node lookup by ID, path, site ID and name (ambiguous names refused), `label` filter, Global default, profile-name lookup | `test:ux2` (3 original tools); hierarchy tools run live during development |
 | UX 2.0 CLI add-ons | 2.0 | 5 | `/v1/feature-profile/{sdwan,sd-routing}/cli/{id}/config` | Full spec sweep | Run live during development |
 | **Device and feature templates** | 1.0 | 4 | `/template/device`, `/template/feature`, `/template/device/config/attached/{id}`, `/template/{device,feature}/object/{id}` | List timeout | `verify:api` |
 | **Policies, policy lists, policy definitions** | 1.0 | 3 | `/template/policy/{vsmart,vedge,security}`, `/template/policy/list/{type}`, `/template/policy/definition/{type}` | – | `verify:api` |
 | Routing and multicast feature templates | 1.0 | 7 | `/template/feature` (list, object, device templates, type definition, create, update, delete, clone) | Requests, template-type guard | Run live during development |
 | CLI add-on templates | 1.0 | 5 | `/template/feature` (list, object, device templates, create, update, delete) | Requests, template-type guard, `contains` search | Run live during development |
 | Cloud OnRamp and administration | – | 8 | `/template/cloudx/*`, `/alarms`, `/certificate/stats/summary`, `/clusterManagement/health/status`, `/template/policy/customapp` | – | `verify:api` |
-| **Total** | | **157** | | | |
+| **Total** | | **160** | | | |
 
-Every write tool (39) is additionally checked offline for refusal while `VMANAGE_ALLOW_WRITE=false` and without `confirm: true`, and for the exact method, path and body when allowed. Live, write tools were checked only up to the write gate (writes disabled on the lab).
+Every write tool (41) is additionally checked offline for refusal while `VMANAGE_ALLOW_WRITE=false` and without `confirm: true`, and for the exact method, path and body when allowed. Live, write tools were checked only up to the write gate (writes disabled on the lab).
 
 #### Spec sweeps
 
@@ -1298,7 +1330,8 @@ OSPF and OSPFv3 share the same 10 tools; the `version` argument selects the prot
 | IPv6 (without OSPFv3) | 15 | 28 | 4 | 36 | 83 | 11 |
 | UX 2.0 CLI add-ons | – | 4 | – | 6 | 10 | 5 |
 | UX 2.0 configuration, policy and topology groups | – | 15 | 5 | 20 | 40 | 18 |
-| **Total** | **45** | **136** | **9** | **191** | **381** | **71** |
+| UX 2.0 network hierarchy (Cyber Vision network settings) | – | 2 | – | 2 | 4 | 3 |
+| **Total** | **45** | **138** | **9** | **193** | **385** | **74** |
 
 - **Monitoring reads** are real-time device queries (`/device/...`).
 - **Configuration reads** are UX 2.0 feature reads (SD-WAN and SD-Routing service/transport profiles, per VPN/VRF or interface) and UX 1.0 policy-object reads. They include the feature-schema endpoints: 2 for BGP, 1 for multicast and 2 for IPv6 trackers. IPv6 splits into 14 UX 1.0 policy-object reads and 14 UX 2.0 tracker reads.
@@ -1326,7 +1359,7 @@ Results on Catalyst SD-WAN Manager 26.2.1:
 | Operations in the spec | 4,128 (2,392 read / 1,672 write / 64 blocked) |
 | Read operations live-tested (`verify:api`) | 1,261: 1,113 returned data, 148 errors from the Manager or lab (feature not configured, query body required, provider-only role) |
 | Dedicated tools in the last `verify:api` report | 86 / 86 verified live (83 by `verify:api`, the 3 fabric-wide tools by `test:ux2`) |
-| Tools added since (BGP, OSPF/OSPFv3, EIGRP, multicast, IPv6, routing templates, CLI add-ons, UX 2.0 group reads and writes) | Every read tool was run live during development; write tools were verified live only up to the write gate (writes disabled), and their requests offline. Run `verify:api` again to refresh the report. |
+| Tools added since (BGP, OSPF/OSPFv3, EIGRP, multicast, IPv6, routing templates, CLI add-ons, UX 2.0 group reads and writes, network hierarchy) | Every read tool was run live during development; write tools were verified live only up to the write gate (writes disabled), and their requests offline. Run `verify:api` again to refresh the report. |
 | `test:control-plane` | 42 / 42 passed (39 live calls + 3 input-validation checks) |
 | `test:ux2` | 53 / 53 passed: UX 2.0 groups, profiles and preview, 6 parallel real-time calls, synced data, response shaping, fabric-wide sweeps cross-checked against per-device tools, error handling |
 
@@ -1357,6 +1390,9 @@ Set `VMANAGE_ALLOW_WRITE=true` in the environment the Inspector passes to the se
 | `... is disabled: write operations need VMANAGE_ALLOW_WRITE=true` | Expected in read-only mode. Enable deliberately, then `npm run deploy` and restart the client. |
 | `create_*` / `update_*` / `delete_*` / `deploy_group` tools are missing | They are listed only when `VMANAGE_ALLOW_WRITE=true`. Set it, then restart the MCP server. |
 | `Configuration generation failed ... Unable to find resource` from a group preview | vManage could not render the group for that device, usually because the device is not associated with the group or is outside the topology group's rules. Check `get_group_rules` and the group's associated devices. |
+| `NWHAR0005 ... Only Global network hierarchy node is allowed to configure network settings` | vManage 26.2 keeps network settings (Cyber Vision centers) only on the Global node. Omit `node`, or pass `node: "Global"`. |
+| `"<name>" matches several nodes: ... Use the hierarchy path or node ID.` | Two nodes share that name. Pass the hierarchy path (for example `Global/EMEA/Lab`), the site ID or the node ID from `get_network_hierarchy`. |
+| No tool to create, rename or delete a region, area or site | The 26.2 API has no such operation (the server refuses operations that are not in the spec). Change the hierarchy in the Manager GUI. |
 | `Invalid data type IPv6Fib` from `get_ipv6_status` | IOS XE edges do not answer the `fib` view. Use `view: "routes"`. |
 | `Unknown query parameter(s)` / `Missing required ...` | The call does not match the spec. Run `describe_api_operation` for the exact parameter names. |
 | `get_ospf_process` returns no rows although OSPF is configured | Some IOS XE releases report nothing there for OSPF in a service VPN. Use `get_ospf_interfaces` or `get_ospf_neighbors`. |

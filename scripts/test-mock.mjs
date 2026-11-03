@@ -35,7 +35,16 @@ const tlocs = () => [
   { color: 'biz-internet', interface: 'GigabitEthernet2', 'operation-state': 'up', 'admin-state': 'up', 'public-ip': '203.0.113.1', 'private-ip': '203.0.113.1' },
 ];
 
-const stats = { logins: 0, sessionLogins: 0, logouts: 0, ompStatusCalls: 0, ompSummaryCalls: 0, deviceIds: [], ospfPaths: [], ospfWrites: [], bgpPaths: [], bgpWrites: [], eigrpPaths: [], eigrpWrites: [], templateWrites: [], cliPaths: [], cliWrites: [], mcPaths: [], mcWrites: [], v6Paths: [], v6Writes: [], v6Previews: [], grpPaths: [], grpPosts: [] };
+const stats = { logins: 0, sessionLogins: 0, logouts: 0, ompStatusCalls: 0, ompSummaryCalls: 0, deviceIds: [], ospfPaths: [], ospfWrites: [], bgpPaths: [], bgpWrites: [], eigrpPaths: [], eigrpWrites: [], templateWrites: [], cliPaths: [], cliWrites: [], mcPaths: [], mcWrites: [], v6Paths: [], v6Writes: [], v6Previews: [], grpPaths: [], grpPosts: [], nhPaths: [], nhWrites: [] };
+const NH = { global: 'a0000000-0000-4000-8000-000000000000', region: 'a0000000-0000-4000-8000-000000000001', area: 'a0000000-0000-4000-8000-000000000002', siteA: 'a0000000-0000-4000-8000-000000000003', siteB: 'a0000000-0000-4000-8000-000000000004', siteC: 'a0000000-0000-4000-8000-000000000005' };
+const HIERARCHY = [
+  { id: NH.global, name: 'Global', data: { label: 'GLOBAL' }, hierarchyPath: 'Global' },
+  { id: NH.region, name: 'EMEA', data: { label: 'REGION', parentUuid: NH.global }, hierarchyPath: 'Global/EMEA' },
+  { id: NH.area, name: 'France', data: { label: 'AREA', parentUuid: NH.region }, hierarchyPath: 'Global/EMEA/France' },
+  { id: NH.siteA, name: 'Paris', data: { label: 'SITE', parentUuid: NH.area, hierarchyId: { siteId: 105 } }, hierarchyPath: 'Global/EMEA/France/Paris', deviceCount: 1 },
+  { id: NH.siteB, name: 'Lab', data: { label: 'SITE', parentUuid: NH.area, hierarchyId: { siteId: 900 } }, hierarchyPath: 'Global/EMEA/France/Lab', deviceCount: 0 },
+  { id: NH.siteC, name: 'Lab', data: { label: 'SITE', parentUuid: NH.global, hierarchyId: { siteId: 901 } }, hierarchyPath: 'Global/Lab', deviceCount: 0 },
+];
 const GROUPS = {
   'config-group': [{ id: '19191919-1919-4191-8191-191919191919', name: 'Branch-CG', solution: 'sdwan' }],
   'policy-group': [{ id: '20202020-2020-4202-8202-202020202020', name: 'Branch-PG', solution: 'sdwan' }],
@@ -148,6 +157,18 @@ function handler(req, res) {
       }
       stats.bgpPaths.push(p);
       return send(200, { data: [{ path: p, query: Object.fromEntries(url.searchParams) }] });
+    }
+    if (p.startsWith('/dataservice/v1/network-hierarchy')) {
+      if (req.method !== 'GET') {
+        stats.nhWrites.push({ method: req.method, path: p, body: raw ? JSON.parse(raw) : undefined });
+        return send(200, { id: 'cv-1' });
+      }
+      stats.nhPaths.push({ path: p, query: Object.fromEntries(url.searchParams) });
+      if (p === '/dataservice/v1/network-hierarchy') return send(200, HIERARCHY);
+      if (p.endsWith('/cybervisioncenters/id')) return send(200, url.searchParams.get('cvName') === 'CV-Paris' ? 'cv-42' : '');
+      if (p.endsWith('/cybervisioncenters')) return send(200, { data: [{ id: 'cv-42', name: 'CV-Paris' }] });
+      const node = HIERARCHY.find((n) => p.endsWith(`/${n.id}`));
+      return node ? send(200, { name: node.name, data: node.data }) : send(404, { error: 'no node' });
     }
     const groupPath = /^\/dataservice\/v1\/(config-group|policy-group|topology-group)(\/.*)?$/.exec(p);
     if (groupPath) {
@@ -345,7 +366,7 @@ async function tool(client, name, args = {}) {
 // ---------- Tests ----------
 const c = await connect();
 const { tools } = await c.listTools();
-check('tool list (read-only server: write tools hidden)', tools.length === 118, `${tools.length} tools`);
+check('tool list (read-only server: write tools hidden)', tools.length === 119, `${tools.length} tools`);
 check(
   'write tools hidden when writes are disabled; call_api_operation kept',
   !tools.some((x) => /^(create|update|delete|associate|clone|deploy)_/.test(x.name)) && tools.some((x) => x.name === 'call_api_operation')
@@ -1174,7 +1195,7 @@ check('IPv6 writes disabled by default', /VMANAGE_ALLOW_WRITE=true/.test(r.error
 await cv.close();
 
 const wv = await connect({ VMANAGE_ALLOW_WRITE: 'true' });
-check('tool list with writes enabled', (await wv.listTools()).tools.length === 157);
+check('tool list with writes enabled', (await wv.listTools()).tools.length === 160);
 const lastV6Write = () => stats.v6Writes.at(-1);
 const PREFIX_LIST = { name: 'Branch-v6', description: 'test', entries: [{ ipv6Prefix: '2001:db8:10::/48' }] };
 r = await tool(wv, 'create_ipv6_policy_object', { kind: 'prefix-list', body: PREFIX_LIST });
@@ -1354,6 +1375,76 @@ const missingGroupOps = specGroups.filter((op) => !groupReached.has(op));
 check(`all ${specGroups.length} configuration/policy/topology group operations in the spec covered`, specGroups.length === 40 && missingGroupOps.length === 0, missingGroupOps.join(', '));
 check('group tools only call operations from the spec', [...groupReached].every((op) => specGroups.includes(op)), [...groupReached].filter((op) => !specGroups.includes(op)).join(', '));
 await wg.close();
+
+// UX 2.0 network hierarchy: node lookup, levels, Cyber Vision network settings.
+const ch = await connect();
+r = await tool(ch, 'get_network_hierarchy');
+const nhRows = r.value?.data ?? r.value;
+check('get_network_hierarchy (whole tree)', Array.isArray(nhRows) && nhRows.length === 6, JSON.stringify(r.value ?? r.error).slice(0, 200));
+r = await tool(ch, 'get_network_hierarchy', { label: 'site' });
+check('get_network_hierarchy label filter', (r.value?.data ?? r.value)?.map((n) => n.name).join() === 'Paris,Lab,Lab', JSON.stringify(r.value ?? r.error).slice(0, 200));
+r = await tool(ch, 'get_network_hierarchy', { node: 'france' });
+check(
+  'get_network_hierarchy node by name: parent and children',
+  r.value?.id === NH.area && r.value.parent?.name === 'EMEA' && r.value.children?.map((c) => c.name).join() === 'Paris,Lab',
+  JSON.stringify(r.value ?? r.error)
+);
+r = await tool(ch, 'get_network_hierarchy', { node: '105' });
+check('get_network_hierarchy node by site ID', r.value?.id === NH.siteA && r.value.hierarchyPath === 'Global/EMEA/France/Paris', JSON.stringify(r.value ?? r.error));
+r = await tool(ch, 'get_network_hierarchy', { node: 'Global/Lab' });
+check('get_network_hierarchy node by hierarchy path', r.value?.id === NH.siteC && r.value.parent?.name === 'Global', JSON.stringify(r.value ?? r.error));
+r = await tool(ch, 'get_hierarchy_cybervision', {});
+check('get_hierarchy_cybervision defaults to the Global node', !r.error && stats.nhPaths.at(-1).path === `/dataservice/v1/network-hierarchy/${NH.global}/network-settings/cybervisioncenters`, JSON.stringify(r.value ?? r.error));
+r = await tool(ch, 'get_hierarchy_cybervision', { node: 'Paris' });
+check('get_hierarchy_cybervision', (r.value?.data ?? r.value)?.[0]?.name === 'CV-Paris' && stats.nhPaths.at(-1).path === `/dataservice/v1/network-hierarchy/${NH.siteA}/network-settings/cybervisioncenters`, JSON.stringify(r.value ?? r.error));
+r = await tool(ch, 'get_hierarchy_cybervision', { node: 'Paris', center_name: 'CV-Paris' });
+check('get_hierarchy_cybervision center ID by name', stats.nhPaths.at(-1).query.cvName === 'CV-Paris' && JSON.stringify(r.value).includes('cv-42'), JSON.stringify(r.value ?? r.error));
+for (const [label, name, args, pattern] of [
+  ['ambiguous node name lists the paths', 'get_network_hierarchy', { node: 'Lab' }, /matches several nodes: Global\/EMEA\/France\/Lab, Global\/Lab/],
+  ['unknown node lists the available ones', 'get_hierarchy_cybervision', { node: 'Mars' }, /No network hierarchy node "Mars"/],
+  ['get_network_hierarchy rejects unknown label', 'get_network_hierarchy', { label: 'continent' }, /label must be one of/],
+]) {
+  r = await tool(ch, name, args);
+  check(label, pattern.test(r.error ?? ''), r.error ?? 'not rejected');
+}
+r = await tool(ch, 'create_hierarchy_cybervision', { node: 'Paris', body: { name: 'CV-2' }, confirm: true });
+check('hierarchy writes disabled by default', /VMANAGE_ALLOW_WRITE=true/.test(r.error ?? '') && stats.nhWrites.length === 0, r.error ?? 'not rejected');
+await ch.close();
+
+const wh = await connect({ VMANAGE_ALLOW_WRITE: 'true' });
+const lastNhWrite = () => stats.nhWrites.at(-1);
+r = await tool(wh, 'create_hierarchy_cybervision', { node: 'Paris', body: { name: 'CV-2', address: '198.51.100.20' } });
+check('create_hierarchy_cybervision needs confirm: true', /confirm: true/.test(r.error ?? '') && stats.nhWrites.length === 0, r.error ?? 'not rejected');
+r = await tool(wh, 'create_hierarchy_cybervision', { node: 'Paris', body: { name: 'CV-2', address: '198.51.100.20' }, confirm: true });
+check(
+  'create_hierarchy_cybervision',
+  r.value?.operationId === 'createCybervisionCenterForNetworkHierarchyNode' && lastNhWrite()?.path === `/dataservice/v1/network-hierarchy/${NH.siteA}/network-settings/cybervisioncenters` && lastNhWrite().body.name === 'CV-2',
+  JSON.stringify(r.value ?? r.error)
+);
+r = await tool(wh, 'delete_hierarchy_cybervision', { node: '105', center_name: 'CV-Paris', confirm: true });
+check(
+  'delete_hierarchy_cybervision by name (ID looked up)',
+  r.value?.operationId === 'deleteCybervisionCenterForNetworkHierarchyNode' && lastNhWrite()?.method === 'DELETE' && lastNhWrite().path.endsWith('/cybervisioncenters/cv-42'),
+  JSON.stringify(lastNhWrite() ?? r.error)
+);
+for (const [label, name, args, pattern] of [
+  ['delete_hierarchy_cybervision needs center_id or center_name', 'delete_hierarchy_cybervision', { node: 'Paris', confirm: true }, /Give center_id or center_name/],
+  ['delete_hierarchy_cybervision unknown center name', 'delete_hierarchy_cybervision', { node: 'Paris', center_name: 'nope', confirm: true }, /No Cyber Vision center named "nope"/],
+  ['delete_hierarchy_cybervision rejects a path-like ID', 'delete_hierarchy_cybervision', { node: 'Paris', center_id: '../../x', confirm: true }, /center_id must be/],
+  ['delete_hierarchy_cybervision needs confirm: true', 'delete_hierarchy_cybervision', { node: 'Paris', center_id: 'cv-42' }, /confirm: true/],
+]) {
+  const before = stats.nhWrites.length;
+  r = await tool(wh, name, args);
+  check(label, pattern.test(r.error ?? '') && stats.nhWrites.length === before, r.error ?? 'not rejected');
+}
+const specNh = Object.entries(spec.paths)
+  .filter(([path]) => /network-hierarchy/.test(path))
+  .flatMap(([path, ops]) => ['get', 'post', 'put', 'delete'].filter((m) => ops[m]).map((m) => `${m.toUpperCase()} ${path.replace(/\{[^}]+\}/g, '{id}')}`));
+const nhTemplate = (path) => path.replace(/^\/dataservice/, '').replace(/[0-9a-f]{8}-[0-9a-f-]{27}/g, '{id}').replace(/\/cybervisioncenters\/cv-\d+$/, '/cybervisioncenters/{id}');
+const nhReached = new Set([...stats.nhPaths.map((x) => `GET ${nhTemplate(x.path)}`), ...stats.nhWrites.map((x) => `${x.method} ${nhTemplate(x.path)}`)]);
+const missingNh = specNh.filter((op) => !nhReached.has(op));
+check(`all ${specNh.length} network hierarchy operations in the spec covered`, specNh.length === 4 && missingNh.length === 0, missingNh.join(', '));
+await wh.close();
 
 // Unreachable Manager: the first call fails, the next ones fail immediately.
 const closedPort = await new Promise((resolve) => {
