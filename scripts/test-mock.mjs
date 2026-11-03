@@ -61,6 +61,14 @@ snmp-server community public-ro RO
 router ospf 1 vrf 1
  default-information originate
 !
+sdwan
+ interface Tunnel100001
+  tunnel-options tunnel-set secure-internet-gateway-zscaler
+!
+security
+ ipsec
+  authentication-type sha1-hmac ah-sha1-hmac
+!
 `;
 const RENDERED_CONFIG = `system
  host-name Branch-1
@@ -70,6 +78,14 @@ username admin privilege 15 secret 9 $9$otherHashOfTheSecret
 snmp-server community public-ro RO
 router ospf 1 vrf 1
 !
+sdwan
+ interface GigabitEthernet1
+!
+security
+ ipsec
+  integrity-type esp ip-udp-esp
+!
+no acc-gyro enable
 `;
 const GROUPS = {
   'config-group': [{ id: '19191919-1919-4191-8191-191919191919', name: 'Branch-CG', solution: 'sdwan' }],
@@ -1343,12 +1359,33 @@ for (const [name, args] of [
   ['preview_config_group_device_config', { config_group: 'Branch-CG', device: 'Branch-1' }],
   ['preview_group_device_config', { group_type: 'policy', group: 'Branch-PG', device: 'Branch-1' }],
 ]) {
-  for (const view of ['diff', 'both']) {
+  for (const view of ['diff', 'review', 'both']) {
     r = await tool(cg, name, { ...args, view });
     const shown = JSON.stringify(r.value ?? '');
     check(`${name} (${view}) masks secrets`, !r.error && !SECRETS.test(shown) && /partner-key \*\*\*\*/.test(shown), r.error ?? shown.slice(0, 200));
   }
 }
+// The review view; the SIG settings go apart when a policy group has the configuration group's name, as the
+// template-to-group conversion makes it. That policy group exists only for this server process.
+GROUPS['policy-group'].push({ id: '23232323-2323-4232-8232-232323232323', name: 'Branch-CG', solution: 'sdwan' });
+const rvClient = await connect();
+r = await tool(rvClient, 'preview_config_group_device_config', { config_group: 'Branch-CG', device: 'Branch-1', view: 'review' });
+await rvClient.close();
+GROUPS['policy-group'].pop();
+const rv = r.value ?? {};
+check(
+  'preview review sorts the changes, SIG apart',
+  rv.policyGroup === 'Branch-CG' &&
+    JSON.stringify(rv.dropped) === JSON.stringify(['router ospf 1 vrf 1 > default-information originate']) &&
+    JSON.stringify(rv.changed) === JSON.stringify(['system > console-baud-rate 115200 -> 9600']) &&
+    JSON.stringify(rv.added) === JSON.stringify(['sdwan > interface GigabitEthernet1']) &&
+    rv.fromPolicyGroup?.includes('secure-internet-gateway > zscaler partner-key ****') &&
+    rv.fromPolicyGroup?.includes('sdwan > interface Tunnel100001') &&
+    JSON.stringify(rv.defaults) === JSON.stringify(['no acc-gyro enable']),
+  JSON.stringify(r.value ?? r.error)
+);
+r = await tool(cg, 'preview_config_group_device_config', { config_group: 'Branch-CG', device: 'Branch-1', view: 'review' });
+check('preview review without a policy group of that name: SIG settings count as dropped', !r.value?.policyGroup && r.value?.dropped?.includes('secure-internet-gateway'), JSON.stringify(r.value ?? r.error).slice(0, 300));
 mock.preview = null;
 for (const [label, name, args, pattern] of [
   ['get_group_variables refuses topology groups', 'get_group_variables', { group_type: 'topology', group: 'Hub-Spoke' }, /group_type must be one of: config, policy/],

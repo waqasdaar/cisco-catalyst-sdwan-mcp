@@ -16,7 +16,7 @@ import {
 } from '@modelcontextprotocol/sdk/types.js';
 import { VManageApiService, type HttpMethod } from './services/vmanageApi.js';
 import { ApiCatalog, shapeResponse } from './services/apiCatalog.js';
-import { maskConfig } from './services/configReview.js';
+import { maskConfig, reviewConfig, SIG_LINES } from './services/configReview.js';
 import { loadConfig, type VManageConfig } from './utils/config.js';
 
 const MAX_RESPONSE_CHARS = 200_000;
@@ -1810,7 +1810,12 @@ export class CatalystSdwanMCPServer {
           properties: {
             config_group: { type: 'string', description: 'Configuration group ID or exact name' },
             device: { type: 'string', description: 'Device hostname, system-ip, UUID or chassis number (must be associated with the group)' },
-            view: { type: 'string', enum: ['diff', 'new', 'existing', 'both'], description: 'What to return (default: diff)' },
+            view: {
+              type: 'string',
+              enum: ['diff', 'review', 'new', 'existing', 'both'],
+              description:
+                'What to return (default: diff). review sorts the differences for a deploy decision: settings the group would drop, settings whose value changes, settings it adds, and defaults that need no action',
+            },
           },
           required: ['config_group', 'device'],
         },
@@ -1889,7 +1894,12 @@ export class CatalystSdwanMCPServer {
             group_type: { type: 'string', enum: ['policy', 'topology'], description: 'policy (policy group) or topology (topology group)' },
             group: GROUP_SCOPE.group,
             device: { type: 'string', description: 'Device hostname, system IP, UUID or chassis number' },
-            view: { type: 'string', enum: ['diff', 'new', 'existing', 'both'], description: 'What to return (default: diff)' },
+            view: {
+              type: 'string',
+              enum: ['diff', 'review', 'new', 'existing', 'both'],
+              description:
+                'What to return (default: diff). review sorts the differences for a deploy decision: settings the group would drop, settings whose value changes, settings it adds, and defaults that need no action',
+            },
           },
           required: ['group_type', 'group', 'device'],
         },
@@ -2558,10 +2568,25 @@ export class CatalystSdwanMCPServer {
     };
     // Read-only render on vManage (POST with an empty body); it does not deploy anything.
     const renderPreview = async (groupPath: string, uuid: string, label: Record<string, unknown>) => {
-      const view = pick('view', { diff: 'diff', new: 'new', existing: 'existing', both: 'both' }, 'diff');
+      const view = pick('view', { diff: 'diff', review: 'review', new: 'new', existing: 'existing', both: 'both' }, 'diff');
       const preview = (await this.apiService.request('POST', `${groupPath}/device/${encodeURIComponent(uuid)}/preview`, { body: {} }))
         .body as { newConfig?: string; existingConfig?: string; [key: string]: unknown };
       const { newConfig: rendered = '', existingConfig: running = '', ...meta } = preview ?? {};
+      if (view === 'review') {
+        // The template-to-group conversion puts a template's SIG feature in a policy group of the group's name.
+        const policyGroup = typeof label.configGroup === 'string'
+          ? (await this.listGroups('policy-group')).find((g) => g.name === label.configGroup)
+          : undefined;
+        const review = reviewConfig(running, rendered, policyGroup ? SIG_LINES : undefined);
+        return {
+          ...label,
+          ...(policyGroup ? { policyGroup: policyGroup.name } : {}),
+          device: uuid,
+          ...meta,
+          summary: Object.fromEntries(Object.entries(review).map(([k, v]) => [k, v.length])),
+          ...review,
+        };
+      }
       // Device configurations hold passwords, secret hashes, SIG keys and SNMP communities.
       const newConfig = maskConfig(rendered);
       const existingConfig = maskConfig(running);
