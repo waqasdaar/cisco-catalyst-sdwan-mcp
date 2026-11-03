@@ -1,6 +1,6 @@
 # Cisco Catalyst SD-WAN MCP Server
 
-[![Version](https://img.shields.io/badge/version-1.0.1-blue.svg)](https://github.com/waqasdaar/cisco-catalyst-sdwan-mcp)
+[![Version](https://img.shields.io/badge/version-1.1.0-blue.svg)](https://github.com/waqasdaar/cisco-catalyst-sdwan-mcp)
 [![CI](https://github.com/waqasdaar/cisco-catalyst-sdwan-mcp/actions/workflows/ci.yml/badge.svg)](https://github.com/waqasdaar/cisco-catalyst-sdwan-mcp/actions/workflows/ci.yml)
 
 
@@ -192,7 +192,7 @@ See [Installation](#installation), [Configuration](#configuration) and [Integrat
 
 | Component | Version | Notes |
 |---|---|---|
-| MCP server | **1.0.1** | `package.json` version, reported in the MCP `initialize` response |
+| MCP server | **1.1.0** | `package.json` version, reported in the MCP `initialize` response |
 | Catalyst SD-WAN Manager | **Tested on 26.2.1** | Controllers 26.2.1, WAN edges Catalyst 8000V IOS XE 26.02.01 |
 | Catalyst SD-WAN Manager (auth) | 20.18.1+ for JWT | Older releases: set `VMANAGE_USE_JWT=false` (session cookie + XSRF token) |
 | Node.js | 20.12+ | CI runs the offline tests on Node.js 20, 22 and 24; tested live on Node.js 26 |
@@ -621,8 +621,28 @@ The server reads `.env` from the project (or deployed) root folder. You can also
 | `VMANAGE_FABRIC_DEADLINE_MS` | No | `25000` | Time budget of a fabric-wide sweep; edges not reached are reported under `incomplete` |
 | `VMANAGE_FABRIC_MAX_DEVICES` | No | `5000` | Maximum reachable edges per synced sweep (real-time sweeps: 200) |
 | `VMANAGE_LOG_TIMING` | No | `false` | `true` logs each vManage call (path, status, duration, retries, cache hits) to stderr. Never logs credentials or response data. |
+| `VMANAGE_TLS_FINGERPRINT` | No | | SHA-256 fingerprint of the Manager's certificate (colons optional). Only that certificate is accepted, self-signed or not. Get it with `npm run fingerprint` and compare it with your records before you trust it. |
+| `VMANAGE_CA_FILE` | No | | PEM file of an internal CA that signed the Manager's certificate (trusted in addition to Node's CAs) |
+| `VMANAGE_TLS_INSECURE` | No | `false` | `true` accepts any certificate, with a warning on stderr. Labs only; prefer `VMANAGE_TLS_FINGERPRINT`. |
 | `VMANAGE_TENANT` | No | | Multi-tenant Manager with a provider account: scope every call to this tenant (name, tenant ID, org name or subdomain) |
 | `VMANAGE_ALLOW_TENANT_SWITCH` | No | `false` | `true` adds a `tenant` argument to every tool so one server can query several tenants |
+
+### TLS certificate of the Manager
+
+The server verifies the Manager's certificate on every connection (since 1.1.0). It accepts:
+
+1. **A certificate issued by a CA Node trusts**, with a matching host name. This is the default and needs no setting.
+2. **A certificate issued by your internal CA**: set `VMANAGE_CA_FILE` to its PEM file.
+3. **One specific certificate** (typical for a self-signed lab Manager): pin it with `VMANAGE_TLS_FINGERPRINT`.
+   `npm run fingerprint` prints the fingerprint of the certificate the configured Manager presents. Check it
+   against the Manager's own records (Administration → Certificates) before you set it. If the certificate changes,
+   calls fail with "does not match the pinned fingerprint" until you update it.
+
+`VMANAGE_TLS_INSECURE=true` turns verification off. It exists for throwaway labs only.
+
+Upgrading from 1.0.x, where verification was off: a Manager with a self-signed certificate now needs
+`VMANAGE_TLS_FINGERPRINT` (or `VMANAGE_TLS_INSECURE=true`), otherwise calls fail with "The TLS certificate of vManage
+… is not trusted".
 
 ### Multi-tenant Managers
 
@@ -1301,7 +1321,7 @@ Without `confirm: true`, or with writes disabled, the server refuses the call an
 - **Blocked endpoints.** Operations that issue or expose tokens, passwords, OTPs, credentials or bootstrap configurations are never callable. Neither are file uploads or server-sent event streams.
 - **Validation.** Path and query parameters must exist in the spec, required ones must be present, and types and enums are checked. Path values are URL-encoded and `.`/`..` are rejected.
 - **Redaction and limits.** Values of keys such as `password`, `token`, `csrf` and `sessionId` are replaced with `***redacted***`. List responses are capped (default 200 rows, `max_items` to change) and output stays under 200,000 characters.
-- **TLS.** Certificate verification is disabled so lab Managers with self-signed certificates work. Use it only on trusted networks, and treat this as a known limitation for production.
+- **TLS.** The Manager's certificate is verified on every connection: a trusted CA, your internal CA (`VMANAGE_CA_FILE`), or exactly one pinned certificate (`VMANAGE_TLS_FINGERPRINT`). Turning verification off needs `VMANAGE_TLS_INSECURE=true` and logs a warning. With a pinned certificate, TLS sessions are not resumed, so every new connection presents the certificate and is checked.
 - **Credentials.** Keep `.env` out of version control (it is in `.gitignore`), restrict its permissions (`chmod 600 .env`), and use a dedicated least-privilege Manager account.
 - **Access-level detection is a heuristic.** It uses the operationId and spec description. Test against a lab Manager before you enable writes on a production fabric.
 
@@ -1465,6 +1485,8 @@ Set `VMANAGE_ALLOW_WRITE=true` in the environment the Inspector passes to the se
 | `vManage API error 400 ... Empty query` | Statistics endpoints need a query body even when the spec marks it optional. See the statistics example above. |
 | `truncated` in a response | The response was larger than the limit. Continue with `offset` set to `truncated.nextOffset`, summarize with `count_by`, or filter (for example `vpn_id`, `site_id`, `filter`) or lower `max_items`. For statistics `.../page` operations, `all_pages: true` follows the scroll pages up to `max_items` rows. |
 | Node warns about `NODE_TLS_REJECT_UNAUTHORIZED` | Comes from your shell environment, not this server. Remove the variable if you don't need it. |
+| `The TLS certificate of vManage … is not trusted (self-signed certificate)` | Pin the certificate: `npm run fingerprint`, check the value, set `VMANAGE_TLS_FINGERPRINT`. For an internal CA, set `VMANAGE_CA_FILE` instead. |
+| `… does not match the pinned fingerprint` | The Manager's certificate changed (renewed or replaced), or the address reaches another server. Check, then update `VMANAGE_TLS_FINGERPRINT`. |
 
 ---
 

@@ -2,6 +2,7 @@
 // No lab needed; used by CI. Requires openssl to create a throwaway certificate.
 // Usage: npm test
 import { execFileSync } from 'child_process';
+import { X509Certificate } from 'crypto';
 import { mkdtempSync, readFileSync, rmSync } from 'fs';
 import https from 'https';
 import { tmpdir } from 'os';
@@ -317,7 +318,8 @@ function handler(req, res) {
 const certDir = mkdtempSync(join(tmpdir(), 'sdwan-mcp-test-'));
 try {
   execFileSync('openssl', ['req', '-x509', '-newkey', 'rsa:2048', '-nodes', '-days', '1', '-subj', '/CN=localhost',
-    '-keyout', join(certDir, 'key.pem'), '-out', join(certDir, 'cert.pem')], { stdio: 'ignore' });
+    '-addext', 'subjectAltName=IP:127.0.0.1', '-keyout', join(certDir, 'key.pem'), '-out', join(certDir, 'cert.pem')],
+  { stdio: 'ignore' });
 } catch {
   console.error('openssl is required to run the offline tests');
   process.exit(1);
@@ -325,6 +327,8 @@ try {
 const server = https.createServer({ key: readFileSync(join(certDir, 'key.pem')), cert: readFileSync(join(certDir, 'cert.pem')) }, handler);
 await new Promise((r) => server.listen(0, '127.0.0.1', r));
 const PORT = server.address().port;
+// The throwaway certificate is self-signed: the tests pin it, as an application that checked it would.
+const FINGERPRINT = new X509Certificate(readFileSync(join(certDir, 'cert.pem'))).fingerprint256;
 
 // ---------- MCP client helpers ----------
 const baseEnv = {
@@ -338,6 +342,7 @@ const baseEnv = {
   VMANAGE_ALLOW_WRITE: 'false',
   VMANAGE_TIMEOUT_MS: '1500',
   VMANAGE_LIST_TIMEOUT_MS: '1500',
+  VMANAGE_TLS_FINGERPRINT: FINGERPRINT,
 };
 async function connect(env = {}) {
   const client = new Client({ name: 'mock-test', version: '1.0.1' });
@@ -361,6 +366,26 @@ async function tool(client, name, args = {}) {
     value = text;
   }
   return { error: res.isError ? text : null, value };
+}
+
+// ---------- TLS: the certificate of SD-WAN Manager is checked on every connection ----------
+{
+  const strict = await connect({ VMANAGE_TLS_FINGERPRINT: '' });
+  let t = await tool(strict, 'list_devices');
+  check('TLS: a self-signed certificate is refused by default', /certificate/i.test(t.error ?? ''), t.error ?? 'accepted');
+  await strict.close();
+  const wrong = await connect({ VMANAGE_TLS_FINGERPRINT: 'AA'.repeat(32) });
+  t = await tool(wrong, 'list_devices');
+  check('TLS: a certificate other than the pinned one is refused', /does not match the pinned fingerprint/.test(t.error ?? ''), t.error ?? 'accepted');
+  await wrong.close();
+  const ca = await connect({ VMANAGE_TLS_FINGERPRINT: '', VMANAGE_CA_FILE: join(certDir, 'cert.pem') });
+  t = await tool(ca, 'list_devices');
+  check('TLS: a certificate signed by VMANAGE_CA_FILE is trusted', !t.error, t.error ?? '');
+  await ca.close();
+  const insecure = await connect({ VMANAGE_TLS_FINGERPRINT: '', VMANAGE_TLS_INSECURE: 'true' });
+  t = await tool(insecure, 'list_devices');
+  check('TLS: VMANAGE_TLS_INSECURE=true is an explicit opt-out', !t.error, t.error ?? '');
+  await insecure.close();
 }
 
 // ---------- Tests ----------

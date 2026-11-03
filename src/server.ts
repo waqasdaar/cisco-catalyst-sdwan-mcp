@@ -721,7 +721,7 @@ export class CatalystSdwanMCPServer {
     this.server = new Server(
       {
         name: 'catalyst-sdwan-mcp',
-        version: '1.0.1',
+        version: '1.1.0',
       },
       {
         capabilities: {

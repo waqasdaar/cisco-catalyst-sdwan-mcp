@@ -6,17 +6,80 @@
  */
 
 import { AsyncLocalStorage } from 'node:async_hooks';
-import { Agent, fetch, type Response } from 'undici';
+import { readFileSync } from 'node:fs';
+import { rootCertificates, type TLSSocket } from 'node:tls';
+import { Agent, buildConnector, fetch, type Response } from 'undici';
 import type { VManageConfig } from '../utils/config.js';
 
 // Without a connect timeout, an unreachable host blocks for the OS TCP timeout (~75 s on macOS).
 const CONNECT_TIMEOUT_MS = 10_000;
-// Pooled keep-alive connections reuse TLS sessions; self-signed lab certificates are accepted.
-const DISPATCHER = new Agent({
-  connect: { rejectUnauthorized: false, timeout: CONNECT_TIMEOUT_MS },
-  keepAliveTimeout: 30_000,
-  connections: 32,
-});
+
+/**
+ * How the certificate of SD-WAN Manager is trusted, checked on every connection:
+ * - verify (default): a CA Node trusts, or one in VMANAGE_CA_FILE (PEM), and the host name must match;
+ * - pin: VMANAGE_TLS_FINGERPRINT (SHA-256 of the certificate): exactly that certificate, self-signed or not;
+ * - insecure: VMANAGE_TLS_INSECURE=true accepts any certificate (labs only; a warning is logged).
+ */
+export interface TlsPolicy {
+  mode: 'verify' | 'pin' | 'insecure';
+  ca?: string;
+  fingerprint?: string;
+}
+
+export const normFingerprint = (value: string): string => value.replace(/[^0-9a-f]/gi, '').toUpperCase();
+
+export function tlsPolicy(env: NodeJS.ProcessEnv = process.env): TlsPolicy {
+  const pin = env.VMANAGE_TLS_FINGERPRINT?.trim();
+  if (pin) {
+    const fingerprint = normFingerprint(pin);
+    if (!/^[0-9A-F]{64}$/.test(fingerprint)) {
+      throw new Error('VMANAGE_TLS_FINGERPRINT must be the SHA-256 fingerprint of the certificate (64 hex digits, colons allowed)');
+    }
+    return { mode: 'pin', fingerprint };
+  }
+  if (env.VMANAGE_TLS_INSECURE === 'true') return { mode: 'insecure' };
+  const caFile = env.VMANAGE_CA_FILE?.trim();
+  return { mode: 'verify', ca: caFile ? readFileSync(caFile, 'utf8') : undefined };
+}
+
+export function makeDispatcher(policy: TlsPolicy): Agent {
+  const base = buildConnector({
+    timeout: CONNECT_TIMEOUT_MS,
+    rejectUnauthorized: policy.mode === 'verify',
+    // a resumed TLS session presents no certificate to compare: every new connection makes a full handshake
+    ...(policy.mode === 'pin' ? { maxCachedSessions: 0 } : {}),
+    ...(policy.ca ? { ca: [...rootCertificates, policy.ca] } : {}),
+  });
+  if (policy.mode === 'insecure') {
+    process.stderr.write('WARNING: VMANAGE_TLS_INSECURE=true: the certificate of SD-WAN Manager is not verified\n');
+  }
+  const connect: buildConnector.connector =
+    policy.mode !== 'pin'
+      ? base
+      : (options, callback) =>
+          base(options, (err, socket) => {
+            if (err || !socket) {
+              callback(err ?? new Error('TLS connection failed'), null);
+              return;
+            }
+            const presented = (socket as TLSSocket).getPeerCertificate?.()?.fingerprint256 ?? '';
+            if (normFingerprint(presented) !== policy.fingerprint) {
+              socket.destroy();
+              callback(new Error('The TLS certificate of SD-WAN Manager does not match the pinned fingerprint '
+                + '(VMANAGE_TLS_FINGERPRINT): the certificate changed, or this is not the expected server'), null);
+              return;
+            }
+            callback(null, socket);
+          });
+  // Pooled keep-alive connections reuse TLS sessions (the certificate is checked when each connection opens).
+  return new Agent({ connect, keepAliveTimeout: 30_000, connections: 32 });
+}
+
+let dispatcher: Agent | undefined;
+function getDispatcher(): Agent {
+  dispatcher ??= makeDispatcher(tlsPolicy());
+  return dispatcher;
+}
 
 const MAX_RETRIES = 2;
 const RETRY_STATUS = new Set([429, 502, 503, 504]);
@@ -92,6 +155,17 @@ function errorCode(err: unknown): string {
   // undici wraps network errors: TypeError('fetch failed') with the system error as `cause`.
   const e = err as { code?: string; cause?: { code?: string }; message?: string };
   return e?.cause?.code ?? e?.code ?? /\b(E[A-Z]{4,})\b/.exec(e?.message ?? '')?.[1] ?? '';
+}
+
+/** Why the certificate of vManage was refused, or '' when the failure is not about the certificate. */
+function tlsFailure(err: unknown): string {
+  const e = err as { cause?: { code?: string; message?: string }; message?: string };
+  const code = e?.cause?.code ?? '';
+  const message = e?.cause?.message ?? e?.message ?? '';
+  if (/CERT|SELF_SIGNED|UNABLE_TO_VERIFY|ALTNAME/.test(code) || /certificate|pinned fingerprint/i.test(message)) {
+    return message || code;
+  }
+  return '';
 }
 
 function isTimeout(err: unknown): boolean {
@@ -246,7 +320,7 @@ export class VManageApiService {
       await fetch(`${this.baseUrl}/logout?nocache=${Date.now()}`, {
         headers: { Cookie: cookie },
         redirect: 'manual',
-        dispatcher: DISPATCHER,
+        dispatcher: getDispatcher(),
         signal: AbortSignal.timeout(LOGOUT_TIMEOUT_MS),
       });
       if (this.config.logTiming) console.error('[vmanage] session logged out');
@@ -266,7 +340,7 @@ export class VManageApiService {
         // vManage rejects JWT durations above 1800 seconds
         duration: 1800,
       }),
-      dispatcher: DISPATCHER,
+      dispatcher: getDispatcher(),
       signal: this.timeoutSignal(),
     });
 
@@ -296,7 +370,7 @@ export class VManageApiService {
         j_password: this.config.password,
       }),
       redirect: 'manual',
-      dispatcher: DISPATCHER,
+      dispatcher: getDispatcher(),
       signal: this.timeoutSignal(),
     });
 
@@ -322,7 +396,7 @@ export class VManageApiService {
         'Content-Type': 'application/json',
         Cookie: this.jsessionId,
       },
-      dispatcher: DISPATCHER,
+      dispatcher: getDispatcher(),
       signal: this.timeoutSignal(),
     });
 
@@ -469,6 +543,12 @@ export class VManageApiService {
         : [this.config.listTimeoutMs, 'VMANAGE_LIST_TIMEOUT_MS'];
       return new Error(`vManage did not respond within ${ms} ms (${method} ${path.split('?')[0]}). Raise ${variable} if this query is expected to be slow.`);
     }
+    const tls = tlsFailure(err);
+    if (tls) {
+      return new Error(`The TLS certificate of vManage at ${this.config.host}:${this.config.port} is not trusted (${tls}). `
+        + 'Set VMANAGE_CA_FILE for an internal CA, or VMANAGE_TLS_FINGERPRINT to pin a self-signed certificate '
+        + '(VMANAGE_TLS_INSECURE=true accepts any certificate: labs only).');
+    }
     const code = errorCode(err);
     if (UNREACHABLE_CODES.has(code) || isRetryable(err)) {
       const message = `Cannot reach vManage at ${this.config.host}:${this.config.port} (${code || 'connection dropped'}). Check network/VPN connectivity.`;
@@ -551,6 +631,6 @@ export class VManageApiService {
           : JSON.stringify(options.body);
     }
 
-    return fetch(url.toString(), { method, headers, body, dispatcher: DISPATCHER, signal });
+    return fetch(url.toString(), { method, headers, body, dispatcher: getDispatcher(), signal });
   }
 }

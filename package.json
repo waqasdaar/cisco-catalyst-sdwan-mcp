@@ -1,6 +1,6 @@
 {
   "name": "catalyst-sdwan-mcp",
-  "version": "1.0.1",
+  "version": "1.1.0",
   "description": "MCP server for Cisco Catalyst SD-WAN Manager (vManage) API",
   "main": "build/index.js",
   "type": "module",
@@ -12,7 +12,8 @@
     "test": "node scripts/test-mock.mjs",
     "test:control-plane": "node scripts/test-control-plane.mjs",
     "test:ux2": "node scripts/test-ux2.mjs",
-    "verify:api": "node scripts/verify-api-coverage.mjs"
+    "verify:api": "node scripts/verify-api-coverage.mjs",
+    "fingerprint": "node scripts/fingerprint.mjs"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.0.4",
