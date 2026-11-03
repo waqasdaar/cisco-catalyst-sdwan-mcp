@@ -16,7 +16,9 @@ import {
 } from '@modelcontextprotocol/sdk/types.js';
 import { VManageApiService, type HttpMethod } from './services/vmanageApi.js';
 import { ApiCatalog, shapeResponse } from './services/apiCatalog.js';
+import { changes as parcelChanges, RULES as CONVERSION_RULES } from './services/configDefects.js';
 import { maskConfig, reviewConfig, SIG_LINES } from './services/configReview.js';
+import { mapValues, parseSchema, rowsFromInput } from './services/configVariables.js';
 import { loadConfig, type VManageConfig } from './utils/config.js';
 
 const MAX_RESPONSE_CHARS = 200_000;
@@ -85,6 +87,20 @@ interface UxGroup {
   id: string;
   name: string;
   [key: string]: unknown;
+}
+
+interface UxProfile {
+  id: string;
+  name: string;
+  type: string;
+}
+
+/** Whether feature data sets a secret (a static pre-shared key, a password), which must not reach the assistant. */
+function holdsSecret(data: unknown): boolean {
+  if (!data || typeof data !== 'object') return false;
+  return Object.entries(data as Record<string, any>).some(
+    ([key, value]) => (/secret|passw|key/i.test(key) && value?.optionType === 'global' && typeof value.value === 'string') || holdsSecret(value)
+  );
 }
 
 const DEVICE_INDEX_TTL_MS = 60_000;
@@ -209,6 +225,8 @@ function filterRows(result: unknown, filters: Record<string, unknown>): unknown 
 
 // Tools whose own arguments or result shape don't fit row selection (list_api_categories already uses `filter`).
 const NO_ROW_OPTIONS = new Set([
+  'plan_config_group_variables',
+  'find_config_group_conversion_defects',
   'list_api_categories',
   'search_api_operations',
   'describe_api_operation',
@@ -1821,6 +1839,30 @@ export class CatalystSdwanMCPServer {
         },
       },
       {
+        name: 'plan_config_group_variables',
+        description:
+          'Read-only: for the devices attached to a device template, map their template variable values onto the variables of the configuration group converted from it (the template-to-group conversion does not carry the values over), and of the policy group of the same name when there is one (where the conversion puts SIG). Returns per device the values ready for the deploy dialog or update_group_variables, and a report: defaults used, secrets left as placeholders, missing and invalid values, and template variables the groups do not use (a sign the conversion hard-coded or dropped that setting). Changes nothing.',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            template: { type: 'string', description: 'Device template ID or exact name' },
+            config_group: { type: 'string', description: "Configuration group ID or exact name (default: the template's name)" },
+          },
+          required: ['template'],
+        },
+      },
+      {
+        name: 'find_config_group_conversion_defects',
+        description:
+          "Read-only: known defects the template-to-configuration-group conversion leaves in groups (seen on 20.15 and 20.18), checked against the feature templates the groups were made from: tunnel settings on VPN 0 interfaces without a tunnel (deploy fails with CFGRP0012 'unknown command tunnel-interface'), tunnel services the template allowed by default (dhcp, icmp, https) that the group turns off, interface NAT in the older template form that becomes NAT off, and SIG tunnel settings (IKE group, IPsec cipher suite) reset to the group's defaults. The SIG feature of the policy group of the same name is checked too. Returns each defect with the fields the fix changes and the fixed feature data to PUT after review. Changes nothing.",
+        inputSchema: {
+          type: 'object',
+          properties: {
+            config_group: { type: 'string', description: 'Configuration group ID or exact name (default: all groups)' },
+          },
+        },
+      },
+      {
         name: 'list_policy_groups',
         description: 'List UX 2.0 policy groups with their profiles, device counts and deployment state.',
         inputSchema: {
@@ -3390,6 +3432,115 @@ export class CatalystSdwanMCPServer {
         const group = await this.findGroup('config-group', args.config_group);
         const uuid = await this.resolveDeviceUuid(String(args.device ?? ''));
         return renderPreview(`/dataservice/v1/config-group/${encodeURIComponent(group.id)}`, uuid, { configGroup: group.name });
+      }
+      case 'plan_config_group_variables': {
+        const ref = String(args.template ?? '').trim();
+        if (!ref) throw new Error('template is required (device template ID or name)');
+        const templates = (await this.apiService.get<{ data?: Array<{ templateId: string; templateName: string }> }>('/dataservice/template/device')).data ?? [];
+        const template = templates.find((t) => t.templateId === ref || t.templateName.toLowerCase() === ref.toLowerCase());
+        if (!template) throw new Error(`No device template "${ref}"`);
+        const group = await this.findGroup('config-group', args.config_group ?? template.templateName);
+        const attached = (await this.apiService.get<{ data?: Array<{ uuid: string }> }>(
+          `/dataservice/template/device/config/attached/${encodeURIComponent(template.templateId)}`
+        )).data ?? [];
+        if (!attached.length) return { template: template.templateName, configGroup: group.name, devices: {} };
+        // Read-only: builds the template's device input; it does not attach or push anything.
+        const input = await this.apiService.post('/dataservice/template/device/config/input/', {
+          templateId: template.templateId,
+          deviceIds: attached.map((d) => d.uuid),
+          isEdited: false,
+          isMasterEdited: false,
+        });
+        const schema = async (kind: string, id: string) => {
+          const body = await this.apiService.get(`/dataservice/v1/${kind}/${encodeURIComponent(id)}/device/variables/schema`);
+          return parseSchema(Array.isArray(body) ? body : [body]);
+        };
+        const spec = await schema('config-group', group.id);
+        const policyGroup = (await this.listGroups('policy-group')).find((g) => g.name === group.name);
+        const policySpec = policyGroup ? await schema('policy-group', policyGroup.id) : undefined;
+        const devices: Record<string, unknown> = {};
+        for (const [host, row] of Object.entries(rowsFromInput(template.templateName, input))) {
+          const planned = mapValues(spec, row);
+          if (!policySpec) {
+            devices[host] = { deviceId: row.deviceId, ...planned };
+            continue;
+          }
+          const policy = mapValues(policySpec, row);
+          planned.report.unused = planned.report.unused.filter((name) => policy.report.unused.includes(name));
+          devices[host] = { deviceId: row.deviceId, ...planned, policyGroupValues: policy.values, policyGroupReport: policy.report };
+        }
+        return { template: template.templateName, configGroup: group.name, policyGroup: policyGroup?.name, devices };
+      }
+      case 'find_config_group_conversion_defects': {
+        const groups = args.config_group ? [await this.findGroup('config-group', args.config_group)] : await this.listGroups('config-group');
+        const policyGroups = await this.listGroups('policy-group');
+        const featureTemplates = new Map(
+          ((await this.apiService.get<{ data?: Array<{ templateId: string; templateName: string; templateType: string }> }>('/dataservice/template/feature')).data ?? [])
+            .map((t) => [`${t.templateName}\u0000${t.templateType}`, t.templateId])
+        );
+        const definitions = new Map<string, unknown>();
+        const source = async (name: string, type: string) => {
+          const id = featureTemplates.get(`${name}\u0000${type}`);
+          if (!id) return undefined;
+          if (!definitions.has(id)) {
+            const body = await this.apiService.get<{ templateDefinition?: unknown }>(`/dataservice/template/feature/object/${encodeURIComponent(id)}`);
+            definitions.set(id, body.templateDefinition ?? {});
+          }
+          return definitions.get(id) as Record<string, any>;
+        };
+        const findings: Array<Record<string, unknown>> = [];
+        const seen = new Set<string>();
+        for (const group of groups) {
+          const detail = await this.apiService.get<{ profiles?: UxProfile[] }>(`/dataservice/v1/config-group/${encodeURIComponent(group.id)}`);
+          const profiles = [...(detail.profiles ?? [])];
+          const policyGroup = policyGroups.find((g) => g.name === group.name);
+          if (policyGroup) {
+            const policyDetail = await this.apiService.get<{ profiles?: UxProfile[] }>(`/dataservice/v1/policy-group/${encodeURIComponent(policyGroup.id)}`);
+            profiles.push(...(policyDetail.profiles ?? []).filter((p) => p.type === 'sig-security'));
+          }
+          for (const profile of profiles) {
+            if (seen.has(profile.id)) continue;
+            seen.add(profile.id);
+            const url = `/dataservice/v1/feature-profile/sdwan/${profile.type}/${encodeURIComponent(profile.id)}`;
+            const body = await this.apiService.get<{ associatedProfileParcels?: any[] }>(url, profile.type === 'sig-security' ? undefined : { details: 'true' });
+            const parcels: Array<[string, string]> = [];
+            for (const parcel of body.associatedProfileParcels ?? []) {
+              const path = `${url}/${parcel.parcelType}/${parcel.parcelId}`;
+              parcels.push([parcel.parcelType, path]);
+              for (const sub of parcel.subparcels ?? []) {
+                const suffix = sub.parcelType.startsWith(`${parcel.parcelType}/`) ? sub.parcelType.slice(parcel.parcelType.length + 1) : sub.parcelType;
+                parcels.push([sub.parcelType, `${path}/${suffix}/${sub.parcelId}`]);
+              }
+            }
+            for (const [parcelType, path] of parcels) {
+              if (parcelType !== 'wan/vpn/interface/ethernet' && parcelType !== 'sig') continue;
+              const payload = (await this.apiService.get<{ payload?: any }>(path)).payload ?? {};
+              const original = payload.data ?? {};
+              let data = original;
+              const applied: string[] = [];
+              for (const rule of CONVERSION_RULES) {
+                const template = rule.templateType ? await source(payload.name, rule.templateType) : undefined;
+                if (rule.templateType && !template) continue;
+                if (rule.applies(parcelType, data, template)) {
+                  data = rule.fix(data, template);
+                  applied.push(rule.name);
+                }
+              }
+              if (!applied.length) continue;
+              findings.push({
+                configGroup: group.name,
+                profile: profile.name,
+                feature: payload.name,
+                defects: applied,
+                changes: parcelChanges(original, data),
+                fix: holdsSecret(data)
+                  ? { method: 'PUT', path, body: 'left out: the feature holds a secret; make the changes above in vManage' }
+                  : { method: 'PUT', path, body: { name: payload.name, description: payload.description, data } },
+              });
+            }
+          }
+        }
+        return { defects: findings.length, findings };
       }
       case 'get_topology_group': {
         const group = await this.findGroup('topology-group', args.topology_group);
