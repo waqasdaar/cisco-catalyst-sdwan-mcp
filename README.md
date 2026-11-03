@@ -1239,20 +1239,64 @@ npm run verify:api -- <edge> <controller> <validator>
 | Write protection | Every write tool is refused while `VMANAGE_ALLOW_WRITE=false`, and refused without `confirm: true` when writes are enabled; nothing reaches the Manager in either case |
 | Input validation | Non-UUID IDs, unknown views/versions/scopes, wrong profile types and solutions, wrong template types, oversized CLI text and empty updates are rejected before any request |
 
-**Spec coverage.** For each area below, the tests read the operations from the published spec, drive every tool through every scope, and fail if an operation is not reached or a tool calls a path that is not in the spec:
+#### Coverage by area
 
-| Area | Read operations | Write operations | Tools |
-|---|---:|---:|---|
-| BGP (monitoring, UX 2.0 features, schema) | 25 | 30 | 9 |
-| OSPF and OSPFv3 (monitoring, UX 2.0 features) | 63 | 81 | 10 |
-| &nbsp;&nbsp;of which OSPFv3 IPv4/IPv6 | 38 | 54 | |
-| EIGRP (monitoring, UX 2.0 features) | 11 | 12 | 8 |
-| Multicast: IGMP, PIM, overlay multicast, MFIB, UX 2.0 features, schema | 20 | 6 | 10 |
-| IPv6: monitoring, UX 1.0 policy objects (+4 read-only previews), UX 2.0 trackers | 47 | 36 | 11 |
-| UX 2.0 CLI add-ons (SD-WAN and SD-Routing) | 4 | 6 | 5 |
-| **Total** | **170** | **171** | |
+Every one of the 148 tools belongs to one area below. **Offline** is what `npm test` checks against the simulated Manager. **Live** is the suite that runs the tools against a real 26.2.1 Manager. Tools marked "run live during development" were added after the last `verify:api` report and were checked by hand against the lab.
 
-UX 1.0 routing, multicast and CLI templates use the generic `/template/feature` API; the tests check each template tool's request and its template-type guard.
+| Area | UX | Tools | vManage APIs the tools call | Offline (`npm test`) | Live |
+|---|---|---:|---|---|---|
+| API catalog | – | 4 | Any of the 4,128 spec operations, validated against the spec | Statistics paging (`all_pages`), write gate, refusal of paging on non-paged operations | `test:ux2`, `verify:api` |
+| Fabric-wide health, BFD and TLOCs | – | 3 | `/health/devices`, `/device`, `/device/bfd/sessions`, `/device/control/waninterface`, `/clusterManagement/*`, `/alarms`, `/certificate/stats/summary` | Health table, Manager deployment, sweeps: concurrency cap, time budget with resume, overload breaker, synced data re-checked live | `test:ux2` (cross-checked with per-device tools) |
+| Devices and inventory | – | 5 | `/device`, `/device/reachable`, `/device/vedgeinventory/detail` | Hostname resolution, `fields`/`filter`/`count_by`/paging and truncation on a 3,000-device inventory | `test:ux2`, `verify:api` |
+| Control plane, OMP, Validator | – | 28 | `/device/control/*`, `/device/omp/*`, `/device/orchestrator/*` | `Retry-After` retry, re-login after an expired token | `test:control-plane` (42/42) |
+| Data plane, interfaces, system | – | 9 | `/device/bfd/*`, `/device/interface`, `/device/system/status`, `/device/arp`, `/device/vpn`, `/device/tloc`, `/device/bridge/table` | Real-time timeout, unknown-device rejection | `test:ux2`, `verify:api` |
+| App-aware routing, flows, statistics | – | 7 | `/device/app-route/*`, `/device/cflowd/*`, `/device/app/log/*`, `/device/sdwan-stats` | – | `verify:api` |
+| BGP | 2.0 | 9 | `/device/bgp/*`, `/v1/feature-profile/{sdwan,sd-routing}/{service,transport}/.../routing/bgp` | Full spec sweep (see next table) | Run live during development |
+| OSPF and OSPFv3 | 2.0 | 10 | `/device/ospf/*`, `/v1/feature-profile/.../routing/{ospf,ospfv3/ipv4,ospfv3/ipv6}` | Full spec sweep | Run live during development |
+| EIGRP | 2.0 | 8 | `/device/eigrp/*`, `/v1/feature-profile/.../service/.../routing/eigrp` | Full spec sweep | Run live during development |
+| Multicast: IGMP, PIM, MFIB | 2.0 | 10 | `/device/{igmp,pim,multicast}/*`, `/device/ip/mfib*`, `/v1/feature-profile/sdwan/service/.../routing/multicast` | Full spec sweep | Run live during development |
+| IPv6 | 1.0 and 2.0 | 11 | `/device/ipv6/*`, `/device/ip/ipRoutes`, `/template/policy/{list,definition}/*v6*`, `/v1/feature-profile/sdwan/transport/.../ipv6-tracker*` | Full spec sweep | Run live during development |
+| **Configuration groups, policy groups, topology groups** | 2.0 | 9 | `/v1/config-group`, `/v1/policy-group`, `/v1/topology-group`, with `/{id}`, `/device/associate`, `/device/variables` and `/device/{id}/preview` (read-only render) | – | `test:ux2` (all 9) |
+| **Feature profiles and network hierarchy** | 2.0 | 3 | `/v1/feature-profile/{solution}/{type}[/{id}]`, `/v1/network-hierarchy` | Profile-name lookup (shared with the routing tools) | `test:ux2` (all 3) |
+| UX 2.0 CLI add-ons | 2.0 | 5 | `/v1/feature-profile/{sdwan,sd-routing}/cli/{id}/config` | Full spec sweep | Run live during development |
+| **Device and feature templates** | 1.0 | 4 | `/template/device`, `/template/feature`, `/template/device/config/attached/{id}`, `/template/{device,feature}/object/{id}` | List timeout | `verify:api` |
+| **Policies, policy lists, policy definitions** | 1.0 | 3 | `/template/policy/{vsmart,vedge,security}`, `/template/policy/list/{type}`, `/template/policy/definition/{type}` | – | `verify:api` |
+| Routing and multicast feature templates | 1.0 | 7 | `/template/feature` (list, object, device templates, type definition, create, update, delete, clone) | Requests, template-type guard | Run live during development |
+| CLI add-on templates | 1.0 | 5 | `/template/feature` (list, object, device templates, create, update, delete) | Requests, template-type guard, `contains` search | Run live during development |
+| Cloud OnRamp and administration | – | 8 | `/template/cloudx/*`, `/alarms`, `/certificate/stats/summary`, `/clusterManagement/health/status`, `/template/policy/customapp` | – | `verify:api` |
+| **Total** | | **148** | | | |
+
+Every write tool (33) is additionally checked offline for refusal while `VMANAGE_ALLOW_WRITE=false` and without `confirm: true`, and for the exact method, path and body when allowed. Live, write tools were checked only up to the write gate (writes disabled on the lab).
+
+#### Spec sweeps
+
+For the areas marked "Full spec sweep", the tests read every operation of the area from the published 26.2.1 spec, call every tool with every scope (solution, profile type, VPN/VRF, interface, version), and fail if an operation is never reached or a tool calls a path that is not in the spec.
+
+OSPF and OSPFv3 share the same 10 tools; the `version` argument selects the protocol (`ospfv2`/`ospfv3` for monitoring, `ospf`/`ospfv3-ipv4`/`ospfv3-ipv6` for features). Their 144 spec operations are split into two rows so each protocol's share is visible; the two rows add up to the OSPF total.
+
+| Area | Monitoring reads | Configuration reads | Read-only previews | Writes (POST/PUT/DELETE) | Total operations | Tools |
+|---|---:|---:|---:|---:|---:|---:|
+| BGP | 3 | 22 | – | 30 | 55 | 9 |
+| OSPFv2 | 7 | 18 | – | 27 | 52 | 10 (shared with OSPFv3) |
+| OSPFv3 (IPv4 and IPv6 address families) | 2 | 36 | – | 54 | 92 | Same 10 tools |
+| EIGRP | 3 | 8 | – | 12 | 23 | 8 |
+| Multicast | 15 | 5 | – | 6 | 26 | 10 |
+| IPv6 (without OSPFv3) | 15 | 28 | 4 | 36 | 83 | 11 |
+| UX 2.0 CLI add-ons | – | 4 | – | 6 | 10 | 5 |
+| **Total** | **45** | **121** | **4** | **171** | **341** | **53** |
+
+- **Monitoring reads** are real-time device queries (`/device/...`).
+- **Configuration reads** are UX 2.0 feature reads (SD-WAN and SD-Routing service/transport profiles, per VPN/VRF or interface) and UX 1.0 policy-object reads. They include the feature-schema endpoints: 2 for BGP, 1 for multicast and 2 for IPv6 trackers. IPv6 splits into 14 UX 1.0 policy-object reads and 14 UX 2.0 tracker reads.
+- **Read-only previews** are POST operations that only render CLI and save nothing (`get_ipv6_policy_object` with `preview_body`); they work with writes disabled.
+
+#### UX 1.0 template types
+
+The UX 1.0 template tools use vManage's generic feature-template API, so a template's type decides which tool may act on it; any other type is refused:
+
+| Tools | Template types accepted |
+|---|---|
+| Routing and multicast template tools (7) | IOS XE: `cisco_bgp`, `cisco_ospf`, `cisco_ospfv3`, `eigrp`, `cedge_igmp`, `cedge_pim`, `cedge_multicast`. vEdge: `bgp`, `ospf`, `igmp`, `pim`, `multicast` |
+| CLI add-on template tools (5) | `cli-template` |
 
 ### Live tests
 
