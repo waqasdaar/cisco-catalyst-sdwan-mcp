@@ -46,6 +46,31 @@ const HIERARCHY = [
   { id: NH.siteB, name: 'Lab', data: { label: 'SITE', parentUuid: NH.area, hierarchyId: { siteId: 900 } }, hierarchyPath: 'Global/EMEA/France/Lab', deviceCount: 0 },
   { id: NH.siteC, name: 'Lab', data: { label: 'SITE', parentUuid: NH.global, hierarchyId: { siteId: 901 } }, hierarchyPath: 'Global/Lab', deviceCount: 0 },
 ];
+// A device's running config with secrets in it, and the config a group renders for it.
+const RUNNING_CONFIG = `system
+ host-name Branch-1
+ console-baud-rate 115200
+!
+username admin privilege 15 secret 9 $9$hashOfTheSecret
+secure-internet-gateway
+ zscaler organization example.com
+ zscaler partner-key PK-12345
+ zscaler password Zs-Pass-1
+!
+snmp-server community public-ro RO
+router ospf 1 vrf 1
+ default-information originate
+!
+`;
+const RENDERED_CONFIG = `system
+ host-name Branch-1
+ console-baud-rate 9600
+!
+username admin privilege 15 secret 9 $9$otherHashOfTheSecret
+snmp-server community public-ro RO
+router ospf 1 vrf 1
+!
+`;
 const GROUPS = {
   'config-group': [{ id: '19191919-1919-4191-8191-191919191919', name: 'Branch-CG', solution: 'sdwan' }],
   'policy-group': [{ id: '20202020-2020-4202-8202-202020202020', name: 'Branch-PG', solution: 'sdwan' }],
@@ -74,7 +99,7 @@ const FEATURE_TEMPLATES = [
 const OSPF_PROFILE = '11111111-1111-4111-8111-111111111111';
 const tokens = new Set();
 // Large-fabric mode for the fan-out tests: extra healthy edges, slow or overloaded BFD queries.
-const mock = { extraEdges: 0, bfdDelayMs: 0, bfdStatus: 200, bfdCalls: 0, bfdInFlight: 0, bfdMaxInFlight: 0, templateListDelayMs: 3000 };
+const mock = { extraEdges: 0, bfdDelayMs: 0, bfdStatus: 200, bfdCalls: 0, bfdInFlight: 0, bfdMaxInFlight: 0, templateListDelayMs: 3000, preview: null };
 // Multi-tenant Manager: provider account switches tenants with a VSessionId header.
 const TENANTS = [
   { tenantId: 't-1', name: 'Tenant-A', orgName: 'Org A', subDomain: 'a.example.com' },
@@ -182,6 +207,7 @@ function handler(req, res) {
           GROUPS[kind].push({ id, name: body?.name, solution: 'sdwan' });
           return send(200, { id });
         }
+        if (req.method === 'POST' && rest.endsWith('/preview') && mock.preview) return send(200, mock.preview);
         return send(200, { id: 'task-1', path: p });
       }
       stats.grpPaths.push(p);
@@ -1310,6 +1336,40 @@ r = await tool(cg, 'get_group_rules', { group_type: 'topology', group: 'Hub-Spok
 check('get_group_rules topology preview', r.value?.path === `/dataservice/v1/topology-group/${TG.id}/rules/preview`, JSON.stringify(r.value ?? r.error));
 r = await tool(cg, 'preview_group_device_config', { group_type: 'topology', group: 'Hub-Spoke', device: 'Branch-2' });
 check('preview_group_device_config works read-only', !r.error && stats.grpPosts.at(-1)?.path === `/dataservice/v1/topology-group/${TG.id}/device/u-12/preview`, JSON.stringify(r.value ?? r.error));
+// Previews hold the device's secrets: none may reach the assistant, in any view of either preview tool.
+mock.preview = { existingConfig: RUNNING_CONFIG, newConfig: RENDERED_CONFIG };
+const SECRETS = /PK-12345|Zs-Pass-1|public-ro|\$9\$/;
+for (const [name, args] of [
+  ['preview_config_group_device_config', { config_group: 'Branch-CG', device: 'Branch-1' }],
+  ['preview_group_device_config', { group_type: 'policy', group: 'Branch-PG', device: 'Branch-1' }],
+]) {
+  for (const view of ['diff', 'both']) {
+    r = await tool(cg, name, { ...args, view });
+    const shown = JSON.stringify(r.value ?? '');
+    check(`${name} (${view}) masks secrets`, !r.error && !SECRETS.test(shown) && /partner-key \*\*\*\*/.test(shown), r.error ?? shown.slice(0, 200));
+  }
+}
+// Only the secret hash differs on the username line: the diff must still report it.
+r = await tool(cg, 'preview_config_group_device_config', { config_group: 'Branch-CG', device: 'Branch-1' });
+check('preview diff still reports a changed secret', ['added', 'removed'].every((k) => r.value?.[k]?.includes('username admin privilege 15 secret 9 ****')), JSON.stringify(r.value ?? r.error).slice(0, 300));
+mock.preview = null;
+const { maskLine } = await import(new URL('../build/services/configReview.js', import.meta.url));
+for (const [line, masked] of [
+  ['ip ospf authentication-key 7 ABC', 'ip ospf authentication-key 7 ****'],
+  ['ip ospf message-digest-key 1 md5 SECRETX', 'ip ospf message-digest-key 1 md5 ****'],
+  ['snmp-server user u g v3 auth sha AUTHP priv aes 128 PRIVP', 'snmp-server user u g v3 auth sha **** priv aes 128 ****'],
+  ['shared-secret ABC', 'shared-secret ****'],
+  ['wpa-psk ascii 0 MYPSK', 'wpa-psk ascii 0 ****'],
+  ['password 10 XYZ', 'password 10 ****'],
+  ['crypto isakmp key MyPsk address 0.0.0.0', 'crypto isakmp key **** address 0.0.0.0'],
+  ['pre-shared-key address 0.0.0.0 key MyPsk', 'pre-shared-key address 0.0.0.0 key ****'],
+  ['snmp-server community public-ro RO', 'snmp-server community **** RO'],
+  ['crypto key generate rsa modulus 2048', 'crypto key generate rsa modulus 2048'],
+  ['set community 65000:100', 'set community 65000:100'],
+  ['key chain KC', 'key chain KC'],
+  [' key 1', ' key 1'],
+  ['service password-encryption', 'service password-encryption'],
+]) check(`maskLine: ${line}`, maskLine(line) === masked, maskLine(line));
 for (const [label, name, args, pattern] of [
   ['get_group_variables refuses topology groups', 'get_group_variables', { group_type: 'topology', group: 'Hub-Spoke' }, /group_type must be one of: config, policy/],
   ['unknown group lists the available ones', 'get_group_rules', { group_type: 'config', group: 'nope' }, /No config-group "nope"\. Available: Branch-CG/],

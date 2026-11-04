@@ -16,7 +16,7 @@ All requests go through vManage. The server never connects to routers directly.
 - **IPv6 end to end.** ND, neighbors, IPv6 routes, FIB, interface statistics, DHCPv6, NAT64, OMP IPv6 routes, IPv6 ACL and SGACL counters; UX 1.0 IPv6 prefix lists, IPv6 ACLs and device-access policies (read, preview, write); UX 2.0 IPv6 trackers and tracker groups (read, schema, write). Every IPv6 operation in the 26.2 spec has a dedicated tool.
 - **CLI add-ons for everything else.** RIP and RIPng have no vManage API, so they are configured as raw IOS XE CLI. Dedicated tools find, read, create, change and delete CLI add-on features (UX 2.0) and CLI add-on templates (UX 1.0); `contains: "router rip"` finds where a protocol is configured.
 - **Validated against the spec.** Calls through the general tools are checked against the OpenAPI spec published by *your* vManage before they are sent.
-- **Secrets are protected.** Endpoints that issue tokens, passwords, OTPs or credentials are blocked. Session IDs and CSRF tokens are redacted from responses.
+- **Secrets are protected.** Endpoints that issue tokens, passwords, OTPs or credentials are blocked. Session IDs and CSRF tokens are redacted from responses. Passwords, secret hashes, keys and SNMP communities are masked in configuration, policy and topology group previews.
 - **Fast and resilient.**
   - Logs in, loads the device list and the API spec in the background at startup, so the first question doesn't wait.
   - Uses Node's `undici` HTTP client with a pooled keep-alive connection set and one login shared across concurrent calls; the JWT is renewed in the background before it expires.
@@ -438,7 +438,7 @@ The `solution` parameter selects `sdwan` (default), `sd-routing`, `nfvirtual` or
 | `list_config_groups` | Configuration groups with feature profiles, device counts and deployment state | `solution`, `name` | "How many configuration groups are on vManage?" |
 | `get_config_group` | One configuration group with its profiles and associated devices | `config_group`\* | "Which devices does configuration group Branch-CG configure?" |
 | `get_config_group_device_variables` | Device-specific variable values (all devices or one) | `config_group`\*, `device` | "Show the variables of Branch-1 in Branch-CG." |
-| `preview_config_group_device_config` | **Read-only** preview: configuration the group would push vs. running config. Nothing is deployed. | `config_group`\*, `device`\*, `view` (`diff` default/`new`/`existing`/`both`) | "What would Branch-CG change on Branch-1 if I deployed now?" |
+| `preview_config_group_device_config` | **Read-only** preview: configuration the group would push vs. running config. Secrets are masked. Nothing is deployed. | `config_group`\*, `device`\*, `view` (`diff` default/`new`/`existing`/`both`) | "What would Branch-CG change on Branch-1 if I deployed now?" |
 | `list_policy_groups` | Policy groups with profiles, device counts and state | `solution` | "List the policy groups." |
 | `get_policy_group` | One policy group with profiles and devices | `policy_group`\* | "Which devices use policy group Branch-PG?" |
 | `list_topology_groups` | Topology groups (hub-and-spoke, mesh) | `solution` | "Which topology groups exist?" |
@@ -451,7 +451,7 @@ The `solution` parameter selects `sdwan` (default), `sd-routing`, `nfvirtual` or
 | `delete_hierarchy_cybervision` | **Write.** Remove a Cyber Vision center (by ID, or by name, which is looked up) | `node` (default Global), `center_id` or `center_name`, `confirm`\* | "Remove Cyber Vision center CV-1." |
 | `get_group_variables` | Device variables of a configuration or policy group: values (all devices or one, optionally with suggestions), the variables schema, or a vManage-side fetch | `group_type`\* (`config`/`policy`), `group`\*, `device`, `schema`, `suggestions`, `fetch_body` | "Which variables does EMEA-Policy-Group need per device?" |
 | `get_group_rules` | Automatic device-association rules of a configuration or policy group; bulk rule-association preview of a topology group | `group_type`\* (`config`/`policy`/`topology`), `group`\* | "Which rules add devices to Branch-CG?" |
-| `preview_group_device_config` | **Read-only** preview for a policy or topology group: configuration it would push vs. running config. Nothing is deployed. | `group_type`\* (`policy`/`topology`), `group`\*, `device`\*, `view` (`diff` default/`new`/`existing`/`both`) | "What would EMEA-Policy-Group change on EMEA-Paris?" |
+| `preview_group_device_config` | **Read-only** preview for a policy or topology group: configuration it would push vs. running config. Secrets are masked. Nothing is deployed. | `group_type`\* (`policy`/`topology`), `group`\*, `device`\*, `view` (`diff` default/`new`/`existing`/`both`) | "What would EMEA-Policy-Group change on EMEA-Paris?" |
 | `create_group` | **Write.** Create a configuration, policy or topology group; returns its ID | `group_type`\*, `body`\* (`{ name, description, solution, profiles: [{ id }] }`), `confirm`\* | "Create configuration group Lab-CG with the Lab profiles." |
 | `update_group` | **Write.** Replace a group definition (name, description, profiles). Devices change only on deploy. | `group_type`\*, `group`\*, `body`\*, `confirm`\* | "Add the CLI profile to Branch-CG." |
 | `delete_group` | **Write.** Delete a group; optionally its feature profiles too (configuration and policy groups) | `group_type`\*, `group`\*, `delete_profiles`, `confirm`\* | "Delete the unused Lab-CG." |
@@ -1321,6 +1321,7 @@ Without `confirm: true`, or with writes disabled, the server refuses the call an
 - **Blocked endpoints.** Operations that issue or expose tokens, passwords, OTPs, credentials or bootstrap configurations are never callable. Neither are file uploads or server-sent event streams.
 - **Validation.** Path and query parameters must exist in the spec, required ones must be present, and types and enums are checked. Path values are URL-encoded and `.`/`..` are rejected.
 - **Redaction and limits.** Values of keys such as `password`, `token`, `csrf` and `sessionId` are replaced with `***redacted***`. List responses are capped (default 200 rows, `max_items` to change) and output stays under 200,000 characters.
+- **Masked device configurations.** The group previews (`preview_config_group_device_config`, `preview_group_device_config`) replace secret values in the running and rendered configurations with `****`, in every view: passwords and secrets (including type 5/8/9 hashes, which can be cracked offline), enable and shared secrets, OSPF authentication and MD5 keys, key-chain key strings, IKE pre-shared keys and PSKs, SIG partner and API keys, SNMP communities and SNMPv3 auth/priv passwords. The encryption type is kept (`secret 9 ****`). The `diff` view compares the unmasked configurations and masks only the lines it returns, so a changed secret is still reported as a change. Route-map communities, `crypto key generate` and key-chain IDs are not secrets and stay readable. Masking is pattern-based; review a preview before sharing it.
 - **TLS.** The Manager's certificate is verified on every connection: a trusted CA, your internal CA (`VMANAGE_CA_FILE`), or exactly one pinned certificate (`VMANAGE_TLS_FINGERPRINT`). Turning verification off needs `VMANAGE_TLS_INSECURE=true` and logs a warning. With a pinned certificate, TLS sessions are not resumed, so every new connection presents the certificate and is checked.
 - **Credentials.** Keep `.env` out of version control (it is in `.gitignore`), restrict its permissions (`chmod 600 .env`), and use a dedicated least-privilege Manager account.
 - **Access-level detection is a heuristic.** It uses the operationId and spec description. Test against a lab Manager before you enable writes on a production fabric.
@@ -1333,7 +1334,7 @@ Four test suites check the server. Only `npm test` runs without a Manager; the o
 
 | Command | Needs a Manager | What it checks | Runs in CI |
 |---|---|---|---|
-| `npm test` | No (simulated vManage) | 293 checks: every tool family, spec coverage of all routing/multicast/IPv6/CLI, configuration/policy/topology group and network-hierarchy operations, write protection, input validation, resilience, multi-tenancy, tool-list size | Yes: Node.js 20, 22 and 24 |
+| `npm test` | No (simulated vManage) | 316 checks: every tool family, spec coverage of all routing/multicast/IPv6/CLI, configuration/policy/topology group and network-hierarchy operations, write protection, input validation, resilience, multi-tenancy, tool-list size | Yes: Node.js 20, 22 and 24 |
 | `npm run test:control-plane -- <edge> <controller> <validator>` | Yes | 39 control-plane, OMP and Validator calls plus 3 input-validation checks | No |
 | `npm run test:ux2 -- <edge-hostname>` | Yes | UX 2.0, fabric-wide, paging and response-shaping tools; hostname resolution, parallel calls, error handling, with timings | No |
 | `npm run verify:api -- <edge> <controller> <validator>` | Yes (≈25 min) | Every read operation that needs no IDs (≈1,260 on 26.2) plus every dedicated read tool; writes [API_COVERAGE.md](API_COVERAGE.md) and [api_coverage.csv](api_coverage.csv) | No |
@@ -1362,6 +1363,7 @@ npm run verify:api -- <edge> <controller> <validator>
 | Routing, multicast, IPv6 and CLI | Spec coverage (below), method/path/query/body of every request, per-view filters, read-only previews |
 | Write protection | Every write tool is refused while `VMANAGE_ALLOW_WRITE=false`, and refused without `confirm: true` when writes are enabled; nothing reaches the Manager in either case |
 | Input validation | Non-UUID IDs, unknown views/versions/scopes, wrong profile types and solutions, wrong template types, oversized CLI text and empty updates are rejected before any request |
+| Secret masking | No password, hash, SIG key or SNMP community reaches the assistant in the `diff` or `both` view of either group preview; a changed secret still shows in the diff; masking of IOS XE secret forms (OSPF, SNMPv3, PSK, key chains) and non-secrets left readable |
 
 #### Coverage by area
 
@@ -1498,6 +1500,7 @@ src/
   server.ts                 # MCP tool definitions and handlers
   services/vmanageApi.ts    # HTTPS client (undici), JWT/session auth, retries, caching, generic request()
   services/apiCatalog.ts    # OpenAPI-driven catalog: search, describe, validated calls, path-to-operation matching, paging, access control
+  services/configReview.ts  # masks secrets in device configurations returned by the group previews
   utils/config.ts           # environment configuration
 scripts/
   deploy.mjs                # deploy runtime copy outside cloud-synced folders

@@ -16,6 +16,7 @@ import {
 } from '@modelcontextprotocol/sdk/types.js';
 import { VManageApiService, type HttpMethod } from './services/vmanageApi.js';
 import { ApiCatalog, shapeResponse } from './services/apiCatalog.js';
+import { maskConfig, maskLine } from './services/configReview.js';
 import { loadConfig, type VManageConfig } from './utils/config.js';
 
 const MAX_RESPONSE_CHARS = 200_000;
@@ -1803,7 +1804,7 @@ export class CatalystSdwanMCPServer {
       {
         name: 'preview_config_group_device_config',
         description:
-          'Read-only: render the configuration a configuration group would push to one device, compared with its running configuration. Shows a line diff by default. Nothing is deployed.',
+          'Read-only: render the configuration a configuration group would push to one device, compared with its running configuration. Shows a line diff by default. Passwords, secrets, keys and SNMP communities are masked. Nothing is deployed.',
         inputSchema: {
           type: 'object',
           properties: {
@@ -1881,7 +1882,7 @@ export class CatalystSdwanMCPServer {
       {
         name: 'preview_group_device_config',
         description:
-          'Read-only: render the configuration a policy group or topology group would push to one device, compared with its running configuration (line diff by default). Nothing is deployed. For configuration groups use preview_config_group_device_config.',
+          'Read-only: render the configuration a policy group or topology group would push to one device, compared with its running configuration (line diff by default). Passwords, secrets, keys and SNMP communities are masked. Nothing is deployed. For configuration groups use preview_config_group_device_config.',
         inputSchema: {
           type: 'object',
           properties: {
@@ -2560,12 +2561,17 @@ export class CatalystSdwanMCPServer {
       const view = pick('view', { diff: 'diff', new: 'new', existing: 'existing', both: 'both' }, 'diff');
       const preview = (await this.apiService.request('POST', `${groupPath}/device/${encodeURIComponent(uuid)}/preview`, { body: {} }))
         .body as { newConfig?: string; existingConfig?: string; [key: string]: unknown };
-      const { newConfig = '', existingConfig = '', ...meta } = preview ?? {};
+      const { newConfig: rendered = '', existingConfig: running = '', ...meta } = preview ?? {};
+      // Device configurations hold passwords, secret hashes, SIG keys and SNMP communities.
+      const newConfig = maskConfig(rendered);
+      const existingConfig = maskConfig(running);
       const head = { ...label, device: uuid, ...meta };
       if (view === 'new') return { ...head, newConfig };
       if (view === 'existing') return { ...head, existingConfig };
       if (view === 'both') return { ...head, newConfig, existingConfig };
-      return { ...head, ...lineDiff(existingConfig, newConfig) };
+      // Diff before masking so a changed secret still shows up as a change.
+      const diff = lineDiff(running, rendered);
+      return { ...head, ...diff, added: diff.added.map(maskLine), removed: diff.removed.map(maskLine) };
     };
     // UX 2.0 association and deploy bodies list devices by UUID.
     const groupDevices = async () => {
