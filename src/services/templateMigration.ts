@@ -19,8 +19,9 @@
  * Every change goes through the server's write path (VMANAGE_ALLOW_WRITE=true and confirm: true).
  */
 
-import { maskLine, missingLines, RESALTED, reviewConfig, SIG_LINES, type ConfigReview } from './configReview.js';
-import { AAA_PASSWORD_PLACEHOLDER, mapValues, parseSchema, rowsFromInput, shownPlan, type MappingReport, type Value } from './configVariables.js';
+import { maskConfig, maskLine, missingLines, RESALTED, reviewConfig, SIG_LINES, type ConfigReview } from './configReview.js';
+import { AAA_PASSWORD_PLACEHOLDER, mapValues, parseSchema, rowsFromInput, type MappingReport, type Value } from './configVariables.js';
+import { MigrationStore } from './migrationStore.js';
 
 // A hash that may only be re-salted is not a change the user has to accept.
 const needsAcceptance = (review: ConfigReview) => [
@@ -109,8 +110,8 @@ export async function planTemplate(deps: MigrationDeps, templateRef: string, gro
 export interface MigrationState {
   configGroup: Group;
   policyGroup?: Group;
-  before: string; // the running config from before the migration, kept in memory only
-  bfdBefore: number;
+  before: string; // the running config from before the migration, masked
+  bfdBefore: number | null; // null: no baseline
 }
 
 const variablesOf = (values: Record<string, Value>, password: string | undefined) =>
@@ -119,14 +120,19 @@ const variablesOf = (values: Record<string, Value>, password: string | undefined
     .map(([name, value]) => ({ name, value: value === AAA_PASSWORD_PLACEHOLDER ? password : value }));
 
 export class TemplateMigration {
-  /** `state` outlives each call (the server keeps it); `deps` carry the call's write approval. */
+  /** `state` caches what `store` keeps on disk across restarts; `deps` carry the call's write approval. */
   constructor(
     private readonly deps: MigrationDeps,
-    private readonly state: Map<string, MigrationState>
+    private readonly state: Map<string, MigrationState>,
+    private readonly store: MigrationStore
   ) {}
 
   async prepare(args: { device: string; template: string; config_group?: unknown }) {
     const device = await this.deps.device(args.device);
+    return this.store.withLock(device.uuid, device.hostName, 'prepare', () => this.prepareLocked(device, args));
+  }
+
+  private async prepareLocked(device: Device, args: { template: string; config_group?: unknown }) {
     const plan = await planTemplate(this.deps, args.template, args.config_group);
     const planned = Object.values(plan.devices).find((d) => d.deviceId === device.uuid);
     if (!planned) throw new Error(`${device.hostName} is not attached to device template ${plan.template.templateName}`);
@@ -140,7 +146,7 @@ export class TemplateMigration {
       throw new Error(`${device.hostName}: the group configures the AAA user password; set VMANAGE_MIGRATION_AAA_PASSWORD on the server. Nothing was changed.`);
     }
     const [before, { bfdUp: bfdBefore }] = await Promise.all([this.runningConfig(device), this.health(device)]);
-    this.state.set(device.uuid, { configGroup: plan.group, policyGroup: plan.policyGroup, before, bfdBefore });
+    await this.remember(device, { configGroup: plan.group, policyGroup: plan.policyGroup, before: maskConfig(before), bfdBefore });
 
     const steps: string[] = [];
     try {
@@ -186,7 +192,11 @@ export class TemplateMigration {
 
   async deploy(args: { device: string; config_group?: unknown; accept_review?: boolean; sig_ready?: boolean; wait_seconds?: number }) {
     const device = await this.deps.device(args.device);
-    const state = await this.stateOf(device, args.config_group);
+    return this.store.withLock(device.uuid, device.hostName, 'deploy', () => this.deployLocked(device, args));
+  }
+
+  private async deployLocked(device: Device, args: { config_group?: unknown; accept_review?: boolean; sig_ready?: boolean; wait_seconds?: number }) {
+    const state = await this.stateOf(device, args.config_group, true);
     const review = await this.review(device, state.configGroup, state.policyGroup);
     const toAccept = needsAcceptance(review);
     if (toAccept.length && args.accept_review !== true) {
@@ -203,26 +213,38 @@ export class TemplateMigration {
       device: device.hostName,
       configGroup: state.configGroup.name,
       task: outcome,
-      health: await this.healthReport(device, state),
+      health: await this.healthReport(device, state.bfdBefore),
       next: `Call step "status" until healthy is true${state.policyGroup ? ', then step "deploy_policy_group": the device has no SIG tunnels until then' : ''}.`,
     };
   }
 
+  /** Read-only, so it takes no lock: it can follow a step another call is running. */
   async status(args: { device: string; config_group?: unknown }) {
     const device = await this.deps.device(args.device);
-    const state = await this.stateOf(device, args.config_group);
-    return { step: 'status', device: device.hostName, health: await this.healthReport(device, state) };
+    const state = await this.stateOf(device, args.config_group, false);
+    return { step: 'status', device: device.hostName, health: await this.healthReport(device, state?.bfdBefore ?? null) };
   }
 
   async deployPolicyGroup(args: { device: string; config_group?: unknown; accept_review?: boolean; wait_seconds?: number }) {
     const device = await this.deps.device(args.device);
-    const state = await this.stateOf(device, args.config_group);
+    return this.store.withLock(device.uuid, device.hostName, 'deploy_policy_group', () => this.deployPolicyGroupLocked(device, args));
+  }
+
+  private async deployPolicyGroupLocked(device: Device, args: { config_group?: unknown; accept_review?: boolean; wait_seconds?: number }) {
+    const saved = await this.stateOf(device, args.config_group, false);
+    const state = saved ?? (await this.groupsOf(device, args.config_group));
     if (!state.policyGroup) throw new Error(`${device.hostName}: ${state.configGroup.name} has no policy group of its name; there is nothing to deploy`);
     const path = `/dataservice/v1/policy-group/${encodeURIComponent(state.policyGroup.id)}`;
-    const preview = await this.deps.readPost<{ existingConfig?: string; newConfig?: string }>(`${path}/device/${encodeURIComponent(device.uuid)}/preview`, {});
-    const lost = missingLines(state.before, preview.newConfig ?? '', SIG_LINES);
-    if (lost.length && args.accept_review !== true) {
-      throw new Error(`${device.hostName}: policy group ${state.policyGroup.name} does not configure ${lost.length} SIG settings the device ran before: ${lost.slice(0, 20).join('; ')}. The device runs without its SIG tunnels until it is deployed. Fix the policy group, or call again with accept_review: true once the user accepts them.`);
+    // Without the snapshot prepare saved, the SIG settings the device ran before are unknown: the person checks them.
+    if (!saved && args.accept_review !== true) {
+      throw new Error(`${device.hostName}: no saved snapshot of its running config from before the migration (step "prepare" saves it), so the SIG settings policy group ${state.policyGroup.name} must configure cannot be checked. Compare them by hand, then call again with accept_review: true. Nothing was deployed.`);
+    }
+    const preview = saved
+      ? await this.deps.readPost<{ existingConfig?: string; newConfig?: string }>(`${path}/device/${encodeURIComponent(device.uuid)}/preview`, {})
+      : undefined;
+    const lost = saved ? missingLines(saved.before, preview?.newConfig ?? '', SIG_LINES) : null;
+    if (lost?.length && args.accept_review !== true) {
+      throw new Error(`${device.hostName}: policy group ${state.policyGroup.name} does not configure ${lost?.length} SIG settings the device ran before: ${lost?.slice(0, 20).join('; ')}. The device runs without its SIG tunnels until it is deployed. Fix the policy group, or call again with accept_review: true once the user accepts them.`);
     }
     const task = await this.deps.write('POST', `${path}/device/deploy`, { devices: [{ id: device.uuid }] });
     const outcome = await this.waitTask(taskId(task), args.wait_seconds ?? 240, `deploy ${state.policyGroup.name} to ${device.hostName}`);
@@ -230,24 +252,49 @@ export class TemplateMigration {
       step: 'policy group deployed',
       device: device.hostName,
       policyGroup: state.policyGroup.name,
-      notConfiguredFromBefore: lost,
+      notConfiguredFromBefore: lost ?? 'not checked: no saved snapshot from before the migration',
       task: outcome,
-      health: await this.healthReport(device, state),
+      health: await this.healthReport(device, saved?.bfdBefore ?? null),
       next: 'Call step "status" until healthy is true, and check the SIG tunnels on the device (show sdwan secure-internet-gateway tunnels).',
     };
   }
 
-  /** The state saved by prepare, or, after a server restart, rebuilt from vManage (the running config then stands
-   *  for "before", which holds while the configuration group is not deployed). */
-  private async stateOf(device: Device, groupRef: unknown): Promise<MigrationState> {
-    const saved = this.state.get(device.uuid);
-    if (saved) return saved;
-    if (groupRef === undefined) throw new Error(`${device.hostName}: no migration prepared in this server session; pass config_group, or run step "prepare"`);
-    const configGroup = await this.deps.findGroup('config-group', groupRef);
-    const policyGroup = (await this.deps.listGroups('policy-group')).find((g) => g.name === configGroup.name);
-    const state = { configGroup, policyGroup, before: '', bfdBefore: 0 };
-    [state.before, { bfdUp: state.bfdBefore }] = await Promise.all([this.runningConfig(device), this.health(device)]);
+  private async remember(device: Device, state: MigrationState) {
     this.state.set(device.uuid, state);
+    const pick = (g: Group) => ({ id: g.id, name: g.name });
+    await this.store.save(device.uuid, {
+      configGroup: pick(state.configGroup),
+      ...(state.policyGroup ? { policyGroup: pick(state.policyGroup) } : {}),
+      before: state.before,
+      bfdBefore: state.bfdBefore,
+      savedAt: new Date().toISOString(),
+    });
+  }
+
+  private async groupsOf(device: Device, groupRef: unknown) {
+    if (groupRef === undefined) throw new Error(`${device.hostName}: no migration prepared for this device; pass config_group, or run step "prepare"`);
+    const [configGroup, policyGroups] = await Promise.all([this.deps.findGroup('config-group', groupRef), this.deps.listGroups('policy-group')]);
+    return { configGroup, policyGroup: policyGroups.find((g) => g.name === configGroup.name) };
+  }
+
+  /** The state prepare saved (memory, then disk, so it survives a restart). With `rebuild`, a missing state is
+   *  rebuilt from vManage, taking the current running config as "before": only right before the deploy. */
+  private async stateOf(device: Device, groupRef: unknown, rebuild: true): Promise<MigrationState>;
+  private async stateOf(device: Device, groupRef: unknown, rebuild: false): Promise<MigrationState | undefined>;
+  private async stateOf(device: Device, groupRef: unknown, rebuild: boolean): Promise<MigrationState | undefined> {
+    const cached = this.state.get(device.uuid);
+    if (cached) return cached;
+    const saved = await this.store.load(device.uuid);
+    if (saved) {
+      const state = { ...saved, configGroup: saved.configGroup as Group, policyGroup: saved.policyGroup as Group | undefined };
+      this.state.set(device.uuid, state);
+      return state;
+    }
+    if (!rebuild) return undefined;
+    const groups = await this.groupsOf(device, groupRef);
+    const [before, { bfdUp }] = await Promise.all([this.runningConfig(device), this.health(device)]);
+    const state = { ...groups, before: maskConfig(before), bfdBefore: bfdUp };
+    await this.remember(device, state);
     return state;
   }
 
@@ -277,9 +324,10 @@ export class TemplateMigration {
     };
   }
 
-  private async healthReport(device: Device, state: MigrationState) {
+  private async healthReport(device: Device, bfdBefore: number | null) {
     const now = await this.health(device);
-    return { ...now, bfdBefore: state.bfdBefore, healthy: now.vsmartUp > 0 && now.bfdUp >= state.bfdBefore };
+    const healthy = now.vsmartUp > 0 && (bfdBefore === null ? now.bfdUp > 0 : now.bfdUp >= bfdBefore);
+    return { ...now, bfdBefore, healthy, ...(bfdBefore === null ? { note: 'no BFD baseline from before the migration: healthy means any BFD session is up' } : {}) };
   }
 
   /** Waits for a vManage task, up to maxSeconds; a task still running is returned as such, a failed one throws. */

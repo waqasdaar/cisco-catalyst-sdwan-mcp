@@ -20,6 +20,7 @@ import { changes as parcelChanges, RULES as CONVERSION_RULES } from './services/
 import { maskConfig, maskLine, reviewConfig, SIG_LINES } from './services/configReview.js';
 import { planTemplate, TemplateMigration, type MigrationDeps, type MigrationState } from './services/templateMigration.js';
 import { shownPlan } from './services/configVariables.js';
+import { MigrationStore } from './services/migrationStore.js';
 import { loadConfig, type VManageConfig } from './utils/config.js';
 
 const MAX_RESPONSE_CHARS = 200_000;
@@ -802,8 +803,9 @@ export class CatalystSdwanMCPServer {
   }
 
   private tools: Tool[] | null = null;
-  /** deploy_template_migration: per device, what step "prepare" saved (its running config stays in memory only). */
+  /** deploy_template_migration: per device, what step "prepare" saved; the store keeps it (masked) across restarts. */
   private migrationState = new Map<string, MigrationState>();
+  private migrationStore = new MigrationStore();
 
   private getAllTools(): Tool[] {
     const tenantOption: Record<string, object> = this.config.allowTenantSwitch
@@ -3504,7 +3506,7 @@ export class CatalystSdwanMCPServer {
         return { template: plan.template.templateName, configGroup: plan.group.name, policyGroup: plan.policyGroup?.name, devices };
       }
       case 'deploy_template_migration': {
-        const migration = new TemplateMigration(migrationDeps(), this.migrationState);
+        const migration = new TemplateMigration(migrationDeps(), this.migrationState, this.migrationStore);
         const step = pick('step', { prepare: 'prepare', deploy: 'deploy', status: 'status', deploy_policy_group: 'deploy_policy_group' }, '');
         const device = String(args.device ?? '').trim();
         if (!device) throw new Error('device is required (hostname, system IP, UUID or chassis number)');

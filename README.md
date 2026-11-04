@@ -468,7 +468,7 @@ Recommended change workflow: `get_config_group` / `get_group_variables` → chan
 
 **Review view.** `view: "review"` sorts what a deploy would change into `dropped` (settings the group does not configure), `changed` (same setting, new value: `console-baud-rate 115200 -> 9600`), `secretsChanged` (passwords, keys and hashes with a new value, masked; type 5/8/9 hashes are marked as possibly only re-salted), `added`, and `defaults` (no action needed), each line with its section (`interface GigabitEthernet2 > ip nat outside`). For a configuration group with a policy group of the same name, where the template-to-group conversion puts SIG, the SIG settings are listed apart in `fromPolicyGroup`. Settings that device templates and configuration groups only write differently are not reported. Review `dropped`, `changed` and `secretsChanged` before deploying.
 
-**Migrating from device templates.** vManage's template-to-group conversion creates the groups but not the devices' values, and on 20.18 it leaves defects. Check the groups first with `find_config_group_conversion_defects` and fix what it reports, then plan the values with `plan_config_group_variables`. Then move one device at a time with `deploy_template_migration`: `prepare` → read the review with the user → `deploy` → `status` until healthy → `deploy_policy_group` for a device with SIG → the next device. Between `deploy` and `deploy_policy_group`, a SIG device has no SIG tunnels: vManage deploys a policy group only on a device that runs its configuration group, and the conversion doesn't carry the SIG provider's credentials, so set them in vManage first (`sig_ready: true` confirms it). Before `deploy`, undo by removing the device from its groups and re-attaching its template.
+**Migrating from device templates.** vManage's template-to-group conversion creates the groups but not the devices' values, and on 20.18 it leaves defects. Check the groups first with `find_config_group_conversion_defects` and fix what it reports, then plan the values with `plan_config_group_variables`. Then move one device at a time with `deploy_template_migration`: `prepare` → read the review with the user → `deploy` → `status` until healthy → `deploy_policy_group` for a device with SIG → the next device. Between `deploy` and `deploy_policy_group`, a SIG device has no SIG tunnels: vManage deploys a policy group only on a device that runs its configuration group, and the conversion doesn't carry the SIG provider's credentials, so set them in vManage first (`sig_ready: true` confirms it). Before `deploy`, undo by removing the device from its groups and re-attaching its template. What `prepare` records (the device's running config, masked, and its BFD sessions) is kept in `VMANAGE_STATE_DIR`, so a migration continues after a server restart; without it, `deploy_policy_group` needs `accept_review: true` after the SIG settings are checked by hand. Only one write step runs per device at a time, also across server processes (VS Code and other MCP clients each start one); `status` can follow a running step.
 
 #### Templates and policy – UX 1.0 (7)
 
@@ -621,6 +621,7 @@ The server reads `.env` from the project (or deployed) root folder. You can also
 | `VMANAGE_USE_JWT` | No | `true` | `false` uses session-cookie auth (Manager releases before 20.18.1) |
 | `VMANAGE_ALLOW_WRITE` | No | `false` | `true` allows write operations through `call_api_operation` and the dedicated write tools (each call still needs `confirm: true`). The dedicated write tools (`create_*`, `update_*`, `delete_*`, `associate_*`, `clone_*`, `deploy_*`) are listed only when this is `true`. |
 | `VMANAGE_MIGRATION_AAA_PASSWORD` | No | – | The AAA user password `deploy_template_migration` sets in a configuration group that has an AAA password variable. Never sent to the assistant. |
+| `VMANAGE_STATE_DIR` | No | `~/.local/state/cisco-catalyst-sdwan-mcp` | Where `deploy_template_migration` keeps each device's migration state (running config masked, files mode 600) and its per-device lock. Must be writable; mount a volume there to keep it across container restarts. |
 | `VMANAGE_TIMEOUT_MS` | No | `120000` | Timeout for real-time device queries (calls with a `deviceId`), which the Manager proxies to the device and can be slow. |
 | `VMANAGE_LIST_TIMEOUT_MS` | No | `60000` | Timeout for everything else: inventory, configuration, statistics and login. |
 | `VMANAGE_MAX_CONCURRENCY` | No | `8` | Maximum simultaneous requests sent to the Manager |
@@ -1343,7 +1344,7 @@ Four test suites check the server. Only `npm test` runs without a Manager; the o
 
 | Command | Needs a Manager | What it checks | Runs in CI |
 |---|---|---|---|
-| `npm test` | No (simulated vManage) | 339 checks: every tool family, spec coverage of all routing/multicast/IPv6/CLI, configuration/policy/topology group and network-hierarchy operations, write protection, input validation, resilience, multi-tenancy, tool-list size | Yes: Node.js 20, 22 and 24 |
+| `npm test` | No (simulated vManage) | 344 checks: every tool family, spec coverage of all routing/multicast/IPv6/CLI, configuration/policy/topology group and network-hierarchy operations, write protection, input validation, resilience, multi-tenancy, tool-list size | Yes: Node.js 20, 22 and 24 |
 | `npm run test:control-plane -- <edge> <controller> <validator>` | Yes | 39 control-plane, OMP and Validator calls plus 3 input-validation checks | No |
 | `npm run test:ux2 -- <edge-hostname>` | Yes | UX 2.0, fabric-wide, paging and response-shaping tools; hostname resolution, parallel calls, error handling, with timings | No |
 | `npm run verify:api -- <edge> <controller> <validator>` | Yes (≈25 min) | Every read operation that needs no IDs (≈1,260 on 26.2) plus every dedicated read tool; writes [API_COVERAGE.md](API_COVERAGE.md) and [api_coverage.csv](api_coverage.csv) | No |
@@ -1514,6 +1515,7 @@ src/
   services/configVariables.ts # template-to-group migration: maps template values onto group variables
   services/configDefects.ts # template-to-group migration: conversion defects and their fixes
   services/templateMigration.ts # template-to-group migration: value planning and the deploy_template_migration steps
+  services/migrationStore.ts # deploy_template_migration state across restarts (masked) and per-device lock
   utils/config.ts           # environment configuration
 scripts/
   deploy.mjs                # deploy runtime copy outside cloud-synced folders

@@ -3,7 +3,7 @@
 // Usage: npm test
 import { execFileSync } from 'child_process';
 import { X509Certificate } from 'crypto';
-import { mkdtempSync, readFileSync, rmSync } from 'fs';
+import { existsSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from 'fs';
 import https from 'https';
 import { tmpdir } from 'os';
 import { join } from 'path';
@@ -503,6 +503,7 @@ const FINGERPRINT = new X509Certificate(readFileSync(join(certDir, 'cert.pem')))
 const baseEnv = {
   PATH: process.env.PATH,
   HOME: process.env.HOME,
+  VMANAGE_STATE_DIR: join(certDir, 'state'),
   VMANAGE_HOST: '127.0.0.1',
   VMANAGE_PORT: String(PORT),
   VMANAGE_USERNAME: 'test',
@@ -1621,6 +1622,38 @@ check(
 r = await tool(mw, 'deploy_template_migration', { step: 'status', device: 'Branch-2' });
 check('migration: status', r.value?.health?.healthy === true && r.value.health.bfdBefore === 2, JSON.stringify(r.value ?? r.error));
 await mw.close();
+// The state prepare saved survives a restart, masked and readable by the user only.
+const stateFile = join(certDir, 'state', 'migration-u-12.json');
+const lockFile = join(certDir, 'state', 'migration-u-12.lock');
+const savedState = readFileSync(stateFile, 'utf8');
+const mw2 = await connect(migrationEnv);
+r = await tool(mw2, 'deploy_template_migration', { step: 'status', device: 'Branch-2' });
+check(
+  'migration: the state survives a server restart, masked, mode 600',
+  r.value?.health?.bfdBefore === 2 && /partner-key \*\*\*\*/.test(savedState) && !/\$9\$|Aaa-Secret-9/.test(savedState) && (statSync(stateFile).mode & 0o077) === 0,
+  JSON.stringify(r.value ?? r.error).slice(0, 200)
+);
+// One step at a time per device, across server processes: a live lock refuses, a dead holder's lock is taken over.
+writeFileSync(lockFile, JSON.stringify({ pid: process.pid, since: Date.now(), step: 'deploy' }));
+const deploysBefore = stats.grpPosts.filter((w) => w.path.endsWith('/device/deploy')).length;
+r = await tool(mw2, 'deploy_template_migration', { step: 'deploy', device: 'Branch-2', sig_ready: true, confirm: true, wait_seconds: 5 });
+check(
+  'migration: a step running for the device in another process refuses a second one',
+  /step "deploy" since .* is still running/.test(r.error ?? '') && stats.grpPosts.filter((w) => w.path.endsWith('/device/deploy')).length === deploysBefore,
+  r.error ?? 'not refused'
+);
+writeFileSync(lockFile, JSON.stringify({ pid: 999999, since: Date.now(), step: 'deploy' }));
+r = await tool(mw2, 'deploy_template_migration', { step: 'deploy', device: 'Branch-2', sig_ready: true, confirm: true, wait_seconds: 5 });
+check('migration: the lock of a crashed process is taken over and released', r.value?.step === 'deployed' && !existsSync(lockFile), JSON.stringify(r.value ?? r.error).slice(0, 200));
+await mw2.close();
+// Without the snapshot, the SIG settings to keep cannot be checked: deploy_policy_group asks the person to.
+rmSync(stateFile);
+const mw3 = await connect(migrationEnv);
+r = await tool(mw3, 'deploy_template_migration', { step: 'deploy_policy_group', device: 'Branch-2', config_group: 'Branch-CG', confirm: true });
+check('migration: deploy_policy_group without a saved snapshot needs accept_review', /no saved snapshot/.test(r.error ?? ''), r.error ?? 'not refused');
+r = await tool(mw3, 'deploy_template_migration', { step: 'status', device: 'Branch-2' });
+check('migration: status without a baseline still reports health', r.value?.health?.bfdBefore === null && r.value.health.healthy === true && /no BFD baseline/.test(r.value.health.note ?? ''), JSON.stringify(r.value ?? r.error));
+await mw3.close();
 mock.preview = null;
 mock.migration = false;
 GROUPS['policy-group'].pop();
