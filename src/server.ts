@@ -17,7 +17,7 @@ import {
 import { VManageApiService, type HttpMethod } from './services/vmanageApi.js';
 import { ApiCatalog, shapeResponse } from './services/apiCatalog.js';
 import { changes as parcelChanges, RULES as CONVERSION_RULES } from './services/configDefects.js';
-import { maskConfig, reviewConfig, SIG_LINES } from './services/configReview.js';
+import { maskConfig, maskLine, reviewConfig, SIG_LINES } from './services/configReview.js';
 import { planTemplate, TemplateMigration, type MigrationDeps, type MigrationState } from './services/templateMigration.js';
 import { loadConfig, type VManageConfig } from './utils/config.js';
 
@@ -1835,7 +1835,7 @@ export class CatalystSdwanMCPServer {
               type: 'string',
               enum: ['diff', 'review', 'new', 'existing', 'both'],
               description:
-                'What to return (default: diff). review sorts the differences for a deploy decision: settings the group would drop, settings whose value changes, settings it adds, and defaults that need no action',
+                'What to return (default: diff). review sorts the differences for a deploy decision: settings the group would drop, settings whose value changes, passwords and keys whose value changes (masked), settings it adds, and defaults that need no action',
             },
           },
           required: ['config_group', 'device'],
@@ -1875,7 +1875,7 @@ export class CatalystSdwanMCPServer {
             device: { type: 'string', description: 'Device hostname, system-ip, UUID or chassis number' },
             template: { type: 'string', description: 'prepare: the device template the device is attached to (ID or exact name)' },
             config_group: { type: 'string', description: "Configuration group ID or exact name (default: the template's name; needed after a server restart)" },
-            accept_review: { type: 'boolean', description: 'Deploy although the review drops or changes settings, only after the user accepts them' },
+            accept_review: { type: 'boolean', description: 'Deploy although the review drops or changes settings or changes a password or key, only after the user accepts them' },
             sig_ready: { type: 'boolean', description: 'deploy: the user confirms the SIG provider credentials are set in vManage' },
             wait_seconds: { type: 'number', description: 'How long to wait for the vManage task (default 240, at most 900)' },
             ...WRITE_CONFIRM,
@@ -1961,7 +1961,7 @@ export class CatalystSdwanMCPServer {
               type: 'string',
               enum: ['diff', 'review', 'new', 'existing', 'both'],
               description:
-                'What to return (default: diff). review sorts the differences for a deploy decision: settings the group would drop, settings whose value changes, settings it adds, and defaults that need no action',
+                'What to return (default: diff). review sorts the differences for a deploy decision: settings the group would drop, settings whose value changes, passwords and keys whose value changes (masked), settings it adds, and defaults that need no action',
             },
           },
           required: ['group_type', 'group', 'device'],
@@ -2651,13 +2651,20 @@ export class CatalystSdwanMCPServer {
       const { newConfig: rendered = '', existingConfig: running = '', ...meta } = preview ?? {};
       if (view === 'review') {
         // The template-to-group conversion puts a template's SIG feature in a policy group of the group's name.
-        const policyGroup = typeof label.configGroup === 'string'
-          ? (await this.listGroups('policy-group')).find((g) => g.name === label.configGroup)
-          : undefined;
+        let policyGroup: UxGroup | undefined;
+        let policyGroupLookupError: string | undefined;
+        if (typeof label.configGroup === 'string') {
+          try {
+            policyGroup = (await this.listGroups('policy-group')).find((g) => g.name === label.configGroup);
+          } catch (error) {
+            policyGroupLookupError = `Policy groups could not be listed, so SIG settings are not separated: ${(error as Error).message}`;
+          }
+        }
         const review = reviewConfig(running, rendered, policyGroup ? SIG_LINES : undefined);
         return {
           ...label,
           ...(policyGroup ? { policyGroup: policyGroup.name } : {}),
+          ...(policyGroupLookupError ? { policyGroupLookupError } : {}),
           device: uuid,
           ...meta,
           summary: Object.fromEntries(Object.entries(review).map(([k, v]) => [k, v.length])),
@@ -2671,7 +2678,9 @@ export class CatalystSdwanMCPServer {
       if (view === 'new') return { ...head, newConfig };
       if (view === 'existing') return { ...head, existingConfig };
       if (view === 'both') return { ...head, newConfig, existingConfig };
-      return { ...head, ...lineDiff(existingConfig, newConfig) };
+      // Diff before masking so a changed secret still shows up as a change.
+      const diff = lineDiff(running, rendered);
+      return { ...head, ...diff, added: diff.added.map(maskLine), removed: diff.removed.map(maskLine) };
     };
     // UX 2.0 association and deploy bodies list devices by UUID.
     const groupDevices = async () => {

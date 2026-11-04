@@ -19,8 +19,15 @@
  * Every change goes through the server's write path (VMANAGE_ALLOW_WRITE=true and confirm: true).
  */
 
-import { maskLine, missingLines, reviewConfig, SIG_LINES, type ConfigReview } from './configReview.js';
+import { maskLine, missingLines, RESALTED, reviewConfig, SIG_LINES, type ConfigReview } from './configReview.js';
 import { AAA_PASSWORD_PLACEHOLDER, mapValues, parseSchema, rowsFromInput, type MappingReport, type Value } from './configVariables.js';
+
+// A hash that may only be re-salted is not a change the user has to accept.
+const needsAcceptance = (review: ConfigReview) => [
+  ...review.dropped,
+  ...review.changed,
+  ...review.secretsChanged.filter((s) => !s.endsWith(RESALTED)),
+];
 
 export interface Group {
   id: string;
@@ -153,6 +160,7 @@ export class TemplateMigration {
       steps.push(`associated ${kind.replace('-', ' ')} ${group.name} and set its ${Object.keys(values).length} values`);
     }
     const review = await this.review(device, plan.group, plan.policyGroup);
+    const toAccept = needsAcceptance(review);
     return {
       step: 'prepared',
       device: device.hostName,
@@ -160,7 +168,7 @@ export class TemplateMigration {
       policyGroup: plan.policyGroup?.name,
       done: steps,
       review,
-      next: `Nothing was pushed to the device. Go through the review with the user. Then call step "deploy"${review.summary.dropped || review.summary.changed ? ' with accept_review: true once the user accepts the dropped and changed settings' : ''}${plan.policyGroup ? ', and sig_ready: true once the user confirms the SIG provider credentials are set in vManage' : ''}. To undo instead, remove the device from its groups and re-attach its template.`,
+      next: `Nothing was pushed to the device. Go through the review with the user. Then call step "deploy"${toAccept.length ? ' with accept_review: true once the user accepts the dropped and changed settings and secrets' : ''}${plan.policyGroup ? ', and sig_ready: true once the user confirms the SIG provider credentials are set in vManage' : ''}. To undo instead, remove the device from its groups and re-attach its template.`,
     };
   }
 
@@ -168,8 +176,10 @@ export class TemplateMigration {
     const device = await this.deps.device(args.device);
     const state = await this.stateOf(device, args.config_group);
     const review = await this.review(device, state.configGroup, state.policyGroup);
-    if ((review.summary.dropped || review.summary.changed) && args.accept_review !== true) {
-      throw new Error(`${device.hostName}: deploying ${state.configGroup.name} would drop ${review.summary.dropped} and change ${review.summary.changed} settings: ${[...review.dropped, ...review.changed].slice(0, 20).join('; ')}. Nothing was deployed. Fix the group, or call again with accept_review: true once the user accepts them.`);
+    const toAccept = needsAcceptance(review);
+    if (toAccept.length && args.accept_review !== true) {
+      const secrets = toAccept.length - review.summary.dropped - review.summary.changed;
+      throw new Error(`${device.hostName}: deploying ${state.configGroup.name} would drop ${review.summary.dropped} and change ${review.summary.changed} settings${secrets ? ` and ${secrets} secrets` : ''}: ${toAccept.slice(0, 20).join('; ')}. Nothing was deployed. Fix the group, or call again with accept_review: true once the user accepts them.`);
     }
     if (state.policyGroup && args.sig_ready !== true) {
       throw new Error(`${device.hostName} has SIG, in policy group ${state.policyGroup.name}: from this deploy until step deploy_policy_group, it has no SIG tunnels, and that step needs the SIG provider's credentials in vManage (the conversion does not carry them). Call again with sig_ready: true once the user confirms they are set. Nothing was deployed.`);

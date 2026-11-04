@@ -9,6 +9,7 @@
  * into:
  *   defaults         settings rendered under device templates but not under groups, at their default value
  *   changed          the same setting with another value (console speed 115200 -> 9600)
+ *   secretsChanged   a password, key or secret hash with another value, masked
  *   dropped          settings the group does not configure (OSPF default-information originate, BGP update-source)
  *   fromPolicyGroup  dropped or changed settings the device's policy group configures: the template-to-group
  *                    conversion (20.18) puts a template's SIG feature in a policy group of the template's name, and
@@ -16,10 +17,20 @@
  * and lines only in the rendered config are "added". Dropped and changed settings are what to review.
  */
 
-/** A secret's keyword and the word after it: passwords, user secrets, keys (SIG partner and API keys, IKE
- *  pre-shared keys) and SNMP communities. Hashed secrets are masked too, as they can be cracked offline. */
-const SECRET_VALUE =
-  /(?<![\w-])((?:secret|password|key|key-string|pre-shared-key|partner-key|api-key|community)(?: \d)?)\s+\S+/gi;
+/** A secret's keyword, its optional encryption type, and the value after it. Hashed secrets are masked
+ *  too, as they can be cracked offline. */
+const SECRET_KEYWORDS = [
+  'message-digest-key\\s+\\d+\\s+md5', // before the generic -key form, which would stop at the key ID
+  '[\\w-]*(?:password|secret)', // password, enable-password, shared-secret, auth-password...
+  '[\\w-]*-key(?!\\s+(?:address|hostname)\\b)', // authentication-key, pre-shared-key, partner-key, api-key
+  'key-string',
+  '[\\w-]*psk(?:\\s+(?:ascii|hex))?',
+  'key(?!\\s+(?:chain|generate|zeroize|import|export|storage|pubkey-chain)\\b|\\s+\\d+\\s*$)',
+  '(?<!(?:set|match)\\s)community', // SNMP communities, not BGP route-map communities
+  'auth\\s+(?:md5|sha\\S*)', // SNMPv3 user auth and priv passwords
+  'priv\\s+(?:des|3des|aes(?:\\s+\\d+)?)',
+];
+const SECRET_VALUE = new RegExp(`(?<![\\w-])((?:${SECRET_KEYWORDS.join('|')})(?:\\s+\\d{1,2})?)\\s+\\S+`, 'gi');
 const DEFAULT_LINES = [
   /^no (border|last-resort-circuit|low-bandwidth-link|vbond-as-stun-server)$/,
   /^vmanage-connection-preference 5$/, /^port-hop$/, /^carrier default$/, /^nat-refresh-interval 5$/,
@@ -40,6 +51,7 @@ const INTEGRITY_TYPES: Record<string, string> = {
 export interface ConfigReview {
   dropped: string[];
   changed: string[];
+  secretsChanged: string[];
   added: string[];
   defaults: string[];
   fromPolicyGroup: string[];
@@ -85,6 +97,9 @@ function sectioned(text: string): Array<[string, string]> {
 const where = (path: string, line: string) => (path ? `${path} > ${line}` : line);
 const keyOf = (path: string, line: string) => (line.includes(' ') ? `${path}\u0000${line.slice(0, line.lastIndexOf(' '))}` : null);
 const lastWord = (line: string) => line.slice(line.lastIndexOf(' ') + 1);
+// Type 5/8/9 hashes and $n$ hashes get a new salt on every render, so a change may not be a new secret.
+const HASHED = /(?:\s[589]\s+\S+|\s\$\d+\$\S*)$/;
+export const RESALTED = '(hash; may only be re-salted)';
 
 /** Settings matching `pattern` in `before` that `rendered` does not configure, compared with secrets masked. */
 export function missingLines(before: string, rendered: string, pattern: RegExp): string[] {
@@ -105,34 +120,40 @@ export function reviewConfig(running: string, rendered: string, fromPolicyGroup?
   // Section headers ("interface X") are never a setting whose value changes.
   const headers = new Set([...oldLines, ...newLines].map(([path]) => path));
   const added = newLines.filter((e) => !oldSet.has(id(e)));
-  const addedByKey = new Map<string, string>();
-  for (const [path, line] of added) {
+  // Each added line can pair with one running line only, so repeated settings (name servers) stay distinct.
+  const addedByKey = new Map<string, number[]>();
+  added.forEach(([path, line], i) => {
     const key = keyOf(path, line);
-    if (key && !headers.has(where(path, line))) addedByKey.set(key, line);
-  }
-  const result: ConfigReview = { dropped: [], changed: [], added: [], defaults: [], fromPolicyGroup: [] };
-  const matched = new Set<string>();
+    if (key && !headers.has(where(path, line))) addedByKey.set(key, [...(addedByKey.get(key) ?? []), i]);
+  });
+  const result: ConfigReview = { dropped: [], changed: [], secretsChanged: [], added: [], defaults: [], fromPolicyGroup: [] };
+  const paired = new Set<number>();
   for (const [path, line] of oldLines.filter((e) => !newSet.has(id(e)))) {
     const key = headers.has(where(path, line)) ? null : keyOf(path, line);
-    const isSecret = new RegExp(SECRET_VALUE.source, 'i').test(line);
     if (DEFAULT_LINES.some((p) => p.test(line))) {
       result.defaults.push(maskLine(where(path, line)));
-    } else if (key && addedByKey.has(key)) {
-      matched.add(key);
-      // A secret re-hashed with a new salt is not a change.
-      if (!isSecret) result.changed.push(maskLine(`${where(path, line)} -> ${lastWord(addedByKey.get(key) as string)}`));
+      continue;
+    }
+    const match = key ? addedByKey.get(key)?.shift() : undefined;
+    if (match !== undefined) {
+      paired.add(match);
+      const masked = maskLine(where(path, line));
+      if (masked.endsWith(' ****')) {
+        result.secretsChanged.push(HASHED.test(line) ? `${masked} ${RESALTED}` : masked);
+      } else {
+        result.changed.push(maskLine(`${where(path, line)} -> ${lastWord(added[match][1])}`));
+      }
     } else {
       result.dropped.push(maskLine(where(path, line)));
     }
   }
-  for (const [path, line] of added) {
-    const key = keyOf(path, line);
-    if (key && matched.has(key)) continue;
+  added.forEach(([path, line], i) => {
+    if (paired.has(i)) return;
     if (!path && NOT_KEPT_LINES.some((p) => p.test(line))) result.defaults.push(line);
     else result.added.push(maskLine(where(path, line)));
-  }
+  });
   if (fromPolicyGroup) {
-    for (const name of ['dropped', 'changed'] as const) {
+    for (const name of ['dropped', 'changed', 'secretsChanged'] as const) {
       result.fromPolicyGroup.push(...result[name].filter((i) => fromPolicyGroup.test(i)));
       result[name] = result[name].filter((i) => !fromPolicyGroup.test(i));
     }
