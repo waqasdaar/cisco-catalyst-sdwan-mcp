@@ -438,7 +438,7 @@ The `solution` parameter selects `sdwan` (default), `sd-routing`, `nfvirtual` or
 | `list_config_groups` | Configuration groups with feature profiles, device counts and deployment state | `solution`, `name` | "How many configuration groups are on vManage?" |
 | `get_config_group` | One configuration group with its profiles and associated devices | `config_group`\* | "Which devices does configuration group Branch-CG configure?" |
 | `get_config_group_device_variables` | Device-specific variable values (all devices or one) | `config_group`\*, `device` | "Show the variables of Branch-1 in Branch-CG." |
-| `preview_config_group_device_config` | **Read-only** preview: configuration the group would push vs. running config. Secrets are masked. Nothing is deployed. | `config_group`\*, `device`\*, `view` (`diff` default/`new`/`existing`/`both`) | "What would Branch-CG change on Branch-1 if I deployed now?" |
+| `preview_config_group_device_config` | **Read-only** preview: configuration the group would push vs. running config. Secrets are masked. Nothing is deployed. | `config_group`\*, `device`\*, `view` (`diff` default/`review`/`new`/`existing`/`both`) | "What would Branch-CG change on Branch-1 if I deployed now?" |
 | `list_policy_groups` | Policy groups with profiles, device counts and state | `solution` | "List the policy groups." |
 | `get_policy_group` | One policy group with profiles and devices | `policy_group`\* | "Which devices use policy group Branch-PG?" |
 | `list_topology_groups` | Topology groups (hub-and-spoke, mesh) | `solution` | "Which topology groups exist?" |
@@ -451,7 +451,7 @@ The `solution` parameter selects `sdwan` (default), `sd-routing`, `nfvirtual` or
 | `delete_hierarchy_cybervision` | **Write.** Remove a Cyber Vision center (by ID, or by name, which is looked up) | `node` (default Global), `center_id` or `center_name`, `confirm`\* | "Remove Cyber Vision center CV-1." |
 | `get_group_variables` | Device variables of a configuration or policy group: values (all devices or one, optionally with suggestions), the variables schema, or a vManage-side fetch | `group_type`\* (`config`/`policy`), `group`\*, `device`, `schema`, `suggestions`, `fetch_body` | "Which variables does EMEA-Policy-Group need per device?" |
 | `get_group_rules` | Automatic device-association rules of a configuration or policy group; bulk rule-association preview of a topology group | `group_type`\* (`config`/`policy`/`topology`), `group`\* | "Which rules add devices to Branch-CG?" |
-| `preview_group_device_config` | **Read-only** preview for a policy or topology group: configuration it would push vs. running config. Secrets are masked. Nothing is deployed. | `group_type`\* (`policy`/`topology`), `group`\*, `device`\*, `view` (`diff` default/`new`/`existing`/`both`) | "What would EMEA-Policy-Group change on EMEA-Paris?" |
+| `preview_group_device_config` | **Read-only** preview for a policy or topology group: configuration it would push vs. running config. Secrets are masked. Nothing is deployed. | `group_type`\* (`policy`/`topology`), `group`\*, `device`\*, `view` (`diff` default/`review`/`new`/`existing`/`both`) | "What would EMEA-Policy-Group change on EMEA-Paris?" |
 | `create_group` | **Write.** Create a configuration, policy or topology group; returns its ID | `group_type`\*, `body`\* (`{ name, description, solution, profiles: [{ id }] }`), `confirm`\* | "Create configuration group Lab-CG with the Lab profiles." |
 | `update_group` | **Write.** Replace a group definition (name, description, profiles). Devices change only on deploy. | `group_type`\*, `group`\*, `body`\*, `confirm`\* | "Add the CLI profile to Branch-CG." |
 | `delete_group` | **Write.** Delete a group; optionally its feature profiles too (configuration and policy groups) | `group_type`\*, `group`\*, `delete_profiles`, `confirm`\* | "Delete the unused Lab-CG." |
@@ -462,6 +462,8 @@ The `solution` parameter selects `sdwan` (default), `sd-routing`, `nfvirtual` or
 **Network hierarchy.** The hierarchy tools cover all 4 network-hierarchy operations in the 26.2 spec (the Cyber Vision network settings: 2 reads, 1 create/edit, 1 delete) plus the hierarchy list and node detail (`GET /v1/network-hierarchy[/{id}]`), which vManage serves but does not document. Nodes are found by node ID, hierarchy path, site ID or name; a name used by more than one node is refused with the matching paths. vManage 26.2 accepts network settings only on the **Global** node (other nodes return `NWHAR0005`), so the Cyber Vision tools default to it. The 26.2 API has no operation to create, rename, move or delete regions, areas or sites, so the server cannot change the hierarchy itself; do that in the Manager GUI (**Configuration → Network Hierarchy**).
 
 Recommended change workflow: `get_config_group` / `get_group_variables` → change with `update_group`, `associate_group_devices` or `update_group_variables` → `preview_config_group_device_config` or `preview_group_device_config` for each device → `deploy_group` after you approve the diff.
+
+**Review view.** `view: "review"` sorts what a deploy would change into `dropped` (settings the group does not configure), `changed` (same setting, new value: `console-baud-rate 115200 -> 9600`), `secretsChanged` (passwords, keys and hashes with a new value, masked; type 5/8/9 hashes are marked as possibly only re-salted), `added`, and `defaults` (no action needed), each line with its section (`interface GigabitEthernet2 > ip nat outside`). For a configuration group with a policy group of the same name, where the template-to-group conversion puts SIG, the SIG settings are listed apart in `fromPolicyGroup`. Settings that device templates and configuration groups only write differently are not reported. Review `dropped`, `changed` and `secretsChanged` before deploying.
 
 #### Templates and policy – UX 1.0 (7)
 
@@ -1334,7 +1336,7 @@ Four test suites check the server. Only `npm test` runs without a Manager; the o
 
 | Command | Needs a Manager | What it checks | Runs in CI |
 |---|---|---|---|
-| `npm test` | No (simulated vManage) | 316 checks: every tool family, spec coverage of all routing/multicast/IPv6/CLI, configuration/policy/topology group and network-hierarchy operations, write protection, input validation, resilience, multi-tenancy, tool-list size | Yes: Node.js 20, 22 and 24 |
+| `npm test` | No (simulated vManage) | 325 checks: every tool family, spec coverage of all routing/multicast/IPv6/CLI, configuration/policy/topology group and network-hierarchy operations, write protection, input validation, resilience, multi-tenancy, tool-list size | Yes: Node.js 20, 22 and 24 |
 | `npm run test:control-plane -- <edge> <controller> <validator>` | Yes | 39 control-plane, OMP and Validator calls plus 3 input-validation checks | No |
 | `npm run test:ux2 -- <edge-hostname>` | Yes | UX 2.0, fabric-wide, paging and response-shaping tools; hostname resolution, parallel calls, error handling, with timings | No |
 | `npm run verify:api -- <edge> <controller> <validator>` | Yes (≈25 min) | Every read operation that needs no IDs (≈1,260 on 26.2) plus every dedicated read tool; writes [API_COVERAGE.md](API_COVERAGE.md) and [api_coverage.csv](api_coverage.csv) | No |
@@ -1363,7 +1365,8 @@ npm run verify:api -- <edge> <controller> <validator>
 | Routing, multicast, IPv6 and CLI | Spec coverage (below), method/path/query/body of every request, per-view filters, read-only previews |
 | Write protection | Every write tool is refused while `VMANAGE_ALLOW_WRITE=false`, and refused without `confirm: true` when writes are enabled; nothing reaches the Manager in either case |
 | Input validation | Non-UUID IDs, unknown views/versions/scopes, wrong profile types and solutions, wrong template types, oversized CLI text and empty updates are rejected before any request |
-| Secret masking | No password, hash, SIG key or SNMP community reaches the assistant in the `diff` or `both` view of either group preview; a changed secret still shows in the diff; masking of IOS XE secret forms (OSPF, SNMPv3, PSK, key chains) and non-secrets left readable |
+| Secret masking | No password, hash, SIG key or SNMP community reaches the assistant in the `diff`, `review` or `both` view of either group preview; a changed secret still shows in the diff and in `secretsChanged`; masking of IOS XE secret forms (OSPF, SNMPv3, PSK, key chains) and non-secrets left readable |
+| Review view | Dropped, changed, added and default settings sorted with their section; SIG settings apart when a policy group has the configuration group's name; repeated settings (name servers) paired one to one |
 
 #### Coverage by area
 

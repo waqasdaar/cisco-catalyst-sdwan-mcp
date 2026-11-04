@@ -1814,7 +1814,7 @@ export class CatalystSdwanMCPServer {
               type: 'string',
               enum: ['diff', 'review', 'new', 'existing', 'both'],
               description:
-                'What to return (default: diff). review sorts the differences for a deploy decision: settings the group would drop, settings whose value changes, settings it adds, and defaults that need no action',
+                'What to return (default: diff). review sorts the differences for a deploy decision: settings the group would drop, settings whose value changes, passwords and keys whose value changes (masked), settings it adds, and defaults that need no action',
             },
           },
           required: ['config_group', 'device'],
@@ -1898,7 +1898,7 @@ export class CatalystSdwanMCPServer {
               type: 'string',
               enum: ['diff', 'review', 'new', 'existing', 'both'],
               description:
-                'What to return (default: diff). review sorts the differences for a deploy decision: settings the group would drop, settings whose value changes, settings it adds, and defaults that need no action',
+                'What to return (default: diff). review sorts the differences for a deploy decision: settings the group would drop, settings whose value changes, passwords and keys whose value changes (masked), settings it adds, and defaults that need no action',
             },
           },
           required: ['group_type', 'group', 'device'],
@@ -2574,13 +2574,20 @@ export class CatalystSdwanMCPServer {
       const { newConfig: rendered = '', existingConfig: running = '', ...meta } = preview ?? {};
       if (view === 'review') {
         // The template-to-group conversion puts a template's SIG feature in a policy group of the group's name.
-        const policyGroup = typeof label.configGroup === 'string'
-          ? (await this.listGroups('policy-group')).find((g) => g.name === label.configGroup)
-          : undefined;
+        let policyGroup: UxGroup | undefined;
+        let policyGroupLookupError: string | undefined;
+        if (typeof label.configGroup === 'string') {
+          try {
+            policyGroup = (await this.listGroups('policy-group')).find((g) => g.name === label.configGroup);
+          } catch (error) {
+            policyGroupLookupError = `Policy groups could not be listed, so SIG settings are not separated: ${(error as Error).message}`;
+          }
+        }
         const review = reviewConfig(running, rendered, policyGroup ? SIG_LINES : undefined);
         return {
           ...label,
           ...(policyGroup ? { policyGroup: policyGroup.name } : {}),
+          ...(policyGroupLookupError ? { policyGroupLookupError } : {}),
           device: uuid,
           ...meta,
           summary: Object.fromEntries(Object.entries(review).map(([k, v]) => [k, v.length])),
