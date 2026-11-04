@@ -18,7 +18,9 @@ import { VManageApiService, type HttpMethod } from './services/vmanageApi.js';
 import { ApiCatalog, shapeResponse } from './services/apiCatalog.js';
 import { changes as parcelChanges, RULES as CONVERSION_RULES } from './services/configDefects.js';
 import { maskConfig, maskLine, reviewConfig, SIG_LINES } from './services/configReview.js';
-import { mapValues, parseSchema, rowsFromInput, shownPlan } from './services/configVariables.js';
+import { planTemplate, TemplateMigration, type MigrationDeps, type MigrationState } from './services/templateMigration.js';
+import { shownPlan } from './services/configVariables.js';
+import { MigrationStore } from './services/migrationStore.js';
 import { loadConfig, type VManageConfig } from './utils/config.js';
 
 const MAX_RESPONSE_CHARS = 200_000;
@@ -241,6 +243,7 @@ function filterRows(result: unknown, filters: Record<string, unknown>): unknown 
 const NO_ROW_OPTIONS = new Set([
   'plan_config_group_variables',
   'find_config_group_conversion_defects',
+  'deploy_template_migration',
   'list_api_categories',
   'search_api_operations',
   'describe_api_operation',
@@ -800,6 +803,9 @@ export class CatalystSdwanMCPServer {
   }
 
   private tools: Tool[] | null = null;
+  /** deploy_template_migration: per device, what step "prepare" saved; the store keeps it (masked) across restarts. */
+  private migrationState = new Map<string, MigrationState>();
+  private migrationStore = new MigrationStore();
 
   private getAllTools(): Tool[] {
     const tenantOption: Record<string, object> = this.config.allowTenantSwitch
@@ -1877,6 +1883,24 @@ export class CatalystSdwanMCPServer {
         },
       },
       {
+        name: 'deploy_template_migration',
+        description: `Move ONE device from its device template to the configuration group converted from it, with its values, in steps the user approves one at a time. step "prepare": plans the device's values from its template (refused when values are missing or invalid), saves its running config, detaches the template (the running config stays), associates the configuration group and the policy group of the same name (SIG), sets the values, and returns the review of what the deploy would change; nothing is pushed. step "deploy": pushes the configuration group (needs accept_review when the review drops or changes settings, and sig_ready for a device with SIG, which then has no SIG tunnels until step "deploy_policy_group"). step "status": vSmart control connections and BFD sessions against before. step "deploy_policy_group": checks the policy group configures every SIG setting the device ran before, then pushes it. One device at a time: go on with the next only when status says healthy. The AAA user password comes from VMANAGE_MIGRATION_AAA_PASSWORD on the server. ${WRITE_NOTE}`,
+        inputSchema: {
+          type: 'object',
+          properties: {
+            step: { type: 'string', enum: ['prepare', 'deploy', 'status', 'deploy_policy_group'], description: 'The migration step' },
+            device: { type: 'string', description: 'Device hostname, system-ip, UUID or chassis number' },
+            template: { type: 'string', description: 'prepare: the device template the device is attached to (ID or exact name)' },
+            config_group: { type: 'string', description: "Configuration group ID or exact name (default: the template's name; needed after a server restart)" },
+            accept_review: { type: 'boolean', description: 'Deploy although the review drops or changes settings or changes a password or key, only after the user accepts them' },
+            sig_ready: { type: 'boolean', description: 'deploy: the user confirms the SIG provider credentials are set in vManage' },
+            wait_seconds: { type: 'number', description: 'How long to wait for the vManage task (default 240, at most 900)' },
+            ...WRITE_CONFIRM,
+          },
+          required: ['step', 'device'],
+        },
+      },
+      {
         name: 'list_policy_groups',
         description: 'List UX 2.0 policy groups with their profiles, device counts and deployment state.',
         inputSchema: {
@@ -2565,6 +2589,20 @@ export class CatalystSdwanMCPServer {
       const result = await this.catalog.call({ operationId: op.operationId, pathParams, query, body, confirm: args.confirm === true });
       return { operationId: op.operationId, method, path, result };
     };
+    // The template-to-group migration's view of the server: reads, read-only POSTs, and changes through routingWrite.
+    const migrationDeps = (): MigrationDeps => ({
+      get: (path, query) => this.apiService.get(path, query),
+      readPost: (path, body) => this.apiService.post(path, body as object),
+      write: (method, path, body) => routingWrite(method, path, body),
+      listGroups: (kind) => this.listGroups(kind),
+      findGroup: (kind, ref) => this.findGroup(kind, ref),
+      device: async (ref) => {
+        const d = await this.findDevice(ref);
+        if (!d.uuid || !d['system-ip']) throw new Error(`Device "${ref}" has no UUID or system IP`);
+        return { uuid: d.uuid, systemIp: d['system-ip'], hostName: d['host-name'] ?? ref };
+      },
+      sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
+    });
     const routingProtocol: RoutingProtocol = name.includes('_bgp_')
       ? 'bgp'
       : name.includes('_eigrp_')
@@ -3457,44 +3495,28 @@ export class CatalystSdwanMCPServer {
         return renderPreview(`/dataservice/v1/config-group/${encodeURIComponent(group.id)}`, uuid, { configGroup: group.name });
       }
       case 'plan_config_group_variables': {
-        const ref = String(args.template ?? '').trim();
-        if (!ref) throw new Error('template is required (device template ID or name)');
-        const templates = (await this.apiService.get<{ data?: Array<{ templateId: string; templateName: string }> }>('/dataservice/template/device')).data ?? [];
-        const template = templates.find((t) => t.templateId === ref || t.templateName.toLowerCase() === ref.toLowerCase());
-        if (!template) throw new Error(`No device template "${ref}"`);
-        const group = await this.findGroup('config-group', args.config_group ?? template.templateName);
-        const attached = (await this.apiService.get<{ data?: Array<{ uuid: string }> }>(
-          `/dataservice/template/device/config/attached/${encodeURIComponent(template.templateId)}`
-        )).data ?? [];
-        if (!attached.length) return { template: template.templateName, configGroup: group.name, devices: {} };
-        // Read-only: builds the template's device input; it does not attach or push anything.
-        const input = await this.apiService.post('/dataservice/template/device/config/input/', {
-          templateId: template.templateId,
-          deviceIds: attached.map((d) => d.uuid),
-          isEdited: false,
-          isMasterEdited: false,
-        });
-        const schema = async (kind: string, id: string) => {
-          const body = await this.apiService.get(`/dataservice/v1/${kind}/${encodeURIComponent(id)}/device/variables/schema`);
-          return parseSchema(Array.isArray(body) ? body : [body]);
-        };
-        const [spec, policyGroup] = await Promise.all([
-          schema('config-group', group.id),
-          this.listGroups('policy-group').then((list) => list.find((g) => g.name === group.name)),
-        ]);
-        const policySpec = policyGroup ? await schema('policy-group', policyGroup.id) : undefined;
-        const devices: Record<string, unknown> = {};
-        for (const [host, row] of Object.entries(rowsFromInput(template.templateName, input))) {
-          const planned = shownPlan(spec, mapValues(spec, row));
-          if (!policySpec) {
-            devices[host] = { deviceId: row.deviceId, ...planned };
-            continue;
-          }
-          const policy = shownPlan(policySpec, mapValues(policySpec, row));
-          planned.report.unused = planned.report.unused.filter((name) => policy.report.unused.includes(name));
-          devices[host] = { deviceId: row.deviceId, ...planned, policyGroupValues: policy.values, policyGroupReport: policy.report };
-        }
-        return { template: template.templateName, configGroup: group.name, policyGroup: policyGroup?.name, devices };
+        const plan = await planTemplate(migrationDeps(), String(args.template ?? ''), args.config_group);
+        const devices = Object.fromEntries(Object.entries(plan.devices).map(([host, d]) => {
+          const shown = shownPlan(plan.spec, d);
+          const policy = plan.policySpec && d.policyGroupValues && d.policyGroupReport
+            ? shownPlan(plan.policySpec, { values: d.policyGroupValues, report: d.policyGroupReport })
+            : undefined;
+          return [host, { ...d, ...shown, ...(policy ? { policyGroupValues: policy.values, policyGroupReport: policy.report } : {}) }];
+        }));
+        return { template: plan.template.templateName, configGroup: plan.group.name, policyGroup: plan.policyGroup?.name, devices };
+      }
+      case 'deploy_template_migration': {
+        const migration = new TemplateMigration(migrationDeps(), this.migrationState, this.migrationStore);
+        const step = pick('step', { prepare: 'prepare', deploy: 'deploy', status: 'status', deploy_policy_group: 'deploy_policy_group' }, '');
+        const device = String(args.device ?? '').trim();
+        if (!device) throw new Error('device is required (hostname, system IP, UUID or chassis number)');
+        const waitSeconds = args.wait_seconds === undefined ? undefined : Number(args.wait_seconds);
+        if (waitSeconds !== undefined && !(waitSeconds >= 0 && waitSeconds <= 900)) throw new Error('wait_seconds must be between 0 and 900');
+        const common = { device, config_group: args.config_group, accept_review: args.accept_review === true, wait_seconds: waitSeconds };
+        if (step === 'prepare') return migration.prepare({ ...common, template: String(args.template ?? '') });
+        if (step === 'deploy') return migration.deploy({ ...common, sig_ready: args.sig_ready === true });
+        if (step === 'status') return migration.status(common);
+        return migration.deployPolicyGroup(common);
       }
       case 'find_config_group_conversion_defects': {
         const width = this.config.fabricConcurrency;

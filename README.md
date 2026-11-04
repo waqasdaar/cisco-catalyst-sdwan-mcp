@@ -8,7 +8,7 @@ A [Model Context Protocol (MCP)](https://modelcontextprotocol.io/) server for **
 
 All requests go through vManage. The server never connects to routers directly.
 
-- **162 MCP tools** (121 listed on a read-only server, 162 with writes enabled): 158 purpose-built tools, including fabric-wide health, BFD and TLOC checks in a single call, BGP, OSPF, OSPFv3, EIGRP, multicast (IGMP, PIM, MFIB) and IPv6 monitoring and configuration (UX 2.0 features and UX 1.0 templates/policy objects), CLI add-on configuration (for example RIP/RIPng), UX 2.0 configuration, policy and topology groups (read, preview, create, change, associate devices, set variables, deploy), feature profiles and the network hierarchy (regions, areas, sites and their Cyber Vision network settings), plus 4 general tools that reach **every operation in the vManage OpenAPI spec** (4,128 operations on 26.2).
+- **163 MCP tools** (121 listed on a read-only server, 163 with writes enabled): 159 purpose-built tools, including fabric-wide health, BFD and TLOC checks in a single call, BGP, OSPF, OSPFv3, EIGRP, multicast (IGMP, PIM, MFIB) and IPv6 monitoring and configuration (UX 2.0 features and UX 1.0 templates/policy objects), CLI add-on configuration (for example RIP/RIPng), UX 2.0 configuration, policy and topology groups (read, preview, create, change, associate devices, set variables, deploy), feature profiles and the network hierarchy (regions, areas, sites and their Cyber Vision network settings), plus 4 general tools that reach **every operation in the vManage OpenAPI spec** (4,128 operations on 26.2).
 - **Lean tool list.** Write tools are listed only when `VMANAGE_ALLOW_WRITE=true`, so a read-only server offers 121 tools (under VS Code's 128-tool limit) in a tool list under 110 KB, about a third smaller than before. Assistants answer faster and spend fewer tokens on every request.
 - **Read-only by default.** Operations that change configuration or state are disabled unless you enable them, and each call then needs explicit confirmation.
 - **BGP, OSPF, OSPFv3 and EIGRP end to end.** Real-time neighbors, routes, interfaces, topology and LSDB; UX 2.0 feature reads and writes for SD-WAN and SD-Routing profiles; UX 1.0 feature templates (list, read, schema, create, update, delete, clone). Every BGP, OSPF and EIGRP operation in the 26.2 spec has a dedicated tool.
@@ -428,7 +428,7 @@ The eight tools cover all 23 EIGRP operations in the 26.2 spec: the 3 real-time 
 | `get_app_log_flow_count` | Number of logged flows | `device_id`\* | "How many flows are being logged on Branch-2?" |
 | `get_sdwan_stats` | SD-WAN statistics: ACL drops, data policy, device metrics | `device_id`\* | "Any data-policy drops on Branch-2?" |
 
-#### UX 2.0 configuration (26)
+#### UX 2.0 configuration (27)
 
 The `solution` parameter selects `sdwan` (default), `sd-routing`, `nfvirtual` or `mobility`. Groups and profiles can be passed by ID or exact name, and devices by hostname, system IP, UUID or chassis number. The dedicated tools cover all 40 configuration-group, policy-group and topology-group operations of the 26.2 spec.
 
@@ -460,12 +460,15 @@ The `solution` parameter selects `sdwan` (default), `sd-routing`, `nfvirtual` or
 | `associate_group_devices` | **Write.** Add, replace or remove the devices of a configuration or policy group | `group_type`\* (`config`/`policy`), `group`\*, `devices`\*, `mode` (`add` default/`replace`/`remove`), `confirm`\* | "Add Branch-3 to Branch-CG." |
 | `update_group_variables` | **Write.** Set device variable values of a configuration or policy group | `group_type`\* (`config`/`policy`), `group`\*, `body`\*, `confirm`\* | "Set the site ID variable of Branch-3 to 300." |
 | `deploy_group` | **Write. Pushes configuration to devices.** Deploy a configuration, policy or topology group to the given devices; returns the vManage task | `group_type`\*, `group`\*, `devices`\*, `confirm`\* | "Deploy Branch-CG to Branch-3." |
+| `deploy_template_migration` | **Write. Pushes configuration to the device.** Move one device from its device template to the configuration group converted from it, in approved steps: `prepare` (plan the values, detach the template, associate the configuration group and its SIG policy group, set the values, return the review; nothing pushed), `deploy` (push the configuration group; refused without `accept_review` while the review drops or changes settings or changes a password or key, re-salted hashes aside), `status` (control connections and BFD sessions against before), `deploy_policy_group` (push SIG once it configures every SIG setting the device ran before) | `step`\*, `device`\*, `template` (prepare), `config_group`, `accept_review`, `sig_ready`, `wait_seconds`, `confirm`\* | "Migrate Branch-3 from template Branch-CG." |
 
 **Network hierarchy.** The hierarchy tools cover all 4 network-hierarchy operations in the 26.2 spec (the Cyber Vision network settings: 2 reads, 1 create/edit, 1 delete) plus the hierarchy list and node detail (`GET /v1/network-hierarchy[/{id}]`), which vManage serves but does not document. Nodes are found by node ID, hierarchy path, site ID or name; a name used by more than one node is refused with the matching paths. vManage 26.2 accepts network settings only on the **Global** node (other nodes return `NWHAR0005`), so the Cyber Vision tools default to it. The 26.2 API has no operation to create, rename, move or delete regions, areas or sites, so the server cannot change the hierarchy itself; do that in the Manager GUI (**Configuration → Network Hierarchy**).
 
 Recommended change workflow: `get_config_group` / `get_group_variables` → change with `update_group`, `associate_group_devices` or `update_group_variables` → `preview_config_group_device_config` or `preview_group_device_config` for each device → `deploy_group` after you approve the diff.
 
 **Review view.** `view: "review"` sorts what a deploy would change into `dropped` (settings the group does not configure), `changed` (same setting, new value: `console-baud-rate 115200 -> 9600`), `secretsChanged` (passwords, keys and hashes with a new value, masked; type 5/8/9 hashes are marked as possibly only re-salted), `added`, and `defaults` (no action needed), each line with its section (`interface GigabitEthernet2 > ip nat outside`). For a configuration group with a policy group of the same name, where the template-to-group conversion puts SIG, the SIG settings are listed apart in `fromPolicyGroup`. Settings that device templates and configuration groups only write differently are not reported. Review `dropped`, `changed` and `secretsChanged` before deploying.
+
+**Migrating from device templates.** vManage's template-to-group conversion creates the groups but not the devices' values, and on 20.18 it leaves defects. Check the groups first with `find_config_group_conversion_defects` and fix what it reports, then plan the values with `plan_config_group_variables`. Then move one device at a time with `deploy_template_migration`: `prepare` → read the review with the user → `deploy` → `status` until healthy → `deploy_policy_group` for a device with SIG → the next device. Between `deploy` and `deploy_policy_group`, a SIG device has no SIG tunnels: vManage deploys a policy group only on a device that runs its configuration group, and the conversion doesn't carry the SIG provider's credentials, so set them in vManage first (`sig_ready: true` confirms it). Before `deploy`, undo by removing the device from its groups and re-attaching its template. What `prepare` records (the device's running config, masked, and its BFD sessions) is kept in `VMANAGE_STATE_DIR`, so a migration continues after a server restart; without it, `deploy_policy_group` needs `accept_review: true` after the SIG settings are checked by hand. Only one write step runs per device at a time, also across server processes (VS Code and other MCP clients each start one); `status` can follow a running step.
 
 #### Templates and policy – UX 1.0 (7)
 
@@ -617,6 +620,8 @@ The server reads `.env` from the project (or deployed) root folder. You can also
 | `VMANAGE_PORT` | No | `443` | HTTPS port |
 | `VMANAGE_USE_JWT` | No | `true` | `false` uses session-cookie auth (Manager releases before 20.18.1) |
 | `VMANAGE_ALLOW_WRITE` | No | `false` | `true` allows write operations through `call_api_operation` and the dedicated write tools (each call still needs `confirm: true`). The dedicated write tools (`create_*`, `update_*`, `delete_*`, `associate_*`, `clone_*`, `deploy_*`) are listed only when this is `true`. |
+| `VMANAGE_MIGRATION_AAA_PASSWORD` | No | – | The AAA user password `deploy_template_migration` sets in a configuration group that has an AAA password variable. Never sent to the assistant. |
+| `VMANAGE_STATE_DIR` | No | `~/.local/state/cisco-catalyst-sdwan-mcp` | Where `deploy_template_migration` keeps each device's migration state (running config masked, files mode 600) and its per-device lock. Must be writable; mount a volume there to keep it across container restarts. |
 | `VMANAGE_TIMEOUT_MS` | No | `120000` | Timeout for real-time device queries (calls with a `deviceId`), which the Manager proxies to the device and can be slow. |
 | `VMANAGE_LIST_TIMEOUT_MS` | No | `60000` | Timeout for everything else: inventory, configuration, statistics and login. |
 | `VMANAGE_MAX_CONCURRENCY` | No | `8` | Maximum simultaneous requests sent to the Manager |
@@ -1339,7 +1344,7 @@ Four test suites check the server. Only `npm test` runs without a Manager; the o
 
 | Command | Needs a Manager | What it checks | Runs in CI |
 |---|---|---|---|
-| `npm test` | No (simulated vManage) | 328 checks: every tool family, spec coverage of all routing/multicast/IPv6/CLI, configuration/policy/topology group and network-hierarchy operations, write protection, input validation, resilience, multi-tenancy, tool-list size | Yes: Node.js 20, 22 and 24 |
+| `npm test` | No (simulated vManage) | 344 checks: every tool family, spec coverage of all routing/multicast/IPv6/CLI, configuration/policy/topology group and network-hierarchy operations, write protection, input validation, resilience, multi-tenancy, tool-list size | Yes: Node.js 20, 22 and 24 |
 | `npm run test:control-plane -- <edge> <controller> <validator>` | Yes | 39 control-plane, OMP and Validator calls plus 3 input-validation checks | No |
 | `npm run test:ux2 -- <edge-hostname>` | Yes | UX 2.0, fabric-wide, paging and response-shaping tools; hostname resolution, parallel calls, error handling, with timings | No |
 | `npm run verify:api -- <edge> <controller> <validator>` | Yes (≈25 min) | Every read operation that needs no IDs (≈1,260 on 26.2) plus every dedicated read tool; writes [API_COVERAGE.md](API_COVERAGE.md) and [api_coverage.csv](api_coverage.csv) | No |
@@ -1359,7 +1364,7 @@ npm run verify:api -- <edge> <controller> <validator>
 
 | Area | What is checked |
 |---|---|
-| Tool list | 121 tools on a read-only server with no write tool listed, 162 with `VMANAGE_ALLOW_WRITE=true`; the read-only tool list stays under 110 KB |
+| Tool list | 121 tools on a read-only server with no write tool listed, 163 with `VMANAGE_ALLOW_WRITE=true`; the read-only tool list stays under 110 KB |
 | Client and resilience | Hostname resolution, `Retry-After` retries on 503, re-login after an expired token, session-cookie login and logout, fail-fast when the Manager is unreachable, real-time vs. list timeouts named in the error |
 | Response shaping | `fields`, `filter`, `count_by`, `offset`/`limit` paging, truncation with a `nextOffset` cursor on a 3,000-device inventory |
 | Fabric-wide tools | Health table and Manager deployment detection, BFD and TLOC sweeps: concurrency cap, time budget with resume, overload breaker, synced data re-checked live |
@@ -1373,7 +1378,7 @@ npm run verify:api -- <edge> <controller> <validator>
 
 #### Coverage by area
 
-Every one of the 162 tools belongs to one area below. **Offline** is what `npm test` checks against the simulated Manager. **Live** is the suite that runs the tools against a real 26.2.1 Manager. Read tools are verified live; write tools only up to the write gate, because writes are disabled on the lab.
+Every one of the 163 tools belongs to one area below. **Offline** is what `npm test` checks against the simulated Manager. **Live** is the suite that runs the tools against a real 26.2.1 Manager. Read tools are verified live; write tools only up to the write gate, because writes are disabled on the lab.
 
 | Area | UX | Tools | vManage APIs the tools call | Offline (`npm test`) | Live |
 |---|---|---:|---|---|---|
@@ -1388,7 +1393,7 @@ Every one of the 162 tools belongs to one area below. **Offline** is what `npm t
 | EIGRP | 2.0 | 8 | `/device/eigrp/*`, `/v1/feature-profile/.../service/.../routing/eigrp` | Full spec sweep | `verify:api` (read tools) |
 | Multicast: IGMP, PIM, MFIB | 2.0 | 10 | `/device/{igmp,pim,multicast}/*`, `/device/ip/mfib*`, `/v1/feature-profile/sdwan/service/.../routing/multicast` | Full spec sweep | `verify:api` (read tools) |
 | IPv6 | 1.0 and 2.0 | 11 | `/device/ipv6/*`, `/device/ip/ipRoutes`, `/template/policy/{list,definition}/*v6*`, `/v1/feature-profile/sdwan/transport/.../ipv6-tracker*` | Full spec sweep | `verify:api` (read tools) |
-| **Configuration groups, policy groups, topology groups** | 2.0 | 20 | `/v1/config-group`, `/v1/policy-group`, `/v1/topology-group`, with `/{id}`, `/device/associate`, `/device/variables[/schema]`, `/device/deploy`, `/rules[/preview]` and `/device/{id}/preview` (read-only render) | Full spec sweep (40 operations), device-name to UUID resolution, write protection, cache invalidation after a write | `test:ux2`, `verify:api`; the 3 tools that need a group were run by hand |
+| **Configuration groups, policy groups, topology groups** | 2.0 | 21 | `/v1/config-group`, `/v1/policy-group`, `/v1/topology-group`, with `/{id}`, `/device/associate`, `/device/variables[/schema]`, `/device/deploy`, `/rules[/preview]` and `/device/{id}/preview` (read-only render) | Full spec sweep (40 operations), device-name to UUID resolution, write protection, cache invalidation after a write | `test:ux2`, `verify:api`; the 3 tools that need a group were run by hand |
 | **Feature profiles and network hierarchy** | 2.0 | 6 | `/v1/feature-profile/{solution}/{type}[/{id}]`, `/v1/network-hierarchy[/{id}]`, `/v1/network-hierarchy/{id}/network-settings/cybervisioncenters[/id, /{cvId}]` | Full spec sweep of the network hierarchy (4 operations), node lookup by ID, path, site ID and name (ambiguous names refused), `label` filter, Global default, profile-name lookup | `test:ux2`, `verify:api` |
 | UX 2.0 CLI add-ons | 2.0 | 5 | `/v1/feature-profile/{sdwan,sd-routing}/cli/{id}/config` | Full spec sweep | `verify:api`; `get_cli_addon` run by hand |
 | **Device and feature templates** | 1.0 | 4 | `/template/device`, `/template/feature`, `/template/device/config/attached/{id}`, `/template/{device,feature}/object/{id}` | List timeout | `verify:api` |
@@ -1396,7 +1401,7 @@ Every one of the 162 tools belongs to one area below. **Offline** is what `npm t
 | Routing and multicast feature templates | 1.0 | 7 | `/template/feature` (list, object, device templates, type definition, create, update, delete, clone) | Requests, template-type guard | `verify:api` (list and schema; the lab has no routing templates to read) |
 | CLI add-on templates | 1.0 | 5 | `/template/feature` (list, object, device templates, create, update, delete) | Requests, template-type guard, `contains` search | `verify:api` (list; the lab has no CLI templates to read) |
 | Cloud OnRamp and administration | – | 8 | `/template/cloudx/*`, `/alarms`, `/certificate/stats/summary`, `/clusterManagement/health/status`, `/template/policy/customapp` | – | `verify:api` |
-| **Total** | | **162** | | | |
+| **Total** | | **163** | | | |
 
 Every write tool (41) is additionally checked offline for refusal while `VMANAGE_ALLOW_WRITE=false` and without `confirm: true`, and for the exact method, path and body when allowed. Live, write tools were checked only up to the write gate (writes disabled on the lab).
 
@@ -1415,7 +1420,7 @@ OSPF and OSPFv3 share the same 10 tools; the `version` argument selects the prot
 | Multicast | 15 | 5 | – | 6 | 26 | 10 |
 | IPv6 (without OSPFv3) | 15 | 28 | 4 | 36 | 83 | 11 |
 | UX 2.0 CLI add-ons | – | 4 | – | 6 | 10 | 5 |
-| UX 2.0 configuration, policy and topology groups | – | 15 | 5 | 20 | 40 | 20 |
+| UX 2.0 configuration, policy and topology groups | – | 15 | 5 | 20 | 40 | 21 |
 | UX 2.0 network hierarchy (Cyber Vision network settings) | – | 2 | – | 2 | 4 | 3 |
 | **Total** | **45** | **138** | **9** | **193** | **385** | **74** |
 
@@ -1509,6 +1514,8 @@ src/
   services/configReview.ts  # group previews: masks secrets in device configurations, sorts the review view
   services/configVariables.ts # template-to-group migration: maps template values onto group variables
   services/configDefects.ts # template-to-group migration: conversion defects and their fixes
+  services/templateMigration.ts # template-to-group migration: value planning and the deploy_template_migration steps
+  services/migrationStore.ts # deploy_template_migration state across restarts (masked) and per-device lock
   utils/config.ts           # environment configuration
 scripts/
   deploy.mjs                # deploy runtime copy outside cloud-synced folders

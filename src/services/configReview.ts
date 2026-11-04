@@ -99,6 +99,15 @@ const keyOf = (path: string, line: string) => (line.includes(' ') ? `${path}\u00
 const lastWord = (line: string) => line.slice(line.lastIndexOf(' ') + 1);
 // Type 5/8/9 hashes and $n$ hashes get a new salt on every render, so a change may not be a new secret.
 const HASHED = /(?:\s[589]\s+\S+|\s\$\d+\$\S*)$/;
+export const RESALTED = '(hash; may only be re-salted)';
+
+/** Settings matching `pattern` in `before` that `rendered` does not configure, compared with secrets masked. */
+export function missingLines(before: string, rendered: string, pattern: RegExp): string[] {
+  const renderedSet = new Set(sectioned(rendered).map(([p, l]) => `${maskLine(p)}\u0000${maskLine(l)}`));
+  return sectioned(before)
+    .filter(([p, l]) => !renderedSet.has(`${maskLine(p)}\u0000${maskLine(l)}`) && pattern.test(maskLine(where(p, l))))
+    .map(([p, l]) => maskLine(where(p, l)));
+}
 
 /** Sorts what deploying would change. With `fromPolicyGroup`, the dropped and changed settings matching it are
  *  listed apart: the device's policy group configures them. Secrets are masked. */
@@ -130,7 +139,7 @@ export function reviewConfig(running: string, rendered: string, fromPolicyGroup?
       paired.add(match);
       const masked = maskLine(where(path, line));
       if (masked.endsWith(' ****')) {
-        result.secretsChanged.push(HASHED.test(line) ? `${masked} (hash; may only be re-salted)` : masked);
+        result.secretsChanged.push(HASHED.test(line) ? `${masked} ${RESALTED}` : masked);
       } else {
         result.changed.push(maskLine(`${where(path, line)} -> ${lastWord(added[match][1])}`));
       }

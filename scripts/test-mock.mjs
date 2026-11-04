@@ -3,7 +3,7 @@
 // Usage: npm test
 import { execFileSync } from 'child_process';
 import { X509Certificate } from 'crypto';
-import { mkdtempSync, readFileSync, rmSync } from 'fs';
+import { existsSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from 'fs';
 import https from 'https';
 import { tmpdir } from 'os';
 import { join } from 'path';
@@ -36,7 +36,7 @@ const tlocs = () => [
   { color: 'biz-internet', interface: 'GigabitEthernet2', 'operation-state': 'up', 'admin-state': 'up', 'public-ip': '203.0.113.1', 'private-ip': '203.0.113.1' },
 ];
 
-const stats = { logins: 0, sessionLogins: 0, logouts: 0, ompStatusCalls: 0, ompSummaryCalls: 0, deviceIds: [], ospfPaths: [], ospfWrites: [], bgpPaths: [], bgpWrites: [], eigrpPaths: [], eigrpWrites: [], templateWrites: [], cliPaths: [], cliWrites: [], mcPaths: [], mcWrites: [], v6Paths: [], v6Writes: [], v6Previews: [], grpPaths: [], grpPosts: [], nhPaths: [], nhWrites: [] };
+const stats = { logins: 0, sessionLogins: 0, logouts: 0, ompStatusCalls: 0, ompSummaryCalls: 0, deviceIds: [], ospfPaths: [], ospfWrites: [], bgpPaths: [], bgpWrites: [], eigrpPaths: [], eigrpWrites: [], templateWrites: [], cliPaths: [], cliWrites: [], mcPaths: [], mcWrites: [], v6Paths: [], v6Writes: [], v6Previews: [], grpPaths: [], grpPosts: [], migrationWrites: [], nhPaths: [], nhWrites: [] };
 const NH = { global: 'a0000000-0000-4000-8000-000000000000', region: 'a0000000-0000-4000-8000-000000000001', area: 'a0000000-0000-4000-8000-000000000002', siteA: 'a0000000-0000-4000-8000-000000000003', siteB: 'a0000000-0000-4000-8000-000000000004', siteC: 'a0000000-0000-4000-8000-000000000005' };
 const HIERARCHY = [
   { id: NH.global, name: 'Global', data: { label: 'GLOBAL' }, hierarchyPath: 'Global' },
@@ -152,6 +152,33 @@ const MIGRATION = {
   MIGRATION['/dataservice/v1/feature-profile/sdwan/transport/tp-1'].associatedProfileParcels[0].subparcels[0].payload = MIGRATION[eth].payload;
   delete MIGRATION[eth];
 }
+// Branch-2's running config while on its template (SIG included), and what its groups render.
+const MIGRATION_BASE = `system
+ host-name Branch-2
+!
+sdwan
+ interface GigabitEthernet2
+  tunnel-interface
+!
+router ospf 1 vrf 1
+!
+`;
+const MIGRATION_RUNNING = `system
+ host-name Branch-2
+!
+secure-internet-gateway
+ zscaler organization example.com
+ zscaler partner-key PK-12345
+!
+sdwan
+ interface GigabitEthernet2
+  tunnel-interface
+ interface Tunnel100001
+  tunnel-options tunnel-set secure-internet-gateway-zscaler
+!
+router ospf 1 vrf 1
+!
+`;
 // The template's device input (POST /template/device/config/input): one column per template variable.
 const TEMPLATE_INPUT = {
   header: { columns: [
@@ -253,6 +280,17 @@ function handler(req, res) {
     if (p === '/dataservice/client/token') return send(200, '"xsrf"');
     if (mock.migration) {
       if (p === '/dataservice/template/device/config/input/' && req.method === 'POST') return send(200, TEMPLATE_INPUT);
+      if (p === '/dataservice/template/config/device/mode/cli' && req.method === 'POST') {
+        stats.migrationWrites.push({ method: req.method, path: p, body: JSON.parse(raw) });
+        return send(200, { id: 'task-detach' });
+      }
+      if (p.startsWith('/dataservice/device/action/status/')) return send(200, { summary: { status: 'done' }, data: [{ statusId: 'success' }] });
+      if (p === '/dataservice/device/config') {
+        res.writeHead(200, { 'content-type': 'text/plain' });
+        return res.end(MIGRATION_RUNNING);
+      }
+      if (p === '/dataservice/device/control/connections') return send(200, { data: [{ 'peer-type': 'vsmart', state: 'up' }] });
+      if (p === '/dataservice/device/bfd/sessions') return send(200, { data: [{ state: 'up' }, { state: 'up' }] });
       if (Object.hasOwn(MIGRATION, p)) return send(200, MIGRATION[p]);
     }
 
@@ -310,12 +348,15 @@ function handler(req, res) {
       if (req.method !== 'GET') {
         const body = raw ? JSON.parse(raw) : undefined;
         stats.grpPosts.push({ method: req.method, path: p, query: Object.fromEntries(url.searchParams), body });
+        if (mock.failAssociate && rest.endsWith('/device/associate')) return send(500, { error: { message: 'association rejected' } });
         if (req.method === 'POST' && rest === '') {
           const id = '22222222-0000-4000-8000-00000000000' + GROUPS[kind].length;
           GROUPS[kind].push({ id, name: body?.name, solution: 'sdwan' });
           return send(200, { id });
         }
-        if (req.method === 'POST' && rest.endsWith('/preview') && mock.preview) return send(200, mock.preview);
+        if (req.method === 'POST' && rest.endsWith('/preview') && mock.preview) {
+          return send(200, typeof mock.preview === 'function' ? mock.preview(kind) : mock.preview);
+        }
         return send(200, { id: 'task-1', path: p });
       }
       stats.grpPaths.push(p);
@@ -468,6 +509,7 @@ const FINGERPRINT = new X509Certificate(readFileSync(join(certDir, 'cert.pem')))
 const baseEnv = {
   PATH: process.env.PATH,
   HOME: process.env.HOME,
+  VMANAGE_STATE_DIR: join(certDir, 'state'),
   VMANAGE_HOST: '127.0.0.1',
   VMANAGE_PORT: String(PORT),
   VMANAGE_USERNAME: 'test',
@@ -1354,7 +1396,7 @@ check('IPv6 writes disabled by default', /VMANAGE_ALLOW_WRITE=true/.test(r.error
 await cv.close();
 
 const wv = await connect({ VMANAGE_ALLOW_WRITE: 'true' });
-check('tool list with writes enabled', (await wv.listTools()).tools.length === 162);
+check('tool list with writes enabled', (await wv.listTools()).tools.length === 163);
 const lastV6Write = () => stats.v6Writes.at(-1);
 const PREFIX_LIST = { name: 'Branch-v6', description: 'test', entries: [{ ipv6Prefix: '2001:db8:10::/48' }] };
 r = await tool(wv, 'create_ipv6_policy_object', { kind: 'prefix-list', body: PREFIX_LIST });
@@ -1522,6 +1564,103 @@ check(
   JSON.stringify(r.value ?? r.error)
 );
 await mig.close();
+
+// deploy_template_migration: one device, step by step, every change through the write path.
+const migrationEnv = { VMANAGE_ALLOW_WRITE: 'true', VMANAGE_MIGRATION_AAA_PASSWORD: 'Aaa-Secret-9' };
+const mw = await connect(migrationEnv);
+const grpBefore = stats.grpPosts.length;
+r = await tool(mw, 'deploy_template_migration', { step: 'prepare', device: 'Branch-2', template: 'Branch-CG' });
+check('migration: prepare needs confirm, and changes nothing without it', /changes state/.test(r.error ?? '') && stats.migrationWrites.length === 0, r.error ?? 'not refused');
+mock.failAssociate = true;
+r = await tool(mw, 'deploy_template_migration', { step: 'prepare', device: 'Branch-2', template: 'Branch-CG', confirm: true });
+mock.failAssociate = false;
+check(
+  'migration: a prepare that fails partway says what it already did and how to undo it',
+  /prepare failed: .*Done before the failure: detached device template Branch-CG.*re-attach its template/.test(r.error ?? ''),
+  r.error ?? 'not refused'
+);
+stats.migrationWrites.length = 0;
+mock.preview = (kind) => ({ existingConfig: MIGRATION_RUNNING, newConfig: MIGRATION_BASE });
+r = await tool(mw, 'deploy_template_migration', { step: 'prepare', device: 'Branch-2', template: 'Branch-CG', confirm: true });
+const groupWrites = stats.grpPosts.slice(grpBefore);
+const cgVariables = groupWrites.find((w) => w.path === `/dataservice/v1/config-group/${CG_ID}/device/variables`);
+check(
+  'migration: prepare detaches, associates both groups, sets the values and returns the review',
+  r.value?.step === 'prepared' && r.value.done?.length === 3 && r.value.policyGroup === 'Branch-CG' &&
+    stats.migrationWrites[0]?.body?.devices?.[0]?.deviceId === 'u-12' &&
+    groupWrites.some((w) => w.method === 'PUT' && w.path === `/dataservice/v1/config-group/${CG_ID}/device/associate`) &&
+    groupWrites.some((w) => w.method === 'PUT' && w.path === `/dataservice/v1/policy-group/${MIG_PG_ID}/device/variables`) &&
+    r.value.review?.summary?.dropped === 0 && r.value.review.fromPolicyGroup.includes('secure-internet-gateway > zscaler partner-key ****'),
+  JSON.stringify(r.value ?? r.error).slice(0, 400)
+);
+check(
+  'migration: the AAA password comes from the server environment and never reaches the assistant',
+  cgVariables?.body?.devices?.[0]?.variables?.some((v) => v.name === 'admin_password' && v.value === 'Aaa-Secret-9') &&
+    !JSON.stringify(r.value ?? '').includes('Aaa-Secret-9'),
+  JSON.stringify(cgVariables?.body ?? null).slice(0, 200)
+);
+mock.preview = () => ({ existingConfig: MIGRATION_RUNNING + 'ntp server 192.0.2.99\n', newConfig: MIGRATION_BASE });
+r = await tool(mw, 'deploy_template_migration', { step: 'deploy', device: 'Branch-2', sig_ready: true, confirm: true });
+check('migration: a deploy that drops settings needs accept_review', /would drop 1 and change 0 settings: ntp server 192\.0\.2\.99/.test(r.error ?? ''), r.error ?? 'not refused');
+mock.preview = () => ({ existingConfig: MIGRATION_RUNNING + 'username ops password 0 OldPw\n', newConfig: MIGRATION_BASE + 'username ops password 0 NewPw\n' });
+r = await tool(mw, 'deploy_template_migration', { step: 'deploy', device: 'Branch-2', sig_ready: true, confirm: true });
+check('migration: a deploy that changes a password needs accept_review', /and 1 secrets: username ops password 0 \*\*\*\*/.test(r.error ?? '') && !/OldPw|NewPw/.test(r.error ?? ''), r.error ?? 'not refused');
+mock.preview = () => ({ existingConfig: MIGRATION_RUNNING, newConfig: MIGRATION_BASE });
+r = await tool(mw, 'deploy_template_migration', { step: 'deploy', device: 'Branch-2', confirm: true });
+check('migration: a SIG device is not deployed without sig_ready', /sig_ready/.test(r.error ?? ''), r.error ?? 'not refused');
+r = await tool(mw, 'deploy_template_migration', { step: 'deploy', device: 'Branch-2', sig_ready: true, confirm: true, wait_seconds: 5 });
+check(
+  'migration: deploy pushes the configuration group and reports health',
+  r.value?.step === 'deployed' && r.value.task?.status === 'done' && r.value.health?.healthy === true &&
+    stats.grpPosts.at(-1)?.path === `/dataservice/v1/config-group/${CG_ID}/device/deploy`,
+  JSON.stringify(r.value ?? r.error).slice(0, 300)
+);
+r = await tool(mw, 'deploy_template_migration', { step: 'deploy_policy_group', device: 'Branch-2', confirm: true });
+check('migration: a policy group that loses SIG settings is not deployed', /does not configure 5 SIG settings/.test(r.error ?? ''), r.error ?? 'not refused');
+mock.preview = (kind) => ({ existingConfig: MIGRATION_BASE, newConfig: kind === 'policy-group' ? MIGRATION_RUNNING : MIGRATION_BASE });
+r = await tool(mw, 'deploy_template_migration', { step: 'deploy_policy_group', device: 'Branch-2', confirm: true, wait_seconds: 5 });
+check(
+  'migration: deploy_policy_group puts SIG back',
+  r.value?.step === 'policy group deployed' && r.value.notConfiguredFromBefore?.length === 0 &&
+    stats.grpPosts.at(-1)?.path === `/dataservice/v1/policy-group/${MIG_PG_ID}/device/deploy`,
+  JSON.stringify(r.value ?? r.error).slice(0, 300)
+);
+r = await tool(mw, 'deploy_template_migration', { step: 'status', device: 'Branch-2' });
+check('migration: status', r.value?.health?.healthy === true && r.value.health.bfdBefore === 2, JSON.stringify(r.value ?? r.error));
+await mw.close();
+// The state prepare saved survives a restart, masked and readable by the user only.
+const stateFile = join(certDir, 'state', 'migration-u-12.json');
+const lockFile = join(certDir, 'state', 'migration-u-12.lock');
+const savedState = readFileSync(stateFile, 'utf8');
+const mw2 = await connect(migrationEnv);
+r = await tool(mw2, 'deploy_template_migration', { step: 'status', device: 'Branch-2' });
+check(
+  'migration: the state survives a server restart, masked, mode 600',
+  r.value?.health?.bfdBefore === 2 && /partner-key \*\*\*\*/.test(savedState) && !/\$9\$|Aaa-Secret-9/.test(savedState) && (statSync(stateFile).mode & 0o077) === 0,
+  JSON.stringify(r.value ?? r.error).slice(0, 200)
+);
+// One step at a time per device, across server processes: a live lock refuses, a dead holder's lock is taken over.
+writeFileSync(lockFile, JSON.stringify({ pid: process.pid, since: Date.now(), step: 'deploy' }));
+const deploysBefore = stats.grpPosts.filter((w) => w.path.endsWith('/device/deploy')).length;
+r = await tool(mw2, 'deploy_template_migration', { step: 'deploy', device: 'Branch-2', sig_ready: true, confirm: true, wait_seconds: 5 });
+check(
+  'migration: a step running for the device in another process refuses a second one',
+  /step "deploy" since .* is still running/.test(r.error ?? '') && stats.grpPosts.filter((w) => w.path.endsWith('/device/deploy')).length === deploysBefore,
+  r.error ?? 'not refused'
+);
+writeFileSync(lockFile, JSON.stringify({ pid: 999999, since: Date.now(), step: 'deploy' }));
+r = await tool(mw2, 'deploy_template_migration', { step: 'deploy', device: 'Branch-2', sig_ready: true, confirm: true, wait_seconds: 5 });
+check('migration: the lock of a crashed process is taken over and released', r.value?.step === 'deployed' && !existsSync(lockFile), JSON.stringify(r.value ?? r.error).slice(0, 200));
+await mw2.close();
+// Without the snapshot, the SIG settings to keep cannot be checked: deploy_policy_group asks the person to.
+rmSync(stateFile);
+const mw3 = await connect(migrationEnv);
+r = await tool(mw3, 'deploy_template_migration', { step: 'deploy_policy_group', device: 'Branch-2', config_group: 'Branch-CG', confirm: true });
+check('migration: deploy_policy_group without a saved snapshot needs accept_review', /no saved snapshot/.test(r.error ?? ''), r.error ?? 'not refused');
+r = await tool(mw3, 'deploy_template_migration', { step: 'status', device: 'Branch-2' });
+check('migration: status without a baseline still reports health', r.value?.health?.bfdBefore === null && r.value.health.healthy === true && /no BFD baseline/.test(r.value.health.note ?? ''), JSON.stringify(r.value ?? r.error));
+await mw3.close();
+mock.preview = null;
 mock.migration = false;
 GROUPS['policy-group'].pop();
 const { maskLine } = await import(new URL('../build/services/configReview.js', import.meta.url));
