@@ -146,6 +146,12 @@ const MIGRATION = {
     ipsec: { 'ipsec-ciphersuite': { vipType: 'notIgnore', vipValue: 'aes256-gcm' } },
   }] } } },
 };
+// As vManage serves a profile read with details=true: each feature's payload inline, never fetched on its own.
+{
+  const eth = '/dataservice/v1/feature-profile/sdwan/transport/tp-1/wan/vpn/vpn-1/interface/ethernet/eth-1';
+  MIGRATION['/dataservice/v1/feature-profile/sdwan/transport/tp-1'].associatedProfileParcels[0].subparcels[0].payload = MIGRATION[eth].payload;
+  delete MIGRATION[eth];
+}
 // Branch-2's running config while on its template (SIG included), and what its groups render.
 const MIGRATION_BASE = `system
  host-name Branch-2
