@@ -1343,7 +1343,7 @@ Four test suites check the server. Only `npm test` runs without a Manager; the o
 
 | Command | Needs a Manager | What it checks | Runs in CI |
 |---|---|---|---|
-| `npm test` | No (simulated vManage) | 337 checks: every tool family, spec coverage of all routing/multicast/IPv6/CLI, configuration/policy/topology group and network-hierarchy operations, write protection, input validation, resilience, multi-tenancy, tool-list size | Yes: Node.js 20, 22 and 24 |
+| `npm test` | No (simulated vManage) | 338 checks: every tool family, spec coverage of all routing/multicast/IPv6/CLI, configuration/policy/topology group and network-hierarchy operations, write protection, input validation, resilience, multi-tenancy, tool-list size | Yes: Node.js 20, 22 and 24 |
 | `npm run test:control-plane -- <edge> <controller> <validator>` | Yes | 39 control-plane, OMP and Validator calls plus 3 input-validation checks | No |
 | `npm run test:ux2 -- <edge-hostname>` | Yes | UX 2.0, fabric-wide, paging and response-shaping tools; hostname resolution, parallel calls, error handling, with timings | No |
 | `npm run verify:api -- <edge> <controller> <validator>` | Yes (≈25 min) | Every read operation that needs no IDs (≈1,260 on 26.2) plus every dedicated read tool; writes [API_COVERAGE.md](API_COVERAGE.md) and [api_coverage.csv](api_coverage.csv) | No |

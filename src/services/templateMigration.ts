@@ -66,14 +66,23 @@ export interface DevicePlan {
 export async function planTemplate(deps: MigrationDeps, templateRef: string, groupRef?: unknown) {
   const ref = templateRef.trim();
   if (!ref) throw new Error('template is required (device template ID or name)');
-  const templates = (await deps.get<{ data?: Array<{ templateId: string; templateName: string }> }>('/dataservice/template/device')).data ?? [];
+  const [templates, policyGroups] = await Promise.all([
+    deps.get<{ data?: Array<{ templateId: string; templateName: string }> }>('/dataservice/template/device').then((b) => b.data ?? []),
+    deps.listGroups('policy-group'),
+  ]);
   const template = templates.find((t) => t.templateId === ref || t.templateName.toLowerCase() === ref.toLowerCase());
   if (!template) throw new Error(`No device template "${ref}"`);
   const group = await deps.findGroup('config-group', groupRef ?? template.templateName);
-  const policyGroup = (await deps.listGroups('policy-group')).find((g) => g.name === group.name);
-  const attached = (await deps.get<{ data?: Array<{ uuid: string }> }>(
-    `/dataservice/template/device/config/attached/${encodeURIComponent(template.templateId)}`
-  )).data ?? [];
+  const policyGroup = policyGroups.find((g) => g.name === group.name);
+  const schema = async (kind: string, id: string) => {
+    const body = await deps.get(`/dataservice/v1/${kind}/${encodeURIComponent(id)}/device/variables/schema`);
+    return parseSchema(Array.isArray(body) ? body : [body]);
+  };
+  const [attached, spec, policySpec] = await Promise.all([
+    deps.get<{ data?: Array<{ uuid: string }> }>(`/dataservice/template/device/config/attached/${encodeURIComponent(template.templateId)}`).then((b) => b.data ?? []),
+    schema('config-group', group.id),
+    policyGroup ? schema('policy-group', policyGroup.id) : undefined,
+  ]);
   const devices: Record<string, DevicePlan> = {};
   if (attached.length) {
     // Read-only: builds the template's device input; it does not attach or push anything.
@@ -83,12 +92,6 @@ export async function planTemplate(deps: MigrationDeps, templateRef: string, gro
       isEdited: false,
       isMasterEdited: false,
     });
-    const schema = async (kind: string, id: string) => {
-      const body = await deps.get(`/dataservice/v1/${kind}/${encodeURIComponent(id)}/device/variables/schema`);
-      return parseSchema(Array.isArray(body) ? body : [body]);
-    };
-    const spec = await schema('config-group', group.id);
-    const policySpec = policyGroup ? await schema('policy-group', policyGroup.id) : undefined;
     for (const [host, row] of Object.entries(rowsFromInput(template.templateName, input))) {
       const planned = mapValues(spec, row);
       if (!policySpec) {
@@ -136,28 +139,37 @@ export class TemplateMigration {
     if (Object.values(planned.values).includes(AAA_PASSWORD_PLACEHOLDER) && !password) {
       throw new Error(`${device.hostName}: the group configures the AAA user password; set VMANAGE_MIGRATION_AAA_PASSWORD on the server. Nothing was changed.`);
     }
-    const before = await this.runningConfig(device);
-    const bfdBefore = (await this.health(device)).bfdUp;
+    const [before, { bfdUp: bfdBefore }] = await Promise.all([this.runningConfig(device), this.health(device)]);
     this.state.set(device.uuid, { configGroup: plan.group, policyGroup: plan.policyGroup, before, bfdBefore });
 
     const steps: string[] = [];
-    const detach = await this.deps.write('POST', '/dataservice/template/config/device/mode/cli', {
-      deviceType: 'vedge',
-      devices: [{ deviceId: device.uuid, deviceIP: device.systemIp }],
-    });
-    await this.waitTask(taskId(detach), 180, `detach ${plan.template.templateName} from ${device.hostName}`);
-    steps.push(`detached device template ${plan.template.templateName} (the running config stays)`);
-    for (const [kind, group, values] of [
-      ['config-group', plan.group, planned.values],
-      ...(plan.policyGroup && planned.policyGroupValues ? [['policy-group', plan.policyGroup, planned.policyGroupValues]] : []),
-    ] as Array<['config-group' | 'policy-group', Group, Record<string, Value>]>) {
-      const path = `/dataservice/v1/${kind}/${encodeURIComponent(group.id)}/device`;
-      await this.deps.write('PUT', `${path}/associate`, { devices: [{ id: device.uuid }] });
-      await this.deps.write('PUT', `${path}/variables`, {
-        solution: 'sdwan',
-        devices: [{ 'device-id': device.uuid, variables: variablesOf(values, password) }],
+    try {
+      const detach = await this.deps.write('POST', '/dataservice/template/config/device/mode/cli', {
+        deviceType: 'vedge',
+        devices: [{ deviceId: device.uuid, deviceIP: device.systemIp }],
       });
-      steps.push(`associated ${kind.replace('-', ' ')} ${group.name} and set its ${Object.keys(values).length} values`);
+      const detached = await this.waitTask(taskId(detach), 180, `detach ${plan.template.templateName} from ${device.hostName}`);
+      // Associating a group while the template is still attached would fail or leave both in place.
+      if (detached.status === 'in progress') {
+        throw new Error(`detaching ${plan.template.templateName} is still running (task ${detached.taskId}); run step "prepare" again once it is done`);
+      }
+      steps.push(`detached device template ${plan.template.templateName} (the running config stays)`);
+      for (const [kind, group, values] of [
+        ['config-group', plan.group, planned.values],
+        ...(plan.policyGroup && planned.policyGroupValues ? [['policy-group', plan.policyGroup, planned.policyGroupValues]] : []),
+      ] as Array<['config-group' | 'policy-group', Group, Record<string, Value>]>) {
+        const path = `/dataservice/v1/${kind}/${encodeURIComponent(group.id)}/device`;
+        await this.deps.write('PUT', `${path}/associate`, { devices: [{ id: device.uuid }] });
+        steps.push(`associated ${kind.replace('-', ' ')} ${group.name}`);
+        await this.deps.write('PUT', `${path}/variables`, {
+          solution: 'sdwan',
+          devices: [{ 'device-id': device.uuid, variables: variablesOf(values, password) }],
+        });
+        steps[steps.length - 1] += ` and set its ${Object.keys(values).length} values`;
+      }
+    } catch (error) {
+      const done = steps.length ? `Done before the failure: ${steps.join('; ')}.` : 'Nothing was changed.';
+      throw new Error(`${device.hostName}: prepare failed: ${(error as Error).message}. ${done} Nothing was pushed to the device.${steps.length ? ' To undo, remove the device from its groups and re-attach its template.' : ''}`);
     }
     const review = await this.review(device, plan.group, plan.policyGroup);
     const toAccept = needsAcceptance(review);
@@ -233,7 +245,8 @@ export class TemplateMigration {
     if (groupRef === undefined) throw new Error(`${device.hostName}: no migration prepared in this server session; pass config_group, or run step "prepare"`);
     const configGroup = await this.deps.findGroup('config-group', groupRef);
     const policyGroup = (await this.deps.listGroups('policy-group')).find((g) => g.name === configGroup.name);
-    const state = { configGroup, policyGroup, before: await this.runningConfig(device), bfdBefore: (await this.health(device)).bfdUp };
+    const state = { configGroup, policyGroup, before: '', bfdBefore: 0 };
+    [state.before, { bfdUp: state.bfdBefore }] = await Promise.all([this.runningConfig(device), this.health(device)]);
     this.state.set(device.uuid, state);
     return state;
   }
@@ -254,8 +267,10 @@ export class TemplateMigration {
 
   private async health(device: Device) {
     const rows = async (path: string) => (await this.deps.get<{ data?: any[] }>(path, { deviceId: device.systemIp })).data ?? [];
-    const control = await rows('/dataservice/device/control/connections').catch(() => []);
-    const bfd = await rows('/dataservice/device/bfd/sessions').catch(() => []);
+    const [control, bfd] = await Promise.all([
+      rows('/dataservice/device/control/connections').catch(() => []),
+      rows('/dataservice/device/bfd/sessions').catch(() => []),
+    ]);
     return {
       vsmartUp: control.filter((c) => c['peer-type'] === 'vsmart' && c.state === 'up').length,
       bfdUp: bfd.filter((b) => b.state === 'up').length,

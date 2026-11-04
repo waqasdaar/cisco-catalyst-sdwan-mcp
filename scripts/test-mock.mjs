@@ -339,6 +339,7 @@ function handler(req, res) {
       if (req.method !== 'GET') {
         const body = raw ? JSON.parse(raw) : undefined;
         stats.grpPosts.push({ method: req.method, path: p, query: Object.fromEntries(url.searchParams), body });
+        if (mock.failAssociate && rest.endsWith('/device/associate')) return send(500, { error: { message: 'association rejected' } });
         if (req.method === 'POST' && rest === '') {
           const id = '22222222-0000-4000-8000-00000000000' + GROUPS[kind].length;
           GROUPS[kind].push({ id, name: body?.name, solution: 'sdwan' });
@@ -1555,6 +1556,15 @@ const mw = await connect(migrationEnv);
 const grpBefore = stats.grpPosts.length;
 r = await tool(mw, 'deploy_template_migration', { step: 'prepare', device: 'Branch-2', template: 'Branch-CG' });
 check('migration: prepare needs confirm, and changes nothing without it', /changes state/.test(r.error ?? '') && stats.migrationWrites.length === 0, r.error ?? 'not refused');
+mock.failAssociate = true;
+r = await tool(mw, 'deploy_template_migration', { step: 'prepare', device: 'Branch-2', template: 'Branch-CG', confirm: true });
+mock.failAssociate = false;
+check(
+  'migration: a prepare that fails partway says what it already did and how to undo it',
+  /prepare failed: .*Done before the failure: detached device template Branch-CG.*re-attach its template/.test(r.error ?? ''),
+  r.error ?? 'not refused'
+);
+stats.migrationWrites.length = 0;
 mock.preview = (kind) => ({ existingConfig: MIGRATION_RUNNING, newConfig: MIGRATION_BASE });
 r = await tool(mw, 'deploy_template_migration', { step: 'prepare', device: 'Branch-2', template: 'Branch-CG', confirm: true });
 const groupWrites = stats.grpPosts.slice(grpBefore);
