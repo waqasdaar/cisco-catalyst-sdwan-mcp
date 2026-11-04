@@ -18,7 +18,7 @@ import { VManageApiService, type HttpMethod } from './services/vmanageApi.js';
 import { ApiCatalog, shapeResponse } from './services/apiCatalog.js';
 import { changes as parcelChanges, RULES as CONVERSION_RULES } from './services/configDefects.js';
 import { maskConfig, maskLine, reviewConfig, SIG_LINES } from './services/configReview.js';
-import { mapValues, parseSchema, rowsFromInput } from './services/configVariables.js';
+import { mapValues, parseSchema, rowsFromInput, shownPlan } from './services/configVariables.js';
 import { loadConfig, type VManageConfig } from './utils/config.js';
 
 const MAX_RESPONSE_CHARS = 200_000;
@@ -3478,17 +3478,19 @@ export class CatalystSdwanMCPServer {
           const body = await this.apiService.get(`/dataservice/v1/${kind}/${encodeURIComponent(id)}/device/variables/schema`);
           return parseSchema(Array.isArray(body) ? body : [body]);
         };
-        const spec = await schema('config-group', group.id);
-        const policyGroup = (await this.listGroups('policy-group')).find((g) => g.name === group.name);
+        const [spec, policyGroup] = await Promise.all([
+          schema('config-group', group.id),
+          this.listGroups('policy-group').then((list) => list.find((g) => g.name === group.name)),
+        ]);
         const policySpec = policyGroup ? await schema('policy-group', policyGroup.id) : undefined;
         const devices: Record<string, unknown> = {};
         for (const [host, row] of Object.entries(rowsFromInput(template.templateName, input))) {
-          const planned = mapValues(spec, row);
+          const planned = shownPlan(spec, mapValues(spec, row));
           if (!policySpec) {
             devices[host] = { deviceId: row.deviceId, ...planned };
             continue;
           }
-          const policy = mapValues(policySpec, row);
+          const policy = shownPlan(policySpec, mapValues(policySpec, row));
           planned.report.unused = planned.report.unused.filter((name) => policy.report.unused.includes(name));
           devices[host] = { deviceId: row.deviceId, ...planned, policyGroupValues: policy.values, policyGroupReport: policy.report };
         }
