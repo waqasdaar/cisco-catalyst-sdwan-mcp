@@ -20,7 +20,7 @@
  */
 
 import { maskLine, missingLines, RESALTED, reviewConfig, SIG_LINES, type ConfigReview } from './configReview.js';
-import { AAA_PASSWORD_PLACEHOLDER, mapValues, parseSchema, rowsFromInput, type MappingReport, type Value } from './configVariables.js';
+import { AAA_PASSWORD_PLACEHOLDER, mapValues, parseSchema, rowsFromInput, shownPlan, type MappingReport, type Value } from './configVariables.js';
 
 // A hash that may only be re-salted is not a change the user has to accept.
 const needsAcceptance = (review: ConfigReview) => [
@@ -103,7 +103,7 @@ export async function planTemplate(deps: MigrationDeps, templateRef: string, gro
       devices[host] = { deviceId: row.deviceId, ...planned, policyGroupValues: policy.values, policyGroupReport: policy.report };
     }
   }
-  return { template, group, policyGroup, devices };
+  return { template, group, policyGroup, devices, spec, policySpec };
 }
 
 export interface MigrationState {

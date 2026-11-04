@@ -49,6 +49,26 @@ export const DEFAULTS: Record<string, Value> = { pseudo_commit_timer: 300, ipv6_
 export const AAA_PASSWORD_PLACEHOLDER = '${AAA_PASSWORD}';
 const NO_VALUE = new Set(['', 'TEMPLATE_IGNORE']);
 const IPV4 = /^((25[0-5]|(2[0-4]|1\d|[1-9]|)\d)\.){3}(25[0-5]|(2[0-4]|1\d|[1-9]|)\d)$/;
+/** Variable names that hold a secret: a password, secret, key, PSK, SNMP community or token as a name part. */
+const SECRET_NAME = /(^|[_-])(pass(word|wd)?|secret|key|psk|community|token)([_-]|$)/i;
+
+/** The plan as shown to the assistant: values of secret variables (by name, or encrypted in the schema) masked
+ *  and listed under report.secrets. The real values stay with the caller, for setting them. */
+export function shownPlan(spec: Record<string, VariableSpec>, plan: { values: Record<string, Value>; report: MappingReport }) {
+  const secret = (name: string) => Boolean(spec[name]?.encrypted) || SECRET_NAME.test(name);
+  const values: Record<string, Value> = {};
+  const secrets = new Set(plan.report.secrets);
+  for (const [name, value] of Object.entries(plan.values)) {
+    const masked = value !== null && value !== AAA_PASSWORD_PLACEHOLDER && secret(name);
+    values[name] = masked ? '****' : value;
+    if (masked) secrets.add(name);
+  }
+  const invalid = plan.report.invalid.map((entry) => {
+    const name = /^[^=:]+/.exec(entry)?.[0] ?? '';
+    return secret(name) ? `${name}: the value does not fit the variable (value masked)` : entry;
+  });
+  return { values, report: { ...plan.report, secrets: [...secrets], invalid } };
+}
 
 /** Variable name -> its spec, from a variables schema response. Entries without a value are skipped (20.18 also
  *  lists field dependencies there, under "metadata"). */

@@ -19,6 +19,7 @@ import { ApiCatalog, shapeResponse } from './services/apiCatalog.js';
 import { changes as parcelChanges, RULES as CONVERSION_RULES } from './services/configDefects.js';
 import { maskConfig, maskLine, reviewConfig, SIG_LINES } from './services/configReview.js';
 import { planTemplate, TemplateMigration, type MigrationDeps, type MigrationState } from './services/templateMigration.js';
+import { shownPlan } from './services/configVariables.js';
 import { loadConfig, type VManageConfig } from './utils/config.js';
 
 const MAX_RESPONSE_CHARS = 200_000;
@@ -3493,7 +3494,14 @@ export class CatalystSdwanMCPServer {
       }
       case 'plan_config_group_variables': {
         const plan = await planTemplate(migrationDeps(), String(args.template ?? ''), args.config_group);
-        return { template: plan.template.templateName, configGroup: plan.group.name, policyGroup: plan.policyGroup?.name, devices: plan.devices };
+        const devices = Object.fromEntries(Object.entries(plan.devices).map(([host, d]) => {
+          const shown = shownPlan(plan.spec, d);
+          const policy = plan.policySpec && d.policyGroupValues && d.policyGroupReport
+            ? shownPlan(plan.policySpec, { values: d.policyGroupValues, report: d.policyGroupReport })
+            : undefined;
+          return [host, { ...d, ...shown, ...(policy ? { policyGroupValues: policy.values, policyGroupReport: policy.report } : {}) }];
+        }));
+        return { template: plan.template.templateName, configGroup: plan.group.name, policyGroup: plan.policyGroup?.name, devices };
       }
       case 'deploy_template_migration': {
         const migration = new TemplateMigration(migrationDeps(), this.migrationState);

@@ -106,6 +106,7 @@ const MIGRATION = {
       transport1_ip_subnet_mask: variable({ type: 'string', format: 'ipv4' }),
       vpn0_ip_host_ip_list: variable({ type: 'array', minItems: 1, items: { type: 'string', oneOf: [{ format: 'ipv4' }, { format: 'ipv6' }] } }),
       pseudo_commit_timer: variable({ type: 'integer' }),
+      snmp_community: variable({ type: 'string' }),
       admin_password: variable({ type: 'string' }, { encrypted: true, paths: [{ parcel_type: 'aaa', path: 'user.password' }] }),
     },
   } }] }],
@@ -183,6 +184,7 @@ const TEMPLATE_INPUT = {
     { property: '/0/vpn-instance/ip/host/ip', variable: 'vpn0_ip_host_ip_list' },
     { property: '/sig/tracker-src-ip', variable: 'zscaler_vpn_trackersrcip' },
     { property: '/0/old-setting', variable: 'old_setting' },
+    { property: '/snmp/community', variable: 'snmp_community' },
   ] },
   data: [{
     'csv-deviceId': 'u-12', 'csv-host-name': 'Branch-2',
@@ -191,6 +193,7 @@ const TEMPLATE_INPUT = {
     '/0/vpn-instance/ip/host/ip': '192.0.2.50,192.0.2.51',
     '/sig/tracker-src-ip': '192.0.2.12/32',
     '/0/old-setting': 'x',
+    '/snmp/community': 'Comm-Secret-1',
   }],
 };
 const GROUPS = {
@@ -1533,6 +1536,11 @@ check(
     r.value.policyGroup === 'Branch-CG' && planned.policyGroupValues?.zscaler_vpn_trackersrcip === '192.0.2.12' &&
     planned.report.invalid.length === 0 && JSON.stringify(planned.report.unused) === JSON.stringify(['old_setting']),
   JSON.stringify(r.value ?? r.error)
+);
+check(
+  'plan_config_group_variables masks secret variables (SNMP community)',
+  planned?.values?.snmp_community === '****' && planned.report.secrets.includes('snmp_community') && !JSON.stringify(r.value ?? '').includes('Comm-Secret-1'),
+  JSON.stringify(planned?.values ?? r.error)
 );
 r = await tool(mig, 'find_config_group_conversion_defects', { config_group: 'Branch-CG' });
 const byFeature = Object.fromEntries((r.value?.findings ?? []).map((f) => [f.feature, f]));
