@@ -3498,10 +3498,12 @@ export class CatalystSdwanMCPServer {
       }
       case 'find_config_group_conversion_defects': {
         const width = this.config.fabricConcurrency;
+        // The rules check WAN Ethernet interfaces and SIG features, which only these profile types hold.
+        const checkedProfiles = new Set(['transport', 'sig-security']);
         const [groups, policyGroups, featureList] = await Promise.all([
           args.config_group ? this.findGroup('config-group', args.config_group).then((g) => [g]) : this.listGroups('config-group'),
           this.listGroups('policy-group'),
-          this.apiService.get<{ data?: Array<{ templateId: string; templateName: string; templateType: string }> }>('/dataservice/template/feature'),
+          this.apiService.get<{ data?: Array<{ templateId: string; templateName: string; templateType: string }> }>('/dataservice/template/feature', undefined, GROUP_LIST_TTL_MS),
         ]);
         const featureTemplates = new Map((featureList.data ?? []).map((t) => [`${t.templateName}\u0000${t.templateType}`, t.templateId]));
         // Promises, so parcels sharing a feature template fetch it once even when read in parallel.
@@ -3511,37 +3513,42 @@ export class CatalystSdwanMCPServer {
           if (!id) return Promise.resolve(undefined);
           if (!definitions.has(id)) {
             definitions.set(id, this.apiService
-              .get<{ templateDefinition?: unknown }>(`/dataservice/template/feature/object/${encodeURIComponent(id)}`)
+              .get<{ templateDefinition?: unknown }>(`/dataservice/template/feature/object/${encodeURIComponent(id)}`, undefined, GROUP_LIST_TTL_MS)
               .then((body) => (body.templateDefinition ?? {}) as Record<string, any>));
           }
           return definitions.get(id) as Promise<Record<string, any>>;
         };
+        // vManage lists groups with their profiles, which saves a request per group; otherwise read the group.
+        const profilesOf = async (kind: 'config-group' | 'policy-group', group: UxGroup): Promise<UxProfile[]> =>
+          Array.isArray(group.profiles)
+            ? (group.profiles as UxProfile[])
+            : (await this.apiService.get<{ profiles?: UxProfile[] }>(`/dataservice/v1/${kind}/${encodeURIComponent(group.id)}`, undefined, GROUP_LIST_TTL_MS)).profiles ?? [];
         const groupProfiles = await mapLimit(groups, width, async (group) => {
           const policyGroup = policyGroups.find((g) => g.name === group.name);
-          const [detail, policyDetail] = await Promise.all([
-            this.apiService.get<{ profiles?: UxProfile[] }>(`/dataservice/v1/config-group/${encodeURIComponent(group.id)}`),
-            policyGroup ? this.apiService.get<{ profiles?: UxProfile[] }>(`/dataservice/v1/policy-group/${encodeURIComponent(policyGroup.id)}`) : undefined,
-          ]);
-          return [...(detail.profiles ?? []), ...(policyDetail?.profiles ?? []).filter((p) => p.type === 'sig-security')].map((profile) => ({ group, profile }));
+          const [own, policy] = await Promise.all([profilesOf('config-group', group), policyGroup ? profilesOf('policy-group', policyGroup) : []]);
+          return [...own, ...policy.filter((p) => p.type === 'sig-security')]
+            .filter((profile) => checkedProfiles.has(profile.type))
+            .map((profile) => ({ group, profile }));
         });
         const seen = new Set<string>();
         const profiles = groupProfiles.flat().filter(({ profile }) => !seen.has(profile.id) && seen.add(profile.id));
         const parcelLists = await mapLimit(profiles, width, async ({ group, profile }) => {
           const url = `/dataservice/v1/feature-profile/sdwan/${profile.type}/${encodeURIComponent(profile.id)}`;
           const body = await this.apiService.get<{ associatedProfileParcels?: any[] }>(url, profile.type === 'sig-security' ? undefined : { details: 'true' });
-          const parcels: Array<{ group: UxGroup; profile: UxProfile; parcelType: string; path: string }> = [];
+          // With details, each parcel carries its payload, which saves a request per feature.
+          const parcels: Array<{ group: UxGroup; profile: UxProfile; parcelType: string; path: string; payload?: any }> = [];
           for (const parcel of body.associatedProfileParcels ?? []) {
             const path = `${url}/${parcel.parcelType}/${encodeURIComponent(parcel.parcelId)}`;
-            parcels.push({ group, profile, parcelType: parcel.parcelType, path });
+            parcels.push({ group, profile, parcelType: parcel.parcelType, path, payload: parcel.payload });
             for (const sub of parcel.subparcels ?? []) {
               const suffix = sub.parcelType.startsWith(`${parcel.parcelType}/`) ? sub.parcelType.slice(parcel.parcelType.length + 1) : sub.parcelType;
-              parcels.push({ group, profile, parcelType: sub.parcelType, path: `${path}/${suffix}/${encodeURIComponent(sub.parcelId)}` });
+              parcels.push({ group, profile, parcelType: sub.parcelType, path: `${path}/${suffix}/${encodeURIComponent(sub.parcelId)}`, payload: sub.payload });
             }
           }
           return parcels.filter((p) => p.parcelType === 'wan/vpn/interface/ethernet' || p.parcelType === 'sig');
         });
-        const checked = await mapLimit(parcelLists.flat(), width, async ({ group, profile, parcelType, path }) => {
-          const payload = (await this.apiService.get<{ payload?: any }>(path)).payload ?? {};
+        const checked = await mapLimit(parcelLists.flat(), width, async ({ group, profile, parcelType, path, payload: inline }) => {
+          const payload = inline?.data ? inline : (await this.apiService.get<{ payload?: any }>(path)).payload ?? {};
           const original = payload.data ?? {};
           let data = original;
           const applied: string[] = [];
