@@ -8,8 +8,8 @@ A [Model Context Protocol (MCP)](https://modelcontextprotocol.io/) server for **
 
 All requests go through vManage. The server never connects to routers directly.
 
-- **160 MCP tools** (119 listed on a read-only server, 160 with writes enabled): 156 purpose-built tools, including fabric-wide health, BFD and TLOC checks in a single call, BGP, OSPF, OSPFv3, EIGRP, multicast (IGMP, PIM, MFIB) and IPv6 monitoring and configuration (UX 2.0 features and UX 1.0 templates/policy objects), CLI add-on configuration (for example RIP/RIPng), UX 2.0 configuration, policy and topology groups (read, preview, create, change, associate devices, set variables, deploy), feature profiles and the network hierarchy (regions, areas, sites and their Cyber Vision network settings), plus 4 general tools that reach **every operation in the vManage OpenAPI spec** (4,128 operations on 26.2).
-- **Lean tool list.** Write tools are listed only when `VMANAGE_ALLOW_WRITE=true`, so a read-only server offers 119 tools (under VS Code's 128-tool limit) in a tool list under 110 KB, about a third smaller than before. Assistants answer faster and spend fewer tokens on every request.
+- **162 MCP tools** (121 listed on a read-only server, 162 with writes enabled): 158 purpose-built tools, including fabric-wide health, BFD and TLOC checks in a single call, BGP, OSPF, OSPFv3, EIGRP, multicast (IGMP, PIM, MFIB) and IPv6 monitoring and configuration (UX 2.0 features and UX 1.0 templates/policy objects), CLI add-on configuration (for example RIP/RIPng), UX 2.0 configuration, policy and topology groups (read, preview, create, change, associate devices, set variables, deploy), feature profiles and the network hierarchy (regions, areas, sites and their Cyber Vision network settings), plus 4 general tools that reach **every operation in the vManage OpenAPI spec** (4,128 operations on 26.2).
+- **Lean tool list.** Write tools are listed only when `VMANAGE_ALLOW_WRITE=true`, so a read-only server offers 121 tools (under VS Code's 128-tool limit) in a tool list under 110 KB, about a third smaller than before. Assistants answer faster and spend fewer tokens on every request.
 - **Read-only by default.** Operations that change configuration or state are disabled unless you enable them, and each call then needs explicit confirmation.
 - **BGP, OSPF, OSPFv3 and EIGRP end to end.** Real-time neighbors, routes, interfaces, topology and LSDB; UX 2.0 feature reads and writes for SD-WAN and SD-Routing profiles; UX 1.0 feature templates (list, read, schema, create, update, delete, clone). Every BGP, OSPF and EIGRP operation in the 26.2 spec has a dedicated tool.
 - **Multicast end to end.** IGMP, PIM, overlay multicast (topology, RPF, replicators, tunnels) and MFIB monitoring; UX 2.0 multicast features (read, schema, write); UX 1.0 IGMP, PIM and multicast templates. Every multicast operation in the 26.2 spec has a dedicated tool.
@@ -428,7 +428,7 @@ The eight tools cover all 23 EIGRP operations in the 26.2 spec: the 3 real-time 
 | `get_app_log_flow_count` | Number of logged flows | `device_id`\* | "How many flows are being logged on Branch-2?" |
 | `get_sdwan_stats` | SD-WAN statistics: ACL drops, data policy, device metrics | `device_id`\* | "Any data-policy drops on Branch-2?" |
 
-#### UX 2.0 configuration (24)
+#### UX 2.0 configuration (26)
 
 The `solution` parameter selects `sdwan` (default), `sd-routing`, `nfvirtual` or `mobility`. Groups and profiles can be passed by ID or exact name, and devices by hostname, system IP, UUID or chassis number. The dedicated tools cover all 40 configuration-group, policy-group and topology-group operations of the 26.2 spec.
 
@@ -438,7 +438,9 @@ The `solution` parameter selects `sdwan` (default), `sd-routing`, `nfvirtual` or
 | `list_config_groups` | Configuration groups with feature profiles, device counts and deployment state | `solution`, `name` | "How many configuration groups are on vManage?" |
 | `get_config_group` | One configuration group with its profiles and associated devices | `config_group`\* | "Which devices does configuration group Branch-CG configure?" |
 | `get_config_group_device_variables` | Device-specific variable values (all devices or one) | `config_group`\*, `device` | "Show the variables of Branch-1 in Branch-CG." |
-| `preview_config_group_device_config` | **Read-only** preview: configuration the group would push vs. running config. Secrets are masked. Nothing is deployed. | `config_group`\*, `device`\*, `view` (`diff` default/`review`/`new`/`existing`/`both`) | "What would Branch-CG change on Branch-1 if I deployed now?" |
+| `preview_config_group_device_config` | **Read-only** preview: configuration the group would push vs. running config, secrets masked. `review` sorts it into settings dropped, changed and added and secrets changed, and lists apart the SIG settings of the policy group of the group's name. Nothing is deployed. | `config_group`\*, `device`\*, `view` (`diff` default/`review`/`new`/`existing`/`both`) | "What would Branch-CG change on Branch-1 if I deployed now?" |
+| `plan_config_group_variables` | **Read-only.** For the devices attached to a device template, their values for the configuration group converted from it (and its SIG policy group), from their template values; reports missing and invalid values and template variables no group uses; secret values (passwords, keys, SNMP communities) are masked | `template`\*, `config_group` (default: the template's name) | "Plan the Branch-CG values of the devices on template Branch-CG." |
+| `find_config_group_conversion_defects` | **Read-only.** Defects the template-to-group conversion left, against the feature templates: services turned off, NAT lost, SIG settings reset to group defaults, stray tunnel settings; each with its fix | `config_group` (default: all) | "Did the conversion break anything in Branch-CG?" |
 | `list_policy_groups` | Policy groups with profiles, device counts and state | `solution` | "List the policy groups." |
 | `get_policy_group` | One policy group with profiles and devices | `policy_group`\* | "Which devices use policy group Branch-PG?" |
 | `list_topology_groups` | Topology groups (hub-and-spoke, mesh) | `solution` | "Which topology groups exist?" |
@@ -1337,7 +1339,7 @@ Four test suites check the server. Only `npm test` runs without a Manager; the o
 
 | Command | Needs a Manager | What it checks | Runs in CI |
 |---|---|---|---|
-| `npm test` | No (simulated vManage) | 325 checks: every tool family, spec coverage of all routing/multicast/IPv6/CLI, configuration/policy/topology group and network-hierarchy operations, write protection, input validation, resilience, multi-tenancy, tool-list size | Yes: Node.js 20, 22 and 24 |
+| `npm test` | No (simulated vManage) | 328 checks: every tool family, spec coverage of all routing/multicast/IPv6/CLI, configuration/policy/topology group and network-hierarchy operations, write protection, input validation, resilience, multi-tenancy, tool-list size | Yes: Node.js 20, 22 and 24 |
 | `npm run test:control-plane -- <edge> <controller> <validator>` | Yes | 39 control-plane, OMP and Validator calls plus 3 input-validation checks | No |
 | `npm run test:ux2 -- <edge-hostname>` | Yes | UX 2.0, fabric-wide, paging and response-shaping tools; hostname resolution, parallel calls, error handling, with timings | No |
 | `npm run verify:api -- <edge> <controller> <validator>` | Yes (≈25 min) | Every read operation that needs no IDs (≈1,260 on 26.2) plus every dedicated read tool; writes [API_COVERAGE.md](API_COVERAGE.md) and [api_coverage.csv](api_coverage.csv) | No |
@@ -1357,7 +1359,7 @@ npm run verify:api -- <edge> <controller> <validator>
 
 | Area | What is checked |
 |---|---|
-| Tool list | 119 tools on a read-only server with no write tool listed, 160 with `VMANAGE_ALLOW_WRITE=true`; the read-only tool list stays under 110 KB |
+| Tool list | 121 tools on a read-only server with no write tool listed, 162 with `VMANAGE_ALLOW_WRITE=true`; the read-only tool list stays under 110 KB |
 | Client and resilience | Hostname resolution, `Retry-After` retries on 503, re-login after an expired token, session-cookie login and logout, fail-fast when the Manager is unreachable, real-time vs. list timeouts named in the error |
 | Response shaping | `fields`, `filter`, `count_by`, `offset`/`limit` paging, truncation with a `nextOffset` cursor on a 3,000-device inventory |
 | Fabric-wide tools | Health table and Manager deployment detection, BFD and TLOC sweeps: concurrency cap, time budget with resume, overload breaker, synced data re-checked live |
@@ -1371,7 +1373,7 @@ npm run verify:api -- <edge> <controller> <validator>
 
 #### Coverage by area
 
-Every one of the 160 tools belongs to one area below. **Offline** is what `npm test` checks against the simulated Manager. **Live** is the suite that runs the tools against a real 26.2.1 Manager. Read tools are verified live; write tools only up to the write gate, because writes are disabled on the lab.
+Every one of the 162 tools belongs to one area below. **Offline** is what `npm test` checks against the simulated Manager. **Live** is the suite that runs the tools against a real 26.2.1 Manager. Read tools are verified live; write tools only up to the write gate, because writes are disabled on the lab.
 
 | Area | UX | Tools | vManage APIs the tools call | Offline (`npm test`) | Live |
 |---|---|---:|---|---|---|
@@ -1386,7 +1388,7 @@ Every one of the 160 tools belongs to one area below. **Offline** is what `npm t
 | EIGRP | 2.0 | 8 | `/device/eigrp/*`, `/v1/feature-profile/.../service/.../routing/eigrp` | Full spec sweep | `verify:api` (read tools) |
 | Multicast: IGMP, PIM, MFIB | 2.0 | 10 | `/device/{igmp,pim,multicast}/*`, `/device/ip/mfib*`, `/v1/feature-profile/sdwan/service/.../routing/multicast` | Full spec sweep | `verify:api` (read tools) |
 | IPv6 | 1.0 and 2.0 | 11 | `/device/ipv6/*`, `/device/ip/ipRoutes`, `/template/policy/{list,definition}/*v6*`, `/v1/feature-profile/sdwan/transport/.../ipv6-tracker*` | Full spec sweep | `verify:api` (read tools) |
-| **Configuration groups, policy groups, topology groups** | 2.0 | 18 | `/v1/config-group`, `/v1/policy-group`, `/v1/topology-group`, with `/{id}`, `/device/associate`, `/device/variables[/schema]`, `/device/deploy`, `/rules[/preview]` and `/device/{id}/preview` (read-only render) | Full spec sweep (40 operations), device-name to UUID resolution, write protection, cache invalidation after a write | `test:ux2`, `verify:api`; the 3 tools that need a group were run by hand |
+| **Configuration groups, policy groups, topology groups** | 2.0 | 20 | `/v1/config-group`, `/v1/policy-group`, `/v1/topology-group`, with `/{id}`, `/device/associate`, `/device/variables[/schema]`, `/device/deploy`, `/rules[/preview]` and `/device/{id}/preview` (read-only render) | Full spec sweep (40 operations), device-name to UUID resolution, write protection, cache invalidation after a write | `test:ux2`, `verify:api`; the 3 tools that need a group were run by hand |
 | **Feature profiles and network hierarchy** | 2.0 | 6 | `/v1/feature-profile/{solution}/{type}[/{id}]`, `/v1/network-hierarchy[/{id}]`, `/v1/network-hierarchy/{id}/network-settings/cybervisioncenters[/id, /{cvId}]` | Full spec sweep of the network hierarchy (4 operations), node lookup by ID, path, site ID and name (ambiguous names refused), `label` filter, Global default, profile-name lookup | `test:ux2`, `verify:api` |
 | UX 2.0 CLI add-ons | 2.0 | 5 | `/v1/feature-profile/{sdwan,sd-routing}/cli/{id}/config` | Full spec sweep | `verify:api`; `get_cli_addon` run by hand |
 | **Device and feature templates** | 1.0 | 4 | `/template/device`, `/template/feature`, `/template/device/config/attached/{id}`, `/template/{device,feature}/object/{id}` | List timeout | `verify:api` |
@@ -1394,7 +1396,7 @@ Every one of the 160 tools belongs to one area below. **Offline** is what `npm t
 | Routing and multicast feature templates | 1.0 | 7 | `/template/feature` (list, object, device templates, type definition, create, update, delete, clone) | Requests, template-type guard | `verify:api` (list and schema; the lab has no routing templates to read) |
 | CLI add-on templates | 1.0 | 5 | `/template/feature` (list, object, device templates, create, update, delete) | Requests, template-type guard, `contains` search | `verify:api` (list; the lab has no CLI templates to read) |
 | Cloud OnRamp and administration | – | 8 | `/template/cloudx/*`, `/alarms`, `/certificate/stats/summary`, `/clusterManagement/health/status`, `/template/policy/customapp` | – | `verify:api` |
-| **Total** | | **160** | | | |
+| **Total** | | **162** | | | |
 
 Every write tool (41) is additionally checked offline for refusal while `VMANAGE_ALLOW_WRITE=false` and without `confirm: true`, and for the exact method, path and body when allowed. Live, write tools were checked only up to the write gate (writes disabled on the lab).
 
@@ -1413,7 +1415,7 @@ OSPF and OSPFv3 share the same 10 tools; the `version` argument selects the prot
 | Multicast | 15 | 5 | – | 6 | 26 | 10 |
 | IPv6 (without OSPFv3) | 15 | 28 | 4 | 36 | 83 | 11 |
 | UX 2.0 CLI add-ons | – | 4 | – | 6 | 10 | 5 |
-| UX 2.0 configuration, policy and topology groups | – | 15 | 5 | 20 | 40 | 18 |
+| UX 2.0 configuration, policy and topology groups | – | 15 | 5 | 20 | 40 | 20 |
 | UX 2.0 network hierarchy (Cyber Vision network settings) | – | 2 | – | 2 | 4 | 3 |
 | **Total** | **45** | **138** | **9** | **193** | **385** | **74** |
 
@@ -1505,6 +1507,8 @@ src/
   services/vmanageApi.ts    # HTTPS client (undici), JWT/session auth, retries, caching, generic request()
   services/apiCatalog.ts    # OpenAPI-driven catalog: search, describe, validated calls, path-to-operation matching, paging, access control
   services/configReview.ts  # group previews: masks secrets in device configurations, sorts the review view
+  services/configVariables.ts # template-to-group migration: maps template values onto group variables
+  services/configDefects.ts # template-to-group migration: conversion defects and their fixes
   utils/config.ts           # environment configuration
 scripts/
   deploy.mjs                # deploy runtime copy outside cloud-synced folders

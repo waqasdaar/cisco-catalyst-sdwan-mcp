@@ -87,6 +87,94 @@ security
 !
 no acc-gyro enable
 `;
+// Template-to-group migration: Branch-2 is still on device template Branch-CG, converted to the configuration group
+// Branch-CG and to a policy group of the same name (SIG). Served only while mock.migration is set.
+const CG_ID = '19191919-1919-4191-8191-191919191919';
+const MIG_PG_ID = '24242424-2424-4242-8242-242424242424';
+const IPV4_PATTERN = '^((25[0-5]|(2[0-4]|1\\d|[1-9]|)\\d)(\\.(?!$)|$)){4}$';
+const variable = (value, metadata = {}) => ({ properties: { value, metadata } });
+const MIGRATION = {
+  '/dataservice/template/device': { data: [{ templateId: 'dt-1', templateName: 'Branch-CG', devicesAttached: 1, configType: 'template' }] },
+  '/dataservice/template/device/config/attached/dt-1': { data: [{ uuid: 'u-12' }] },
+  [`/dataservice/v1/config-group/${CG_ID}/device/variables/schema`]: [{ variables: [{ schema: {
+    required: ['host_name', 'system_ip', 'site_id'],
+    properties: {
+      host_name: variable({ type: 'string' }),
+      system_ip: variable({ type: 'string', format: 'ipv4' }),
+      site_id: variable({ type: 'integer' }),
+      transport1_ip_ip_address: variable({ type: 'string', format: 'ipv4' }),
+      transport1_ip_subnet_mask: variable({ type: 'string', format: 'ipv4' }),
+      vpn0_ip_host_ip_list: variable({ type: 'array', minItems: 1, items: { type: 'string', oneOf: [{ format: 'ipv4' }, { format: 'ipv6' }] } }),
+      pseudo_commit_timer: variable({ type: 'integer' }),
+      snmp_community: variable({ type: 'string' }),
+      admin_password: variable({ type: 'string' }, { encrypted: true, paths: [{ parcel_type: 'aaa', path: 'user.password' }] }),
+    },
+  } }] }],
+  [`/dataservice/v1/policy-group/${MIG_PG_ID}/device/variables/schema`]: [{ variables: [{ schema: {
+    properties: { zscaler_vpn_trackersrcip: variable({ type: 'string', pattern: IPV4_PATTERN }) },
+  } }] }],
+  [`/dataservice/v1/config-group/${CG_ID}`]: { profiles: [{ id: 'tp-1', name: 'Branch-CG_transport', type: 'transport' }] },
+  [`/dataservice/v1/policy-group/${MIG_PG_ID}`]: { profiles: [{ id: 'sp-1', name: 'Branch-CG_sig', type: 'sig-security' }, { id: 'po-1', name: 'Default', type: 'policy-object' }] },
+  '/dataservice/v1/feature-profile/sdwan/transport/tp-1': {
+    associatedProfileParcels: [{ parcelType: 'wan/vpn', parcelId: 'vpn-1', subparcels: [{ parcelType: 'wan/vpn/interface/ethernet', parcelId: 'eth-1' }] }],
+  },
+  // As the 20.18 conversion writes them: NAT off, services at the template default left out, SIG at group defaults.
+  '/dataservice/v1/feature-profile/sdwan/transport/tp-1/wan/vpn/vpn-1/interface/ethernet/eth-1': { payload: { name: 'Branch_Transport1', data: {
+    tunnelInterface: { optionType: 'global', value: true },
+    nat: { optionType: 'global', value: false },
+    allowService: { dns: { optionType: 'global', value: true } },
+  } } },
+  '/dataservice/v1/feature-profile/sdwan/sig-security/sp-1': { associatedProfileParcels: [{ parcelType: 'sig', parcelId: 'sig-1' }] },
+  '/dataservice/v1/feature-profile/sdwan/sig-security/sp-1/sig/sig-1': { payload: { name: 'Branch_SIG', data: { interface: [{
+    ifName: { optionType: 'global', value: 'ipsec1' },
+    ikeGroup: { optionType: 'default', value: '16' },
+    ipsecCiphersuite: { optionType: 'default', value: 'aes256-cbc-sha512' },
+  }] } } },
+  '/dataservice/template/feature': { data: [
+    { templateId: 'ft-1', templateName: 'Branch_Transport1', templateType: 'cisco_vpn_interface' },
+    { templateId: 'ft-2', templateName: 'Branch_SIG', templateType: 'cisco_secure_internet_gateway' },
+  ] },
+  '/dataservice/template/feature/object/ft-1': { templateDefinition: {
+    'tunnel-interface': { 'allow-service': {
+      dhcp: { vipType: 'ignore', vipValue: 'true' }, dns: { vipType: 'constant', vipValue: 'true' }, sshd: { vipType: 'ignore', vipValue: 'false' },
+    } },
+    nat: { vipType: 'constant', vipValue: 'true', vipObjectType: 'node-only' },
+  } },
+  '/dataservice/template/feature/object/ft-2': { templateDefinition: { interface: { vipValue: [{
+    'if-name': { vipType: 'constant', vipValue: 'ipsec1' },
+    ike: { 'ike-group': { vipType: 'notIgnore', vipValue: '14' } },
+    ipsec: { 'ipsec-ciphersuite': { vipType: 'notIgnore', vipValue: 'aes256-gcm' } },
+  }] } } },
+};
+// As vManage serves a profile read with details=true: each feature's payload inline, never fetched on its own.
+{
+  const eth = '/dataservice/v1/feature-profile/sdwan/transport/tp-1/wan/vpn/vpn-1/interface/ethernet/eth-1';
+  MIGRATION['/dataservice/v1/feature-profile/sdwan/transport/tp-1'].associatedProfileParcels[0].subparcels[0].payload = MIGRATION[eth].payload;
+  delete MIGRATION[eth];
+}
+// The template's device input (POST /template/device/config/input): one column per template variable.
+const TEMPLATE_INPUT = {
+  header: { columns: [
+    { property: 'csv-deviceId' }, { property: 'csv-host-name' },
+    { property: '//system/host-name', variable: 'system_host_name' },
+    { property: '//system/system-ip', variable: 'system_system_ip' },
+    { property: '//system/site-id', variable: 'system_site_id' },
+    { property: '/0/GigabitEthernet2/interface/ip/address', variable: 'transport1_ip' },
+    { property: '/0/vpn-instance/ip/host/ip', variable: 'vpn0_ip_host_ip_list' },
+    { property: '/sig/tracker-src-ip', variable: 'zscaler_vpn_trackersrcip' },
+    { property: '/0/old-setting', variable: 'old_setting' },
+    { property: '/snmp/community', variable: 'snmp_community' },
+  ] },
+  data: [{
+    'csv-deviceId': 'u-12', 'csv-host-name': 'Branch-2',
+    '//system/host-name': 'Branch-2', '//system/system-ip': '192.0.2.12', '//system/site-id': '200',
+    '/0/GigabitEthernet2/interface/ip/address': '198.51.100.12/24',
+    '/0/vpn-instance/ip/host/ip': '192.0.2.50,192.0.2.51',
+    '/sig/tracker-src-ip': '192.0.2.12/32',
+    '/0/old-setting': 'x',
+    '/snmp/community': 'Comm-Secret-1',
+  }],
+};
 const GROUPS = {
   'config-group': [{ id: '19191919-1919-4191-8191-191919191919', name: 'Branch-CG', solution: 'sdwan' }],
   'policy-group': [{ id: '20202020-2020-4202-8202-202020202020', name: 'Branch-PG', solution: 'sdwan' }],
@@ -115,7 +203,7 @@ const FEATURE_TEMPLATES = [
 const OSPF_PROFILE = '11111111-1111-4111-8111-111111111111';
 const tokens = new Set();
 // Large-fabric mode for the fan-out tests: extra healthy edges, slow or overloaded BFD queries.
-const mock = { extraEdges: 0, bfdDelayMs: 0, bfdStatus: 200, bfdCalls: 0, bfdInFlight: 0, bfdMaxInFlight: 0, templateListDelayMs: 3000, preview: null };
+const mock = { extraEdges: 0, bfdDelayMs: 0, bfdStatus: 200, bfdCalls: 0, bfdInFlight: 0, bfdMaxInFlight: 0, templateListDelayMs: 3000, preview: null, migration: false };
 // Multi-tenant Manager: provider account switches tenants with a VSessionId header.
 const TENANTS = [
   { tenantId: 't-1', name: 'Tenant-A', orgName: 'Org A', subDomain: 'a.example.com' },
@@ -163,6 +251,10 @@ function handler(req, res) {
     const authorized = (bearer && tokens.has(bearer)) || req.headers.cookie?.includes('JSESSIONID=sess-1');
     if (!authorized) return send(401, { error: 'unauthorized' });
     if (p === '/dataservice/client/token') return send(200, '"xsrf"');
+    if (mock.migration) {
+      if (p === '/dataservice/template/device/config/input/' && req.method === 'POST') return send(200, TEMPLATE_INPUT);
+      if (Object.hasOwn(MIGRATION, p)) return send(200, MIGRATION[p]);
+    }
 
     if (p === '/dataservice/tenant' && req.method === 'GET') return send(200, { data: TENANTS });
     const vsessionPath = /^\/dataservice\/tenant\/([^/]+)\/vsessionid$/.exec(p);
@@ -433,7 +525,7 @@ async function tool(client, name, args = {}) {
 // ---------- Tests ----------
 const c = await connect();
 const { tools } = await c.listTools();
-check('tool list (read-only server: write tools hidden)', tools.length === 119, `${tools.length} tools`);
+check('tool list (read-only server: write tools hidden)', tools.length === 121, `${tools.length} tools`);
 check(
   'write tools hidden when writes are disabled; call_api_operation kept',
   !tools.some((x) => /^(create|update|delete|associate|clone|deploy)_/.test(x.name)) && tools.some((x) => x.name === 'call_api_operation')
@@ -1262,7 +1354,7 @@ check('IPv6 writes disabled by default', /VMANAGE_ALLOW_WRITE=true/.test(r.error
 await cv.close();
 
 const wv = await connect({ VMANAGE_ALLOW_WRITE: 'true' });
-check('tool list with writes enabled', (await wv.listTools()).tools.length === 160);
+check('tool list with writes enabled', (await wv.listTools()).tools.length === 162);
 const lastV6Write = () => stats.v6Writes.at(-1);
 const PREFIX_LIST = { name: 'Branch-v6', description: 'test', entries: [{ ipv6Prefix: '2001:db8:10::/48' }] };
 r = await tool(wv, 'create_ipv6_policy_object', { kind: 'prefix-list', body: PREFIX_LIST });
@@ -1391,6 +1483,47 @@ check(
 r = await tool(cg, 'preview_config_group_device_config', { config_group: 'Branch-CG', device: 'Branch-1', view: 'review' });
 check('preview review without a policy group of that name: SIG settings count as dropped', !r.value?.policyGroup && r.value?.dropped?.includes('secure-internet-gateway'), JSON.stringify(r.value ?? r.error).slice(0, 300));
 mock.preview = null;
+
+// Template-to-group migration: plan the values, find the conversion's defects (own server process and mock data).
+GROUPS['policy-group'].push({ id: MIG_PG_ID, name: 'Branch-CG', solution: 'sdwan' });
+mock.migration = true;
+const mig = await connect();
+r = await tool(mig, 'plan_config_group_variables', { template: 'Branch-CG' });
+const planned = r.value?.devices?.['Branch-2'];
+check(
+  'plan_config_group_variables maps template values onto the groups',
+  planned?.values?.host_name === 'Branch-2' && planned.values.system_ip === '192.0.2.12' && planned.values.site_id === 200 &&
+    planned.values.transport1_ip_ip_address === '198.51.100.12' && planned.values.transport1_ip_subnet_mask === '255.255.255.0' &&
+    JSON.stringify(planned.values.vpn0_ip_host_ip_list) === JSON.stringify(['192.0.2.50', '192.0.2.51']) &&
+    planned.values.pseudo_commit_timer === 300 && planned.report.secrets.includes('admin_password') &&
+    // A placeholder, never a password (and the server's response redaction applies on top).
+    ['${AAA_PASSWORD}', '***redacted***'].includes(planned.values.admin_password) &&
+    r.value.policyGroup === 'Branch-CG' && planned.policyGroupValues?.zscaler_vpn_trackersrcip === '192.0.2.12' &&
+    planned.report.invalid.length === 0 && JSON.stringify(planned.report.unused) === JSON.stringify(['old_setting']),
+  JSON.stringify(r.value ?? r.error)
+);
+check(
+  'plan_config_group_variables masks secret variables (SNMP community)',
+  planned?.values?.snmp_community === '****' && planned.report.secrets.includes('snmp_community') && !JSON.stringify(r.value ?? '').includes('Comm-Secret-1'),
+  JSON.stringify(planned?.values ?? r.error)
+);
+r = await tool(mig, 'find_config_group_conversion_defects', { config_group: 'Branch-CG' });
+const byFeature = Object.fromEntries((r.value?.findings ?? []).map((f) => [f.feature, f]));
+check(
+  'find_config_group_conversion_defects finds services, NAT and SIG defects',
+  r.value?.defects === 2 &&
+    JSON.stringify(byFeature.Branch_Transport1?.defects) === JSON.stringify(['allowed-services', 'legacy-nat']) &&
+    byFeature.Branch_Transport1.changes.includes('allowService.dhcp: missing -> true') &&
+    byFeature.Branch_Transport1.changes.includes('nat: false -> true') &&
+    byFeature.Branch_Transport1.fix?.body?.data?.allowService?.dhcp?.value === true &&
+    JSON.stringify(byFeature.Branch_SIG?.defects) === JSON.stringify(['sig-template-values']) &&
+    byFeature.Branch_SIG.changes.includes('interface[0].ikeGroup: default -> 14') &&
+    byFeature.Branch_SIG.changes.includes('interface[0].ipsecCiphersuite: default -> aes256-gcm'),
+  JSON.stringify(r.value ?? r.error)
+);
+await mig.close();
+mock.migration = false;
+GROUPS['policy-group'].pop();
 const { maskLine } = await import(new URL('../build/services/configReview.js', import.meta.url));
 for (const [line, masked] of [
   ['ip ospf authentication-key 7 ABC', 'ip ospf authentication-key 7 ****'],
