@@ -986,6 +986,7 @@ OSPF runs in service VPN 10 with one OSPFv2 neighbor on GigabitEthernet3. `get_o
 | "Which devices are in configuration group *Branch-CG*, and what are their variable values?" | `get_config_group`, `get_config_group_device_variables` |
 | "What would configuration group *Branch-CG* change on *Branch-1* if I deployed it now?" | `preview_config_group_device_config` |
 | "What would policy group *EMEA-Policy-Group* change on *EMEA-Paris*?" | `preview_group_device_config` |
+| "Which settings would deploying *Branch-CG* drop or change on *Branch-1*?" | `preview_config_group_device_config` (`view: "review"`) |
 | "Add *Branch-3* to *Branch-CG*, set its variables, show me the diff, then deploy." *(writes enabled)* | `associate_group_devices`, `update_group_variables`, `preview_config_group_device_config`, `deploy_group` |
 | "Show the features in the *Branch-Transport* transport profile." | `get_feature_profile` |
 | "Which sites are in the network hierarchy, and what is under the *EMEA* region?" | `get_network_hierarchy` (`label: "site"`, then `node: "EMEA"`) |
@@ -1323,7 +1324,7 @@ Without `confirm: true`, or with writes disabled, the server refuses the call an
 - **Blocked endpoints.** Operations that issue or expose tokens, passwords, OTPs, credentials or bootstrap configurations are never callable. Neither are file uploads or server-sent event streams.
 - **Validation.** Path and query parameters must exist in the spec, required ones must be present, and types and enums are checked. Path values are URL-encoded and `.`/`..` are rejected.
 - **Redaction and limits.** Values of keys such as `password`, `token`, `csrf` and `sessionId` are replaced with `***redacted***`. List responses are capped (default 200 rows, `max_items` to change) and output stays under 200,000 characters.
-- **Masked device configurations.** The group previews (`preview_config_group_device_config`, `preview_group_device_config`) replace secret values in the running and rendered configurations with `****`, in every view: passwords and secrets (including type 5/8/9 hashes, which can be cracked offline), enable and shared secrets, OSPF authentication and MD5 keys, key-chain key strings, IKE pre-shared keys and PSKs, SIG partner and API keys, SNMP communities and SNMPv3 auth/priv passwords. The encryption type is kept (`secret 9 ****`). The `diff` view compares the unmasked configurations and masks only the lines it returns, so a changed secret is still reported as a change. Route-map communities, `crypto key generate` and key-chain IDs are not secrets and stay readable. Masking is pattern-based; review a preview before sharing it.
+- **Masked device configurations.** The group previews (`preview_config_group_device_config`, `preview_group_device_config`) replace secret values in the running and rendered configurations with `****`, in every view: passwords and secrets (including type 5/8/9 hashes, which can be cracked offline), enable and shared secrets, OSPF authentication and MD5 keys, key-chain key strings, IKE pre-shared keys and PSKs, SIG partner and API keys, SNMP communities and SNMPv3 auth/priv passwords. The encryption type is kept (`secret 9 ****`). The `diff` and `review` views compare the unmasked configurations and mask only the lines they return, so a changed secret is still reported as a change. Route-map communities, `crypto key generate` and key-chain IDs are not secrets and stay readable. Masking is pattern-based; review a preview before sharing it.
 - **TLS.** The Manager's certificate is verified on every connection: a trusted CA, your internal CA (`VMANAGE_CA_FILE`), or exactly one pinned certificate (`VMANAGE_TLS_FINGERPRINT`). Turning verification off needs `VMANAGE_TLS_INSECURE=true` and logs a warning. With a pinned certificate, TLS sessions are not resumed, so every new connection presents the certificate and is checked.
 - **Credentials.** Keep `.env` out of version control (it is in `.gitignore`), restrict its permissions (`chmod 600 .env`), and use a dedicated least-privilege Manager account.
 - **Access-level detection is a heuristic.** It uses the operationId and spec description. Test against a lab Manager before you enable writes on a production fabric.
@@ -1503,7 +1504,7 @@ src/
   server.ts                 # MCP tool definitions and handlers
   services/vmanageApi.ts    # HTTPS client (undici), JWT/session auth, retries, caching, generic request()
   services/apiCatalog.ts    # OpenAPI-driven catalog: search, describe, validated calls, path-to-operation matching, paging, access control
-  services/configReview.ts  # masks secrets in device configurations returned by the group previews
+  services/configReview.ts  # group previews: masks secrets in device configurations, sorts the review view
   utils/config.ts           # environment configuration
 scripts/
   deploy.mjs                # deploy runtime copy outside cloud-synced folders
