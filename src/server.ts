@@ -99,8 +99,22 @@ interface UxProfile {
 function holdsSecret(data: unknown): boolean {
   if (!data || typeof data !== 'object') return false;
   return Object.entries(data as Record<string, any>).some(
-    ([key, value]) => (/secret|passw|key/i.test(key) && value?.optionType === 'global' && typeof value.value === 'string') || holdsSecret(value)
+    ([key, value]) => (/secret|passw|key|psk/i.test(key) && value?.optionType === 'global' && typeof value.value === 'string') || holdsSecret(value)
   );
+}
+
+/** `fn` over `items` with at most `width` calls in flight; results keep the items' order. */
+async function mapLimit<T, R>(items: T[], width: number, fn: (item: T) => Promise<R>): Promise<R[]> {
+  const out: R[] = new Array(items.length);
+  let next = 0;
+  const worker = async () => {
+    while (next < items.length) {
+      const i = next++;
+      out[i] = await fn(items[i]);
+    }
+  };
+  await Promise.all(Array.from({ length: Math.min(Math.max(1, width), items.length) }, worker));
+  return out;
 }
 
 const DEVICE_INDEX_TTL_MS = 60_000;
@@ -3481,74 +3495,75 @@ export class CatalystSdwanMCPServer {
         return { template: template.templateName, configGroup: group.name, policyGroup: policyGroup?.name, devices };
       }
       case 'find_config_group_conversion_defects': {
-        const groups = args.config_group ? [await this.findGroup('config-group', args.config_group)] : await this.listGroups('config-group');
-        const policyGroups = await this.listGroups('policy-group');
-        const featureTemplates = new Map(
-          ((await this.apiService.get<{ data?: Array<{ templateId: string; templateName: string; templateType: string }> }>('/dataservice/template/feature')).data ?? [])
-            .map((t) => [`${t.templateName}\u0000${t.templateType}`, t.templateId])
-        );
-        const definitions = new Map<string, unknown>();
-        const source = async (name: string, type: string) => {
+        const width = this.config.fabricConcurrency;
+        const [groups, policyGroups, featureList] = await Promise.all([
+          args.config_group ? this.findGroup('config-group', args.config_group).then((g) => [g]) : this.listGroups('config-group'),
+          this.listGroups('policy-group'),
+          this.apiService.get<{ data?: Array<{ templateId: string; templateName: string; templateType: string }> }>('/dataservice/template/feature'),
+        ]);
+        const featureTemplates = new Map((featureList.data ?? []).map((t) => [`${t.templateName}\u0000${t.templateType}`, t.templateId]));
+        // Promises, so parcels sharing a feature template fetch it once even when read in parallel.
+        const definitions = new Map<string, Promise<Record<string, any>>>();
+        const source = (name: string, type: string) => {
           const id = featureTemplates.get(`${name}\u0000${type}`);
-          if (!id) return undefined;
+          if (!id) return Promise.resolve(undefined);
           if (!definitions.has(id)) {
-            const body = await this.apiService.get<{ templateDefinition?: unknown }>(`/dataservice/template/feature/object/${encodeURIComponent(id)}`);
-            definitions.set(id, body.templateDefinition ?? {});
+            definitions.set(id, this.apiService
+              .get<{ templateDefinition?: unknown }>(`/dataservice/template/feature/object/${encodeURIComponent(id)}`)
+              .then((body) => (body.templateDefinition ?? {}) as Record<string, any>));
           }
-          return definitions.get(id) as Record<string, any>;
+          return definitions.get(id) as Promise<Record<string, any>>;
         };
-        const findings: Array<Record<string, unknown>> = [];
-        const seen = new Set<string>();
-        for (const group of groups) {
-          const detail = await this.apiService.get<{ profiles?: UxProfile[] }>(`/dataservice/v1/config-group/${encodeURIComponent(group.id)}`);
-          const profiles = [...(detail.profiles ?? [])];
+        const groupProfiles = await mapLimit(groups, width, async (group) => {
           const policyGroup = policyGroups.find((g) => g.name === group.name);
-          if (policyGroup) {
-            const policyDetail = await this.apiService.get<{ profiles?: UxProfile[] }>(`/dataservice/v1/policy-group/${encodeURIComponent(policyGroup.id)}`);
-            profiles.push(...(policyDetail.profiles ?? []).filter((p) => p.type === 'sig-security'));
-          }
-          for (const profile of profiles) {
-            if (seen.has(profile.id)) continue;
-            seen.add(profile.id);
-            const url = `/dataservice/v1/feature-profile/sdwan/${profile.type}/${encodeURIComponent(profile.id)}`;
-            const body = await this.apiService.get<{ associatedProfileParcels?: any[] }>(url, profile.type === 'sig-security' ? undefined : { details: 'true' });
-            const parcels: Array<[string, string]> = [];
-            for (const parcel of body.associatedProfileParcels ?? []) {
-              const path = `${url}/${parcel.parcelType}/${parcel.parcelId}`;
-              parcels.push([parcel.parcelType, path]);
-              for (const sub of parcel.subparcels ?? []) {
-                const suffix = sub.parcelType.startsWith(`${parcel.parcelType}/`) ? sub.parcelType.slice(parcel.parcelType.length + 1) : sub.parcelType;
-                parcels.push([sub.parcelType, `${path}/${suffix}/${sub.parcelId}`]);
-              }
-            }
-            for (const [parcelType, path] of parcels) {
-              if (parcelType !== 'wan/vpn/interface/ethernet' && parcelType !== 'sig') continue;
-              const payload = (await this.apiService.get<{ payload?: any }>(path)).payload ?? {};
-              const original = payload.data ?? {};
-              let data = original;
-              const applied: string[] = [];
-              for (const rule of CONVERSION_RULES) {
-                const template = rule.templateType ? await source(payload.name, rule.templateType) : undefined;
-                if (rule.templateType && !template) continue;
-                if (rule.applies(parcelType, data, template)) {
-                  data = rule.fix(data, template);
-                  applied.push(rule.name);
-                }
-              }
-              if (!applied.length) continue;
-              findings.push({
-                configGroup: group.name,
-                profile: profile.name,
-                feature: payload.name,
-                defects: applied,
-                changes: parcelChanges(original, data),
-                fix: holdsSecret(data)
-                  ? { method: 'PUT', path, body: 'left out: the feature holds a secret; make the changes above in vManage' }
-                  : { method: 'PUT', path, body: { name: payload.name, description: payload.description, data } },
-              });
+          const [detail, policyDetail] = await Promise.all([
+            this.apiService.get<{ profiles?: UxProfile[] }>(`/dataservice/v1/config-group/${encodeURIComponent(group.id)}`),
+            policyGroup ? this.apiService.get<{ profiles?: UxProfile[] }>(`/dataservice/v1/policy-group/${encodeURIComponent(policyGroup.id)}`) : undefined,
+          ]);
+          return [...(detail.profiles ?? []), ...(policyDetail?.profiles ?? []).filter((p) => p.type === 'sig-security')].map((profile) => ({ group, profile }));
+        });
+        const seen = new Set<string>();
+        const profiles = groupProfiles.flat().filter(({ profile }) => !seen.has(profile.id) && seen.add(profile.id));
+        const parcelLists = await mapLimit(profiles, width, async ({ group, profile }) => {
+          const url = `/dataservice/v1/feature-profile/sdwan/${profile.type}/${encodeURIComponent(profile.id)}`;
+          const body = await this.apiService.get<{ associatedProfileParcels?: any[] }>(url, profile.type === 'sig-security' ? undefined : { details: 'true' });
+          const parcels: Array<{ group: UxGroup; profile: UxProfile; parcelType: string; path: string }> = [];
+          for (const parcel of body.associatedProfileParcels ?? []) {
+            const path = `${url}/${parcel.parcelType}/${encodeURIComponent(parcel.parcelId)}`;
+            parcels.push({ group, profile, parcelType: parcel.parcelType, path });
+            for (const sub of parcel.subparcels ?? []) {
+              const suffix = sub.parcelType.startsWith(`${parcel.parcelType}/`) ? sub.parcelType.slice(parcel.parcelType.length + 1) : sub.parcelType;
+              parcels.push({ group, profile, parcelType: sub.parcelType, path: `${path}/${suffix}/${encodeURIComponent(sub.parcelId)}` });
             }
           }
-        }
+          return parcels.filter((p) => p.parcelType === 'wan/vpn/interface/ethernet' || p.parcelType === 'sig');
+        });
+        const checked = await mapLimit(parcelLists.flat(), width, async ({ group, profile, parcelType, path }) => {
+          const payload = (await this.apiService.get<{ payload?: any }>(path)).payload ?? {};
+          const original = payload.data ?? {};
+          let data = original;
+          const applied: string[] = [];
+          for (const rule of CONVERSION_RULES) {
+            const template = rule.templateType ? await source(payload.name, rule.templateType) : undefined;
+            if (rule.templateType && !template) continue;
+            if (rule.applies(parcelType, data, template)) {
+              data = rule.fix(data, template);
+              applied.push(rule.name);
+            }
+          }
+          if (!applied.length) return undefined;
+          return {
+            configGroup: group.name,
+            profile: profile.name,
+            feature: payload.name,
+            defects: applied,
+            changes: parcelChanges(original, data),
+            fix: holdsSecret(data)
+              ? { method: 'PUT', path, body: 'left out: the feature holds a secret; make the changes above in vManage' }
+              : { method: 'PUT', path, body: { name: payload.name, description: payload.description, data } },
+          };
+        });
+        const findings = checked.filter((f) => f !== undefined);
         return { defects: findings.length, findings };
       }
       case 'get_topology_group': {
