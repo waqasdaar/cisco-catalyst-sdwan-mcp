@@ -61,6 +61,14 @@ snmp-server community public-ro RO
 router ospf 1 vrf 1
  default-information originate
 !
+sdwan
+ interface Tunnel100001
+  tunnel-options tunnel-set secure-internet-gateway-zscaler
+!
+security
+ ipsec
+  authentication-type sha1-hmac ah-sha1-hmac
+!
 `;
 const RENDERED_CONFIG = `system
  host-name Branch-1
@@ -70,6 +78,14 @@ username admin privilege 15 secret 9 $9$otherHashOfTheSecret
 snmp-server community public-ro RO
 router ospf 1 vrf 1
 !
+sdwan
+ interface GigabitEthernet1
+!
+security
+ ipsec
+  integrity-type esp ip-udp-esp
+!
+no acc-gyro enable
 `;
 const GROUPS = {
   'config-group': [{ id: '19191919-1919-4191-8191-191919191919', name: 'Branch-CG', solution: 'sdwan' }],
@@ -1343,7 +1359,7 @@ for (const [name, args] of [
   ['preview_config_group_device_config', { config_group: 'Branch-CG', device: 'Branch-1' }],
   ['preview_group_device_config', { group_type: 'policy', group: 'Branch-PG', device: 'Branch-1' }],
 ]) {
-  for (const view of ['diff', 'both']) {
+  for (const view of ['diff', 'review', 'both']) {
     r = await tool(cg, name, { ...args, view });
     const shown = JSON.stringify(r.value ?? '');
     check(`${name} (${view}) masks secrets`, !r.error && !SECRETS.test(shown) && /partner-key \*\*\*\*/.test(shown), r.error ?? shown.slice(0, 200));
@@ -1352,6 +1368,28 @@ for (const [name, args] of [
 // Only the secret hash differs on the username line: the diff must still report it.
 r = await tool(cg, 'preview_config_group_device_config', { config_group: 'Branch-CG', device: 'Branch-1' });
 check('preview diff still reports a changed secret', ['added', 'removed'].every((k) => r.value?.[k]?.includes('username admin privilege 15 secret 9 ****')), JSON.stringify(r.value ?? r.error).slice(0, 300));
+// The review view; the SIG settings go apart when a policy group has the configuration group's name, as the
+// template-to-group conversion makes it. That policy group exists only for this server process.
+GROUPS['policy-group'].push({ id: '23232323-2323-4232-8232-232323232323', name: 'Branch-CG', solution: 'sdwan' });
+const rvClient = await connect();
+r = await tool(rvClient, 'preview_config_group_device_config', { config_group: 'Branch-CG', device: 'Branch-1', view: 'review' });
+await rvClient.close();
+GROUPS['policy-group'].pop();
+const rv = r.value ?? {};
+check(
+  'preview review sorts the changes, SIG apart',
+  rv.policyGroup === 'Branch-CG' &&
+    JSON.stringify(rv.dropped) === JSON.stringify(['router ospf 1 vrf 1 > default-information originate']) &&
+    JSON.stringify(rv.changed) === JSON.stringify(['system > console-baud-rate 115200 -> 9600']) &&
+    JSON.stringify(rv.added) === JSON.stringify(['sdwan > interface GigabitEthernet1']) &&
+    rv.fromPolicyGroup?.includes('secure-internet-gateway > zscaler partner-key ****') &&
+    rv.fromPolicyGroup?.includes('sdwan > interface Tunnel100001') &&
+    JSON.stringify(rv.defaults) === JSON.stringify(['no acc-gyro enable']) &&
+    JSON.stringify(rv.secretsChanged) === JSON.stringify(['username admin privilege 15 secret 9 **** (hash; may only be re-salted)']),
+  JSON.stringify(r.value ?? r.error)
+);
+r = await tool(cg, 'preview_config_group_device_config', { config_group: 'Branch-CG', device: 'Branch-1', view: 'review' });
+check('preview review without a policy group of that name: SIG settings count as dropped', !r.value?.policyGroup && r.value?.dropped?.includes('secure-internet-gateway'), JSON.stringify(r.value ?? r.error).slice(0, 300));
 mock.preview = null;
 const { maskLine } = await import(new URL('../build/services/configReview.js', import.meta.url));
 for (const [line, masked] of [
@@ -1370,6 +1408,18 @@ for (const [line, masked] of [
   [' key 1', ' key 1'],
   ['service password-encryption', 'service password-encryption'],
 ]) check(`maskLine: ${line}`, maskLine(line) === masked, maskLine(line));
+const { reviewConfig } = await import(new URL('../build/services/configReview.js', import.meta.url));
+for (const [label, running, rendered, expected] of [
+  ['review reports a changed plaintext password', 'username a password 0 OldPw\n', 'username a password 0 NewPw\n', { secretsChanged: ['username a password 0 ****'] }],
+  ['review reports a changed pre-shared key', 'crypto keyring KR\n pre-shared-key address 0.0.0.0 key OldPsk\n', 'crypto keyring KR\n pre-shared-key address 0.0.0.0 key NewPsk\n', { secretsChanged: ['crypto keyring KR > pre-shared-key address 0.0.0.0 key ****'] }],
+  ['review: a community changing access is a change, not a secret', 'snmp-server community C RO\n', 'snmp-server community C RW\n', { changed: ['snmp-server community **** RO -> RW'] }],
+  ['review pairs repeated settings one to one (1 -> 2)', 'ip name-server 8.8.8.8\n', 'ip name-server 1.1.1.1\nip name-server 9.9.9.9\n', { changed: ['ip name-server 8.8.8.8 -> 1.1.1.1'], added: ['ip name-server 9.9.9.9'] }],
+  ['review pairs repeated settings one to one (2 -> 1)', 'ip name-server 8.8.8.8\nip name-server 8.8.4.4\n', 'ip name-server 1.1.1.1\n', { changed: ['ip name-server 8.8.8.8 -> 1.1.1.1'], dropped: ['ip name-server 8.8.4.4'] }],
+]) {
+  const got = reviewConfig(running, rendered);
+  const want = { dropped: [], changed: [], secretsChanged: [], added: [], defaults: [], fromPolicyGroup: [], ...expected };
+  check(label, JSON.stringify(got) === JSON.stringify(want), JSON.stringify(got));
+}
 for (const [label, name, args, pattern] of [
   ['get_group_variables refuses topology groups', 'get_group_variables', { group_type: 'topology', group: 'Hub-Spoke' }, /group_type must be one of: config, policy/],
   ['unknown group lists the available ones', 'get_group_rules', { group_type: 'config', group: 'nope' }, /No config-group "nope"\. Available: Branch-CG/],
