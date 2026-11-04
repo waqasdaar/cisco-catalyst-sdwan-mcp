@@ -16,7 +16,7 @@ import {
 } from '@modelcontextprotocol/sdk/types.js';
 import { VManageApiService, type HttpMethod } from './services/vmanageApi.js';
 import { ApiCatalog, shapeResponse } from './services/apiCatalog.js';
-import { maskConfig, reviewConfig, SIG_LINES } from './services/configReview.js';
+import { maskConfig, maskLine, reviewConfig, SIG_LINES } from './services/configReview.js';
 import { loadConfig, type VManageConfig } from './utils/config.js';
 
 const MAX_RESPONSE_CHARS = 200_000;
@@ -2594,7 +2594,9 @@ export class CatalystSdwanMCPServer {
       if (view === 'new') return { ...head, newConfig };
       if (view === 'existing') return { ...head, existingConfig };
       if (view === 'both') return { ...head, newConfig, existingConfig };
-      return { ...head, ...lineDiff(existingConfig, newConfig) };
+      // Diff before masking so a changed secret still shows up as a change.
+      const diff = lineDiff(running, rendered);
+      return { ...head, ...diff, added: diff.added.map(maskLine), removed: diff.removed.map(maskLine) };
     };
     // UX 2.0 association and deploy bodies list devices by UUID.
     const groupDevices = async () => {
