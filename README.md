@@ -167,7 +167,7 @@ Ask questions about your SD-WAN fabric in plain language and get answers built f
   <img alt="Architecture of the Cisco Catalyst SD-WAN MCP server: MCP client, MCP server, tool dispatcher, API catalog, template migration, VManageApiService, local caches and the SD-WAN fabric" src="docs/architecture/architecture-light.png">
 </picture>
 
-**Interactive version:** [`docs/architecture/architecture.html`](docs/architecture/architecture.html) is a self-contained page with light/dark themes, search, route highlighting, links from every component to its source lines, and SVG/PNG export. GitHub shows its source, so download it or open it from a clone in a browser. The diagram is generated with [Archify](https://github.com/tt-a1i/archify) from [`docs/architecture/architecture.json`](docs/architecture/architecture.json).
+**Interactive version:** [`docs/architecture/architecture.html`](docs/architecture/architecture.html) is a self-contained page with light/dark themes, search, route highlighting, links from every component to its source lines, and SVG/PNG export. GitHub shows its source, so download it or open it from a clone in a browser.
 
 | Component | Source | Role |
 |---|---|---|
