@@ -230,7 +230,16 @@ const FEATURE_TEMPLATES = [
 const OSPF_PROFILE = '11111111-1111-4111-8111-111111111111';
 const tokens = new Set();
 // Large-fabric mode for the fan-out tests: extra healthy edges, slow or overloaded BFD queries.
-const mock = { extraEdges: 0, bfdDelayMs: 0, bfdStatus: 200, bfdCalls: 0, bfdInFlight: 0, bfdMaxInFlight: 0, templateListDelayMs: 3000, preview: null, migration: false };
+// A Controller's OMP table larger than SD-WAN Manager's real-time limit: 4,600 IPv4 paths in VPN 10, 20 and 30, and
+// 3 IPv6 paths. Like the Manager, the mock returns at most OMP_LIMIT rows and honours vpn-id / prefix (unless told not to).
+const OMP_LIMIT = 4000;
+const OMP_V4 = Array.from({ length: 4600 }, (_, i) => ({
+  'vpn-id': String([10, 20, 30][Math.floor(i / 1600)] ?? 30), prefix: `10.${Math.floor(i / 256) % 256}.${i % 256}.0/24`,
+  'from-peer': '192.0.2.11', color: 'mpls', status: 'C,R',
+}));
+const OMP_V6 = [10, 20, 30].map((v) => ({ 'vpn-id': String(v), prefix: `2001:db8:${v}::/48`, 'from-peer': '192.0.2.11', color: 'mpls', status: 'C,R' }));
+const ompStats = { queries: [] };
+const mock = { ompIgnoreFilters: false, extraEdges: 0, bfdDelayMs: 0, bfdStatus: 200, bfdCalls: 0, bfdInFlight: 0, bfdMaxInFlight: 0, templateListDelayMs: 3000, preview: null, migration: false };
 // Multi-tenant Manager: provider account switches tenants with a VSessionId header.
 const TENANTS = [
   { tenantId: 't-1', name: 'Tenant-A', orgName: 'Org A', subDomain: 'a.example.com' },
@@ -369,7 +378,8 @@ function handler(req, res) {
       const route = (family, prefix, source) => ({ 'rib-address-family': family, 'route-destination-prefix': prefix, 'route-source-protocol': source, 'routing-instance-name': url.searchParams.get('routing-instance-name') ?? '10', query: Object.fromEntries(url.searchParams) });
       return send(200, { data: [route('ipv4', '10.1.0.0/16', 'rt-ext:omp'), route('ipv6', '2001:db8:10::/64', 'rt-ext:omp'), route('ipv6', '2001:db8:20::/64', 'direct')] });
     }
-    if (/ipv6|v6|nat64|dhcpv6/i.test(p) && !/ospf/i.test(p) && /^\/dataservice\/(device|template\/policy|v1\/feature-profile)\//.test(p)) {
+    // the Controller's OMP tables (below) are served by the OMP mock, the other IPv6 views here
+    if (/ipv6|v6|nat64|dhcpv6/i.test(p) && !/ospf/i.test(p) && !(p.includes('/omp/routes/') && deviceId === '192.0.2.2') && /^\/dataservice\/(device|template\/policy|v1\/feature-profile)\//.test(p)) {
       if (req.method === 'POST' && p.endsWith('/preview')) {
         stats.v6Previews.push({ path: p, body: raw ? JSON.parse(raw) : undefined });
         return send(200, { preview: 'ipv6 access-list acl6-test' });
@@ -443,6 +453,14 @@ function handler(req, res) {
       case '/dataservice/device/control/waninterface':
       case '/dataservice/device/control/synced/waninterface':
         return send(200, { data: tlocs() });
+      case '/dataservice/device/omp/routes/received':
+      case '/dataservice/device/omp/routes/received/ompIpv6': {
+        ompStats.queries.push({ path: p, query: Object.fromEntries(url.searchParams) });
+        const vpn = mock.ompIgnoreFilters ? null : url.searchParams.get('vpn-id');
+        const prefix = mock.ompIgnoreFilters ? null : url.searchParams.get('prefix');
+        const table = (p.endsWith('/ompIpv6') ? OMP_V6 : OMP_V4).filter((r) => (!vpn || r['vpn-id'] === vpn) && (!prefix || r.prefix === prefix));
+        return send(200, { data: table.slice(0, OMP_LIMIT) });
+      }
       case '/dataservice/device/omp/status':
         // First call fails like an overloaded Manager; the client must retry after Retry-After.
         if (++stats.ompStatusCalls === 1) return send(503, { error: 'busy' }, { 'retry-after': '1' });
@@ -1941,6 +1959,37 @@ r = await tool(big, 'list_devices', { all_fields: true, offset: cursor });
 check('nextOffset continues the listing', r.value?.data?.[0]?.['host-name'] === `Edge-${cursor - 6}`, r.value?.data?.[0]?.['host-name']);
 await big.close();
 mock.extraEdges = 0;
+
+// OMP routes: filters sent to the Manager, its ~4,000-row real-time limit reported, IPv6.
+{
+  const omp = await connect();
+  let t = await tool(omp, 'get_omp_routes', { device_id: '192.0.2.2', limit: 10 });
+  check('OMP: a table at the Manager limit is marked manager_row_limit',
+    t.value?.manager_row_limit?.limit === 4000 && t.value?.page?.total === 4000, JSON.stringify(t.value?.manager_row_limit ?? t.error));
+  check('OMP: without filters the Manager is asked for the whole table', ompStats.queries.at(-1)?.query?.['vpn-id'] === undefined && t.value?.manager_filter === 'none');
+  t = await tool(omp, 'get_omp_routes', { device_id: '192.0.2.2', vpn_id: '30', limit: 5 });
+  check('OMP: vpn_id is sent to the Manager as vpn-id', ompStats.queries.at(-1)?.query?.['vpn-id'] === '30', JSON.stringify(ompStats.queries.at(-1)?.query));
+  check('OMP: a VPN beyond the Manager limit is read whole by its vpn_id (1,400 rows, none missing)',
+    t.value?.page?.total === 1400 && t.value?.manager_filter === 'applied' && !t.value?.manager_row_limit, `${t.value?.page?.total} ${t.value?.manager_filter}`);
+  t = await tool(omp, 'get_omp_routes', { device_id: '192.0.2.2', prefix: '10.17.247.0/24' });
+  check('OMP: a prefix beyond the Manager limit is found by prefix', t.value?.data?.length === 1 && t.value.data[0]['vpn-id'] === '30',
+    JSON.stringify(t.value?.data ?? t.error));
+  t = await tool(omp, 'get_omp_routes', { device_id: '192.0.2.2', family: 'ipv6' });
+  check('OMP: family ipv6 reads /ompIpv6 and tags the rows', ompStats.queries.at(-1)?.path.endsWith('/ompIpv6') && t.value?.data?.length === 3 &&
+    t.value.data.every((r) => r['address-family'] === 'ipv6'), JSON.stringify(t.value?.data?.[0] ?? t.error));
+  t = await tool(omp, 'get_omp_routes', { device_id: '192.0.2.2', family: 'all', vpn_id: '20', limit: 2000 });
+  check('OMP: family all reads both tables', t.value?.page?.total === 1601 && t.value.data.some((r) => r['address-family'] === 'ipv6'), String(t.value?.page?.total));
+  t = await tool(omp, 'get_omp_routes', { device_id: '192.0.2.2' });
+  check('OMP: default stays IPv4, rows unchanged (no address-family field)', !t.error && !('address-family' in (t.value?.data?.[0] ?? {})), t.error ?? '');
+  t = await tool(omp, 'get_omp_routes', { device_id: '192.0.2.2', family: 'ipv5' });
+  check('OMP: an unknown family is refused', /family must be one of/.test(t.error ?? ''), t.error ?? 'accepted');
+  mock.ompIgnoreFilters = true;
+  t = await tool(omp, 'get_omp_routes', { device_id: '192.0.2.2', vpn_id: '30', limit: 5 });
+  check('OMP: a Manager that ignores vpn-id is reported (manager_filter ignored), and the rows are still filtered here',
+    t.value?.manager_filter === 'ignored' && t.value?.page?.total === 800, `${t.value?.manager_filter} ${t.value?.page?.total}`);
+  mock.ompIgnoreFilters = false;
+  await omp.close();
+}
 
 // Multi-tenant: fixed tenant, per-call switching, cache isolation, expired VSessionId.
 const names = (res) => (res.value?.data ?? []).map((d) => d['host-name']).join(',');

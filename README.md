@@ -1,6 +1,6 @@
 # Cisco Catalyst SD-WAN MCP Server
 
-[![Version](https://img.shields.io/badge/version-1.1.0-blue.svg)](https://github.com/waqasdaar/cisco-catalyst-sdwan-mcp)
+[![Version](https://img.shields.io/badge/version-1.2.0-blue.svg)](https://github.com/waqasdaar/cisco-catalyst-sdwan-mcp)
 [![CI](https://github.com/waqasdaar/cisco-catalyst-sdwan-mcp/actions/workflows/ci.yml/badge.svg)](https://github.com/waqasdaar/cisco-catalyst-sdwan-mcp/actions/workflows/ci.yml)
 
 
@@ -192,7 +192,7 @@ See [Installation](#installation), [Configuration](#configuration) and [Integrat
 
 | Component | Version | Notes |
 |---|---|---|
-| MCP server | **1.1.0** | `package.json` version, reported in the MCP `initialize` response |
+| MCP server | **1.2.0** | `package.json` version, reported in the MCP `initialize` response |
 | Catalyst SD-WAN Manager | **Tested on 26.2.1** | Controllers 26.2.1, WAN edges Catalyst 8000V IOS XE 26.02.01 |
 | Catalyst SD-WAN Manager (auth) | 20.18.1+ for JWT | Older releases: set `VMANAGE_USE_JWT=false` (session cookie + XSRF token) |
 | Node.js | 20.12+ | CI runs the offline tests on Node.js 20, 22 and 24; tested live on Node.js 26 |
@@ -299,7 +299,7 @@ The fabric BFD and TLOC tools query devices in real time when 25 or fewer edges 
 | Tool | Description | Key parameters | Example prompt |
 |---|---|---|---|
 | `get_omp_peers` | OMP peers of a device | `device_id`\*, `synced` | "Show the OMP peers of the first Controller." |
-| `get_omp_routes` | OMP routes received or advertised | `device_id`\*, `direction` (`received`/`advertised`), `vpn_id`, `prefix` | "Show OMP routes Branch-1 receives in VPN 10." |
+| `get_omp_routes` | OMP routes received or advertised. `vpn_id` and `prefix` are sent to SD-WAN Manager (the device narrows the table) and applied again by the server; `manager_filter` says whether the Manager applied them. SD-WAN Manager returns at most about 4,000 rows of this real-time table: `manager_row_limit` marks an answer that may be cut — read it by `vpn_id` or `prefix` then (1.2.0) | `device_id`\*, `direction` (`received`/`advertised`), `vpn_id`, `prefix`, `family` (`ipv4` default, `ipv6`, `all`) | "Show OMP routes Branch-1 receives in VPN 10." |
 | `get_omp_tlocs` | OMP TLOC routes received or advertised | `device_id`\*, `direction`, `color` | "Which TLOCs does Branch-1 advertise?" |
 | `get_omp_services` | OMP service routes (VPN, firewall, IDS, ...) | `device_id`\* | "Which OMP services does Hub-1 know?" |
 | `get_omp_multicast` | Multicast routes or auto-discovery entries | `device_id`\*, `type` (`routes`/`autodiscover`), `direction` | "Show multicast auto-discovery on Branch-2." |

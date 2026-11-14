@@ -229,6 +229,60 @@ const POLICY_DEFINITION_TYPES = [
 ];
 
 /** Keeps only rows whose fields equal every provided filter value. */
+// SD-WAN Manager returns at most about 4,000 rows of a real-time OMP route table (a device-side limit added in
+// 17.3.5 / 20.3.5 to protect ConfD), and says nothing when it cuts. At this many rows the table may be cut.
+export const OMP_MANAGER_ROW_LIMIT = 4000;
+// 3,990 to 4,001 rows: at the limit. A longer answer shows that this Manager does not apply it.
+const OMP_LIMIT_BAND = [OMP_MANAGER_ROW_LIMIT - 10, OMP_MANAGER_ROW_LIMIT + 1];
+
+/**
+ * get_omp_routes. `vpn_id` and `prefix` are sent to SD-WAN Manager as query parameters, so the device itself narrows
+ * the table (a route beyond the Manager's row limit can still be read by its VPN or prefix), and applied again here
+ * in case a release ignores them. `family` chooses IPv4 (default), IPv6 (`/ompIpv6`) or both. The answer says whether
+ * the Manager applied the filters (`manager_filter`) and when it may have cut the table (`manager_row_limit`).
+ */
+async function ompRoutes(
+  get: (path: string, filters: Record<string, unknown>) => Promise<unknown>,
+  direction: string,
+  args: Record<string, unknown>
+): Promise<unknown> {
+  const family = (args.family as string | undefined) ?? 'ipv4';
+  if (!['ipv4', 'ipv6', 'all'].includes(family)) throw new Error('family must be one of: ipv4, ipv6, all');
+  const filters = { 'vpn-id': args.vpn_id, prefix: args.prefix };
+  const requested = Object.entries(filters).filter(([, v]) => v !== undefined && v !== null && v !== '');
+  const base = `/dataservice/device/omp/routes/${direction}`;
+  const families = family === 'all' ? ['ipv4', 'ipv6'] : [family];
+  const answers = await Promise.all(
+    families.map(async (f) => ({ f, body: (await get(f === 'ipv6' ? `${base}/ompIpv6` : base, filters)) as { data?: unknown } }))
+  );
+  const limited: string[] = [];
+  let ignored = false;
+  const data: unknown[] = [];
+  let first: Record<string, unknown> = {};
+  for (const { f, body } of answers) {
+    const list = Array.isArray(body?.data) ? (body.data as Record<string, unknown>[]) : [];
+    if (list.length >= OMP_LIMIT_BAND[0] && list.length <= OMP_LIMIT_BAND[1]) limited.push(f);
+    if (requested.some(([k, v]) => list.some((row) => String(row?.[k]) !== String(v)))) ignored = true;
+    for (const row of list) data.push(family === 'ipv4' ? row : { ...row, 'address-family': f });
+    if (!Object.keys(first).length && body && typeof body === 'object') first = body as Record<string, unknown>;
+  }
+  const out: Record<string, unknown> = {
+    ...first,
+    data,
+    manager_filter: requested.length ? (ignored ? 'ignored' : 'applied') : 'none',
+  };
+  if (limited.length) {
+    out.manager_row_limit = {
+      limit: OMP_MANAGER_ROW_LIMIT,
+      families: limited,
+      reason:
+        `SD-WAN Manager returned ${limited.length > 1 ? 'tables' : 'a table'} of about ${OMP_MANAGER_ROW_LIMIT} rows, ` +
+        'its real-time limit: rows beyond it may be missing. Read the table by vpn_id (or prefix) to get them.',
+    };
+  }
+  return filterRows(out, { 'vpn-id': args.vpn_id, prefix: args.prefix });
+}
+
 function filterRows(result: unknown, filters: Record<string, unknown>): unknown {
   const active = Object.entries(filters).filter(([, v]) => v !== undefined && v !== null && v !== '');
   const data = (result as { data?: unknown })?.data;
@@ -757,7 +811,7 @@ export class CatalystSdwanMCPServer {
     this.server = new Server(
       {
         name: 'catalyst-sdwan-mcp',
-        version: '1.1.0',
+        version: '1.2.0',
       },
       {
         capabilities: {
@@ -1109,14 +1163,18 @@ export class CatalystSdwanMCPServer {
       },
       {
         name: 'get_omp_routes',
-        description: 'Get OMP routes received or advertised by a device. Filter by VPN and/or prefix to limit output.',
+        description:
+          'Get OMP routes received or advertised by a device. vpn_id and prefix are applied by SD-WAN Manager (and again here). ' +
+          'SD-WAN Manager returns at most about 4,000 rows of this real-time table: manager_row_limit in the answer says when ' +
+          'it may have been cut; read it by vpn_id or prefix then.',
         inputSchema: {
           type: 'object',
           properties: {
             device_id: { type: 'string', description: 'Device ID or system-ip' },
             direction: { type: 'string', enum: ['received', 'advertised'], description: 'Route direction (default: received)' },
             vpn_id: { type: 'string', description: 'Filter by service VPN ID (e.g. 10)' },
-            prefix: { type: 'string', description: 'Filter by exact prefix (e.g. 10.10.116.1/32)' },
+            prefix: { type: 'string', description: 'Filter by exact prefix (e.g. 10.10.116.1/32 or 2001:db8::/48)' },
+            family: { type: 'string', enum: ['ipv4', 'ipv6', 'all'], description: 'Address family (default: ipv4; ipv6 and all add address-family to each row)' },
           },
           required: ['device_id'],
         },
@@ -2846,12 +2904,7 @@ export class CatalystSdwanMCPServer {
       case 'get_omp_peers':
         return deviceGet(`/dataservice/device/omp/${synced ? 'synced/' : ''}peers`);
       case 'get_omp_routes':
-        return filterRows(
-          await deviceGet(
-            `/dataservice/device/omp/routes/${pick('direction', { received: 'received', advertised: 'advertised' }, 'received')}`
-          ),
-          { 'vpn-id': args.vpn_id, prefix: args.prefix }
-        );
+        return ompRoutes(deviceGet, pick('direction', { received: 'received', advertised: 'advertised' }, 'received'), args);
       case 'get_omp_tlocs':
         return filterRows(
           await deviceGet(
