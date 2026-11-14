@@ -93,13 +93,14 @@ flowchart LR
   linkStyle 13 stroke:#06b6d4,stroke-width:2px
 ```
 
-A question goes from the AI client to the matching tool. The server resolves names to IDs, stops writes at the write gate unless they are enabled and confirmed, checks the call against the vManage API spec and sends it to SD-WAN Manager. The JSON reply is trimmed to the fields needed and returned to the assistant.
+A question goes from the AI client to the matching tool. The server resolves names to IDs, stops writes at the write gate unless they are enabled and confirmed, checks the call against the vManage API spec and sends it to SD-WAN Manager. The JSON reply is trimmed to the fields needed and returned to the assistant. For the components behind this flow, see [Architecture](#architecture).
 
 ---
 
 ## Contents
 
 - [What you can achieve](#what-you-can-achieve)
+- [Architecture](#architecture)
 - [Quick start](#quick-start)
 - [Versions and compatibility](#versions-and-compatibility)
   - [What's new in 1.2.0](#whats-new-in-120)
@@ -156,6 +157,31 @@ Ask questions about your SD-WAN fabric in plain language and get answers built f
 | **Operations** | "Any critical alarms? Certificates expiring? Is the Manager cluster healthy?" | `list_alarms`, `get_certificate_summary`, `get_cluster_status` |
 | **Anything else in the API** | "Show IPsec/IKE sessions", "audit log for today" | `search_api_operations` → `describe_api_operation` → `call_api_operation` |
 | **Controlled changes (opt-in)** | Any POST/PUT/DELETE operation, only after you approve it | The routing write tools, or `call_api_operation`, with `confirm: true` and `VMANAGE_ALLOW_WRITE=true` |
+
+---
+
+## Architecture
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/architecture/architecture-dark.png">
+  <img alt="Architecture of the Cisco Catalyst SD-WAN MCP server: MCP client, MCP server, tool dispatcher, API catalog, template migration, VManageApiService, local caches and the SD-WAN fabric" src="docs/architecture/architecture-light.png">
+</picture>
+
+**Interactive version:** [`docs/architecture/architecture.html`](docs/architecture/architecture.html) is a self-contained page with light/dark themes, search, route highlighting, links from every component to its source lines, and SVG/PNG export. GitHub shows its source, so download it or open it from a clone in a browser. The diagram is generated with [Archify](https://github.com/tt-a1i/archify) from [`docs/architecture/architecture.json`](docs/architecture/architecture.json).
+
+| Component | Source | Role |
+|---|---|---|
+| **MCP Server** | `src/index.ts`, `src/server.ts` | Loads `.env`, serves MCP over stdio (`ListTools`, `CallTool`). Lists write tools only when `VMANAGE_ALLOW_WRITE=true`, applies the per-call `tenant` option, and trims every reply with `fields`, `filter`, `offset`, `limit` and `count_by`. Preloads the API catalog and device index at startup and logs out of vManage on shutdown. |
+| **Tool Dispatcher** | `src/server.ts` (`handleToolCall`) | Resolves device names and runs the dedicated tools. Reads go straight to `VManageApiService`; general API tools and every write go through the API Catalog. |
+| **API Catalog** | `src/services/apiCatalog.ts` | Indexes the OpenAPI spec of the connected Manager for `search_api_operations`, `describe_api_operation` and `call_api_operation`. Blocks secret-issuing endpoints, refuses writes unless `VMANAGE_ALLOW_WRITE=true` **and** `confirm: true`, and validates parameters against the spec. |
+| **Template Migration** | `src/services/templateMigration.ts` | Runs `deploy_template_migration` one approved step at a time (prepare → deploy → status → deploy_policy_group). Reads through `VManageApiService`; writes go through the API Catalog's write gate. |
+| **Config analysis** | `src/services/configReview.ts`, `configVariables.ts`, `configDefects.ts` | In-memory helpers: mask secrets and review what a deploy would change, map template values onto group variables, and detect template-to-group conversion defects. |
+| **VManageApiService** | `src/services/vmanageApi.ts` | The only HTTPS client to SD-WAN Manager (undici): JWT or session + XSRF login, tenant `VSessionId`, TLS verify / pin / insecure policy, GET cache and request dedupe, concurrency limit, retries with backoff. |
+| **Spec cache** | `~/.cache/catalyst-sdwan-mcp/` | OpenAPI spec per Manager host, reused for 24 h and as a fallback when the Manager is unreachable. |
+| **Migration state** | `~/.local/state/cisco-catalyst-sdwan-mcp/` (`VMANAGE_STATE_DIR`) | Per-device migration state (masked running config, no secrets) and a lock shared by all server processes on the machine. |
+| **SD-WAN Manager** | REST `/dataservice` | Answers inventory, configuration and statistics itself and proxies real-time queries to WAN edges and controllers. The server never connects to devices directly. |
+
+To regenerate the diagram after a change, edit `docs/architecture/architecture.json` (positions, labels and source line references) and render it again with Archify (`archify finalize architecture docs/architecture/architecture.json docs/architecture/architecture.html --repo-root .`).
 
 ---
 
@@ -1579,6 +1605,10 @@ scripts/
   test-control-plane.mjs    # live regression test
   test-ux2.mjs              # live UX 2.0 / fabric-wide tools test
   verify-api-coverage.mjs   # full coverage run and report
+docs/architecture/
+  architecture.html         # interactive architecture diagram (open in a browser)
+  architecture.json         # diagram source (Archify)
+  architecture-light.png, architecture-dark.png  # static images shown in this README
 .github/workflows/ci.yml    # build + offline tests on Node.js 20/22/24
 .vscode/mcp.json            # VS Code MCP server registration
 API_COVERAGE.md, api_coverage.csv   # last coverage report

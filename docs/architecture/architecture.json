@@ -1,0 +1,62 @@
+{
+  "schema_version": 1,
+  "diagram_type": "architecture",
+  "meta": {
+    "title": "Cisco Catalyst SD-WAN MCP Server",
+    "output": "docs/architecture/architecture.html",
+    "quality_profile": "showcase",
+    "locale": "en",
+    "repository": {
+      "url": "https://github.com/waqasdaar/cisco-catalyst-sdwan-mcp.git",
+      "provider": "github",
+      "revision": "8729cf42049c39d7ce03c02d88c8beb76b80a4cd"
+    }
+  },
+  "components": [
+    { "id": "spec-cache", "type": "database", "label": "Spec cache", "sublabel": "~/.cache/catalyst-sdwan-mcp", "tag": "OpenAPI · 24 h", "pos": [770, 40], "size": [170, 64],
+      "sources": [{ "path": "src/services/apiCatalog.ts", "line": 87, "end_line": 89, "label": "cache location" }, { "path": "src/services/apiCatalog.ts", "line": 168, "end_line": 194, "label": "read / refresh spec" }] },
+    { "id": "catalog", "type": "backend", "label": "API Catalog", "sublabel": "search · describe · call", "tag": "ALLOW_WRITE + confirm", "pos": [770, 180], "size": [170, 64],
+      "sources": [{ "path": "src/services/apiCatalog.ts", "line": 143, "end_line": 166, "label": "ApiCatalog" }, { "path": "src/services/apiCatalog.ts", "line": 438, "end_line": 453, "label": "write gate + confirm" }] },
+    { "id": "migration", "type": "backend", "label": "Template Migration", "sublabel": "prepare → deploy → status", "tag": "per-device lock", "pos": [720, 340], "size": [170, 64],
+      "sources": [{ "path": "src/services/templateMigration.ts", "line": 122, "end_line": 132, "label": "TemplateMigration" }, { "path": "src/services/templateMigration.ts", "line": 195, "end_line": 209, "label": "gated deploy" }, { "path": "src/server.ts", "line": 2586, "end_line": 2596, "label": "deps: writes via catalog" }] },
+    { "id": "state-store", "type": "database", "label": "Migration state", "sublabel": "~/.local/state · per device", "tag": "masked config", "pos": [720, 490], "size": [170, 64],
+      "sources": [{ "path": "src/services/migrationStore.ts", "line": 35, "end_line": 76, "label": "MigrationStore" }] },
+    { "id": "env", "type": "security", "label": ".env config", "sublabel": "VMANAGE_* variables", "pos": [270, 470], "size": [150, 64],
+      "sources": [{ "path": "src/utils/config.ts", "line": 36, "end_line": 84, "label": "loadConfig" }, { "path": "src/index.ts", "line": 6, "end_line": 12, "label": "dotenv" }] },
+    { "id": "client", "type": "external", "label": "MCP Client", "sublabel": "AI assistant host", "pos": [40, 620], "size": [120, 64] },
+    { "id": "mcp", "type": "backend", "label": "MCP Server", "sublabel": "ListTools · CallTool", "tag": "stdio transport", "pos": [270, 620], "size": [150, 64],
+      "sources": [{ "path": "src/index.ts", "line": 20, "end_line": 40, "label": "entry point" }, { "path": "src/server.ts", "line": 757, "end_line": 827, "label": "handlers, tool filter" }, { "path": "src/server.ts", "line": 4135, "end_line": 4147, "label": "stdio run / shutdown" }] },
+    { "id": "dispatcher", "type": "backend", "label": "Tool Dispatcher", "sublabel": "handleToolCall", "tag": "curated tools", "pos": [510, 620], "size": [170, 64],
+      "sources": [{ "path": "src/server.ts", "line": 2517, "end_line": 2530, "label": "handleToolCall" }, { "path": "src/server.ts", "line": 2755, "end_line": 2790, "label": "catalog + device tools" }, { "path": "src/server.ts", "line": 3508, "end_line": 3520, "label": "migration step" }] },
+    { "id": "api", "type": "backend", "label": "VManageApiService", "sublabel": "auth · tenant · cache · retry", "tag": "TLS verify / pin", "pos": [960, 620], "size": [170, 64],
+      "sources": [{ "path": "src/services/vmanageApi.ts", "line": 31, "end_line": 82, "label": "TLS policy" }, { "path": "src/services/vmanageApi.ts", "line": 429, "end_line": 463, "label": "dedupe + cache" }, { "path": "src/services/vmanageApi.ts", "line": 495, "end_line": 535, "label": "auth, retries" }] },
+    { "id": "vmanage", "type": "external", "label": "SD-WAN Manager", "sublabel": "vManage /dataservice", "pos": [960, 780], "size": [170, 64],
+      "sources": [{ "path": "src/services/vmanageApi.ts", "line": 600, "end_line": 634, "label": "REST request" }] },
+    { "id": "devices", "type": "external", "label": "WAN Edges & Controllers", "sublabel": "never contacted directly", "pos": [680, 780], "size": [160, 64],
+      "sources": [{ "path": "src/index.ts", "line": 14, "end_line": 18, "label": "via vManage only" }, { "path": "src/utils/config.ts", "line": 54, "end_line": 57, "label": "device-proxied queries" }] }
+  ],
+  "boundaries": [
+    { "kind": "region", "label": "Cisco SD-WAN fabric", "wraps": ["vmanage", "devices"] }
+  ],
+  "connections": [
+    { "id": "client-mcp", "from": "client", "to": "mcp", "label": "stdio JSON-RPC", "variant": "emphasis" },
+    { "id": "env-mcp", "from": "env", "to": "mcp", "label": "loadConfig()" },
+    { "id": "mcp-dispatcher", "from": "mcp", "to": "dispatcher", "label": "CallTool", "variant": "emphasis" },
+    { "id": "dispatcher-api", "from": "dispatcher", "to": "api", "label": "curated reads", "variant": "emphasis" },
+    { "id": "dispatcher-catalog", "from": "dispatcher", "to": "catalog", "label": "API tools + writes", "fromSide": "top", "toSide": "left" },
+    { "id": "dispatcher-migration", "from": "dispatcher", "to": "migration", "label": "migration step", "fromSide": "top", "toSide": "left" },
+    { "id": "migration-catalog", "from": "migration", "to": "catalog", "label": "gated writes", "variant": "security" },
+    { "id": "migration-state", "from": "migration", "to": "state-store", "label": "save · lock" },
+    { "id": "migration-api", "from": "migration", "to": "api", "label": "reads", "fromSide": "right", "toSide": "top" },
+    { "id": "catalog-spec", "from": "catalog", "to": "spec-cache", "label": "read / refresh" },
+    { "id": "catalog-api", "from": "catalog", "to": "api", "label": "validated calls", "fromSide": "right", "toSide": "top" },
+    { "id": "api-vmanage", "from": "api", "to": "vmanage", "label": "HTTPS REST", "variant": "emphasis" },
+    { "id": "vmanage-devices", "from": "vmanage", "to": "devices", "label": "real-time proxy" }
+  ],
+  "cards": [
+    { "dot": "rose", "title": "Write safety", "items": ["Write tools are hidden unless VMANAGE_ALLOW_WRITE=true", "Every write needs confirm: true and passes spec validation in the API Catalog", "Migration deploy also needs accept_review / sig_ready approval"] },
+    { "dot": "emerald", "title": "vManage client", "items": ["JWT (or session + XSRF) login, refreshed ahead of expiry", "Tenant-scoped VSessionId on multi-tenant Managers", "Short GET cache, in-flight dedupe, concurrency limiter, retries on 429/502/503/504"] },
+    { "dot": "violet", "title": "Config analysis (in memory)", "items": ["configReview: masks secrets, diffs running vs rendered config", "configVariables: maps template values onto group variables", "configDefects: rules fixing template-to-group conversion defects"] },
+    { "dot": "amber", "title": "Startup", "items": ["Preloads the API catalog and device index in the background", "Logs out of vManage on SIGINT / SIGTERM / stdin close"] }
+  ]
+}
