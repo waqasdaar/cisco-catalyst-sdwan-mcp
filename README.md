@@ -13,7 +13,7 @@ All requests go through vManage. The server never connects to routers directly.
 - **Read-only by default.** Operations that change configuration or state are disabled unless you enable them, and each call then needs explicit confirmation.
 - **BGP, OSPF, OSPFv3 and EIGRP end to end.** Real-time neighbors, routes, interfaces, topology and LSDB; UX 2.0 feature reads and writes for SD-WAN and SD-Routing profiles; UX 1.0 feature templates (list, read, schema, create, update, delete, clone). Every BGP, OSPF and EIGRP operation in the 26.2 spec has a dedicated tool.
 - **Multicast end to end.** IGMP, PIM, overlay multicast (topology, RPF, replicators, tunnels) and MFIB monitoring; UX 2.0 multicast features (read, schema, write); UX 1.0 IGMP, PIM and multicast templates. Every multicast operation in the 26.2 spec has a dedicated tool.
-- **IPv6 end to end.** ND, neighbors, IPv6 routes, FIB, interface statistics, DHCPv6, NAT64, OMP IPv6 routes, IPv6 ACL and SGACL counters; UX 1.0 IPv6 prefix lists, IPv6 ACLs and device-access policies (read, preview, write); UX 2.0 IPv6 trackers and tracker groups (read, schema, write). Every IPv6 operation in the 26.2 spec has a dedicated tool.
+- **IPv6 end to end.** ND, neighbors, IPv6 routes, FIB, interface statistics, DHCPv6, NAT64, OMP IPv6 routes (also in `get_omp_routes` with `family: "ipv6"` or `"all"`), IPv6 ACL and SGACL counters; UX 1.0 IPv6 prefix lists, IPv6 ACLs and device-access policies (read, preview, write); UX 2.0 IPv6 trackers and tracker groups (read, schema, write). Every IPv6 operation in the 26.2 spec has a dedicated tool.
 - **CLI add-ons for everything else.** RIP and RIPng have no vManage API, so they are configured as raw IOS XE CLI. Dedicated tools find, read, create, change and delete CLI add-on features (UX 2.0) and CLI add-on templates (UX 1.0); `contains: "router rip"` finds where a protocol is configured.
 - **Validated against the spec.** Calls through the general tools are checked against the OpenAPI spec published by *your* vManage before they are sent.
 - **Secrets are protected.** Endpoints that issue tokens, passwords, OTPs or credentials are blocked. Session IDs and CSRF tokens are redacted from responses. Passwords, secret hashes, keys and SNMP communities are masked in configuration, policy and topology group previews.
@@ -27,6 +27,7 @@ All requests go through vManage. The server never connects to routers directly.
   - Caches the API spec on disk and short-lived lookups in a bounded memory cache; hostname lookups answer from the last device list while it refreshes in the background.
   - Returns compact JSON, and every list tool accepts `fields` and `filter` to return only what is needed.
   - Logs out session-cookie logins when the client disconnects, so they don't pile up against vManage's session limit.
+- **Complete OMP route tables.** SD-WAN Manager returns at most about 4,000 rows of a real-time OMP route table and does not say when it cuts. `get_omp_routes` sends `vpn_id` and `prefix` to the Manager so the device narrows the table (a route beyond the cut can still be read), marks an answer at the limit with `manager_row_limit`, says whether the Manager applied the filters (`manager_filter`), and reads IPv6 OMP routes with `family` (1.2.0, [details](#large-omp-tables-sd-wan-managers-row-limit)).
 - **Device names work everywhere.** Pass a hostname (`Branch-1`), system IP, UUID or serial number.
 - **JWT authentication** (vManage 20.18.1+) with session-cookie fallback for older releases.
 
@@ -101,11 +102,13 @@ A question goes from the AI client to the matching tool. The server resolves nam
 - [What you can achieve](#what-you-can-achieve)
 - [Quick start](#quick-start)
 - [Versions and compatibility](#versions-and-compatibility)
+  - [What's new in 1.2.0](#whats-new-in-120)
 - [Supported functionality](#supported-functionality)
   - [General API tools](#general-api-tools-full-vmanage-api)
   - [Dedicated tools (full reference)](#dedicated-tools)
   - [Routing protocols: BGP, OSPF, OSPFv3, EIGRP](#routing-protocols-at-a-glance)
   - [Multicast (IGMP, PIM, MFIB)](#multicast-igmp-pim-overlay-multicast-mfib-10)
+  - [OMP, and large OMP tables](#omp--overlay-management-protocol-9)
   - [IPv6](#ipv6-monitoring-policy-objects-trackers-11)
   - [CLI add-ons (RIP, RIPng, other CLI)](#cli-add-ons-rip-ripng-and-other-cli--ux-20-and-ux-10-10)
 - [Installation](#installation)
@@ -199,6 +202,20 @@ See [Installation](#installation), [Configuration](#configuration) and [Integrat
 | MCP TypeScript SDK | `@modelcontextprotocol/sdk` ^1.0.4 | Tested with 1.27.1 |
 | Transport | stdio | The client starts the server as a child process |
 | MCP clients tested | OpenChamber 2.5 (bundled OpenCode 2.0.32), OpenCode 1.19 | Other clients use their documented standard MCP config |
+
+### What's new in 1.2.0
+
+`get_omp_routes` returns complete OMP route tables on large fabrics, and IPv6 OMP routes. Nothing changes for an existing call: without the new argument the answer has the same rows and fields as in 1.1.0, plus two informational keys.
+
+| Change | Before (1.1.0) | Now (1.2.0) |
+|---|---|---|
+| `vpn_id`, `prefix` | Filtered by the server after the Manager answered. The Manager had already cut the table at about 4,000 rows, so a route beyond the cut could not be found, even by its own prefix | Sent to SD-WAN Manager as the `vpn-id` and `prefix` query parameters (the device narrows the table), and applied again by the server |
+| `manager_filter` (new key) | – | `applied`: the Manager applied the filters; `ignored`: it returned rows that do not match (the server still filters them, but a route beyond the cut cannot be read on that release); `none`: no filter asked |
+| `manager_row_limit` (new key) | Not reported: a cut table looked complete | Present when an answer has 3,990–4,001 rows, the Manager's real-time limit: `{ limit, families, reason }`. A longer answer shows the limit does not apply on that Manager |
+| `family` (new argument) | IPv4 only | `ipv4` (default, unchanged), `ipv6` (reads `/device/omp/routes/{received,advertised}/ompIpv6`), `all` (both tables read in parallel). Rows of `ipv6` and `all` carry `address-family` |
+| Offline tests | – | 10 new checks on a simulated Controller with 4,600 paths (above the limit): per-VPN and per-prefix reads past the cut, IPv6, a Manager that ignores the filters |
+
+Clients such as [SD-WAN OMP Lens](https://github.com/waqasdaar/sdwan-omp-lens) use 1.2.0 to read a Controller's table one VPN at a time when the Manager cuts it, and to check it against `get_omp_summary`.
 
 The four general API tools (`list_api_categories`, `search_api_operations`, `describe_api_operation`, `call_api_operation`) download the OpenAPI spec that your vManage publishes at `https://<vmanage>/apidocs/vmanageapi.json`. They therefore follow the API of whatever release you connect to, and new endpoints in later releases are available without code changes.
 
@@ -307,6 +324,29 @@ The fabric BFD and TLOC tools query devices in real time when 25 or fewer edges 
 | `get_omp_links` | Fabric-wide OMP peering links in a given state | `state`\* (`up`/`down`) | "List OMP peerings that are down." |
 | `get_omp_status` | Fabric-wide OMP up/down counts | – | "Are all OMP peerings up?" |
 | `get_omp_summary` | OMP summary of a device | `device_id`\* | "OMP summary of Branch-3." |
+
+##### Large OMP tables: SD-WAN Manager's row limit
+
+SD-WAN Manager answers at most about **4,000 rows** of a real-time OMP route table (`/dataservice/device/omp/routes/received` and `/advertised`). Cisco added this device-side limit in 17.3.5 / 20.3.5 to protect ConfD on the device. The Manager does not say when it cuts. On a Controller every path is a row: with 2 Controllers and 3 transports a prefix has 6 rows, so the limit is reached at about 650 prefixes.
+
+How to read such a table completely with `get_omp_routes`:
+
+1. Read it once. If the answer has `manager_row_limit`, rows beyond the limit may be missing.
+2. Read it again one VPN at a time (`vpn_id`), and join the answers. Each VPN comes back whole unless it alone has more than about 4,000 rows. Check that each answer says `manager_filter: "applied"`.
+3. For one route, ask for its `prefix`: the device looks it up in its whole table.
+4. Compare the number of paths learned from peers with `routes-received` in `get_omp_summary`. Fewer paths means part of the table is still missing (for example, a VPN none of whose paths were in the first answer).
+
+If `manager_filter` is `ignored`, the Manager release does not apply the filters on this endpoint, and a table above the limit cannot be completed through the API. Use the device CLI (`show omp routes`) for the rest.
+
+The server's own response limit (200,000 characters) is separate: a larger answer comes back with `truncated.nextOffset`, and the next page is read with `offset`.
+
+```json
+{ "name": "get_omp_routes", "arguments": { "device_id": "vSmart-1", "direction": "received", "vpn_id": "30" } }
+```
+
+```json
+{ "name": "get_omp_routes", "arguments": { "device_id": "vSmart-1", "family": "all" } }
+```
 
 #### Validator – vBond / orchestrator (6)
 
@@ -996,6 +1036,7 @@ OSPF runs in service VPN 10 with one OSPFv2 neighbor on GigabitEthernet3. `get_o
 | "Which settings would deploying *Branch-CG* drop or change on *Branch-1*?" | `preview_config_group_device_config` (`view: "review"`) |
 | "Add *Branch-3* to *Branch-CG*, set its variables, show me the diff, then deploy." *(writes enabled)* | `associate_group_devices`, `update_group_variables`, `preview_config_group_device_config`, `deploy_group` |
 | "Show the features in the *Branch-Transport* transport profile." | `get_feature_profile` |
+| "Does the Controller's OMP table hold every route? Compare it with its OMP summary." | `get_omp_routes` (per `vpn_id` if `manager_row_limit` is set), `get_omp_summary` |
 | "Which sites are in the network hierarchy, and what is under the *EMEA* region?" | `get_network_hierarchy` (`label: "site"`, then `node: "EMEA"`) |
 | "Which Cyber Vision centers are configured, and add *CV-1* at 10.10.10.10." *(writes enabled for the add)* | `get_hierarchy_cybervision`, `create_hierarchy_cybervision` |
 | "Which devices are unreachable, and what do their control connection histories show?" | `list_devices`, `get_control_connections_history` |
@@ -1035,6 +1076,16 @@ Received OMP routes in one VPN:
 
 ```json
 { "name": "get_omp_routes", "arguments": { "device_id": "Branch-1", "direction": "received", "vpn_id": "10" } }
+```
+
+One prefix, IPv4 or IPv6 (the Manager looks it up in the whole table, beyond its 4,000-row limit):
+
+```json
+{ "name": "get_omp_routes", "arguments": { "device_id": "vSmart-1", "prefix": "10.17.247.0/24" } }
+```
+
+```json
+{ "name": "get_omp_routes", "arguments": { "device_id": "vSmart-1", "family": "ipv6", "prefix": "2001:db8:10::/48" } }
 ```
 
 Network hierarchy: all sites, one node by name, path or site ID, and Cyber Vision centers (Global node by default):
@@ -1344,7 +1395,7 @@ Four test suites check the server. Only `npm test` runs without a Manager; the o
 
 | Command | Needs a Manager | What it checks | Runs in CI |
 |---|---|---|---|
-| `npm test` | No (simulated vManage) | 344 checks: every tool family, spec coverage of all routing/multicast/IPv6/CLI, configuration/policy/topology group and network-hierarchy operations, write protection, input validation, resilience, multi-tenancy, tool-list size | Yes: Node.js 20, 22 and 24 |
+| `npm test` | No (simulated vManage) | 354 checks: every tool family, spec coverage of all routing/multicast/IPv6/CLI, configuration/policy/topology group and network-hierarchy operations, write protection, input validation, resilience, multi-tenancy, tool-list size | Yes: Node.js 20, 22 and 24 |
 | `npm run test:control-plane -- <edge> <controller> <validator>` | Yes | 39 control-plane, OMP and Validator calls plus 3 input-validation checks | No |
 | `npm run test:ux2 -- <edge-hostname>` | Yes | UX 2.0, fabric-wide, paging and response-shaping tools; hostname resolution, parallel calls, error handling, with timings | No |
 | `npm run verify:api -- <edge> <controller> <validator>` | Yes (≈25 min) | Every read operation that needs no IDs (≈1,260 on 26.2) plus every dedicated read tool; writes [API_COVERAGE.md](API_COVERAGE.md) and [api_coverage.csv](api_coverage.csv) | No |
@@ -1367,6 +1418,7 @@ npm run verify:api -- <edge> <controller> <validator>
 | Tool list | 121 tools on a read-only server with no write tool listed, 163 with `VMANAGE_ALLOW_WRITE=true`; the read-only tool list stays under 110 KB |
 | Client and resilience | Hostname resolution, `Retry-After` retries on 503, re-login after an expired token, session-cookie login and logout, fail-fast when the Manager is unreachable, real-time vs. list timeouts named in the error |
 | Response shaping | `fields`, `filter`, `count_by`, `offset`/`limit` paging, truncation with a `nextOffset` cursor on a 3,000-device inventory |
+| OMP routes | A 4,600-path Controller table cut at 4,000 rows by the simulated Manager: `manager_row_limit`, `vpn_id` and `prefix` sent to the Manager, a VPN and a prefix beyond the cut read whole, `family: ipv6` and `all`, the IPv4 default unchanged, an unknown `family` refused, a Manager that ignores the filters (`manager_filter: ignored`) |
 | Fabric-wide tools | Health table and Manager deployment detection, BFD and TLOC sweeps: concurrency cap, time budget with resume, overload breaker, synced data re-checked live |
 | Multi-tenancy | Fixed tenant, per-call tenant switching, `VSessionId` reuse and renewal, cache isolation between tenants |
 | API catalog | Statistics paging with `all_pages`, refusal of paging on non-paged operations, write gate on `call_api_operation` |
@@ -1385,7 +1437,7 @@ Every one of the 163 tools belongs to one area below. **Offline** is what `npm t
 | API catalog | – | 4 | Any of the 4,128 spec operations, validated against the spec | Statistics paging (`all_pages`), write gate, refusal of paging on non-paged operations | `test:ux2`, `verify:api` |
 | Fabric-wide health, BFD and TLOCs | – | 3 | `/health/devices`, `/device`, `/device/bfd/sessions`, `/device/control/waninterface`, `/clusterManagement/*`, `/alarms`, `/certificate/stats/summary` | Health table, Manager deployment, sweeps: concurrency cap, time budget with resume, overload breaker, synced data re-checked live | `test:ux2` (cross-checked with per-device tools) |
 | Devices and inventory | – | 5 | `/device`, `/device/reachable`, `/device/vedgeinventory/detail` | Hostname resolution, `fields`/`filter`/`count_by`/paging and truncation on a 3,000-device inventory | `test:ux2`, `verify:api` |
-| Control plane, OMP, Validator | – | 28 | `/device/control/*`, `/device/omp/*`, `/device/orchestrator/*` | `Retry-After` retry, re-login after an expired token | `test:control-plane` (42/42) |
+| Control plane, OMP, Validator | – | 28 | `/device/control/*`, `/device/omp/*` (OMP routes also `/ompIpv6`), `/device/orchestrator/*` | `Retry-After` retry, re-login after an expired token; OMP routes above the Manager's 4,000-row limit (filters sent to the Manager, limit reported, IPv6) | `test:control-plane` (42/42) |
 | Data plane, interfaces, system | – | 9 | `/device/bfd/*`, `/device/interface`, `/device/system/status`, `/device/arp`, `/device/vpn`, `/device/tloc`, `/device/bridge/table` | Real-time timeout, unknown-device rejection | `test:ux2`, `verify:api` |
 | App-aware routing, flows, statistics | – | 7 | `/device/app-route/*`, `/device/cflowd/*`, `/device/app/log/*`, `/device/sdwan-stats` | – | `verify:api` |
 | BGP | 2.0 | 9 | `/device/bgp/*`, `/v1/feature-profile/{sdwan,sd-routing}/{service,transport}/.../routing/bgp` | Full spec sweep (see next table) | `verify:api` (read tools) |
@@ -1496,6 +1548,10 @@ Set `VMANAGE_ALLOW_WRITE=true` in the environment the Inspector passes to the se
 | `global_vrf applies only to sd-routing transport profiles` / `... must be a feature ID (UUID)` | Check the scope arguments: `global_vrf` needs `solution: "sd-routing"` and `profile_type: "transport"`; feature, VPN and template IDs are UUIDs (from `get_*_config`, `get_feature_profile` or `list_routing_templates`). |
 | `vManage API error 400` on a create or update | vManage rejected the body. Build it from `get_bgp_feature_schema` / `get_routing_template_schema`, or copy `name`, `description` and `data` from an existing feature returned by `get_bgp_config` / `get_ospf_config`. |
 | `vManage API error 400 ... Empty query` | Statistics endpoints need a query body even when the spec marks it optional. See the statistics example above. |
+| A Controller's OMP table seems to stop at about 4,000 routes, or a known route is missing | SD-WAN Manager's real-time limit (about 4,000 rows; 17.3.5 / 20.3.5 and later). The answer carries `manager_row_limit`. Read the table per `vpn_id`, or ask for the `prefix`; compare with `routes-received` in `get_omp_summary`. Needs 1.2.0: before, `vpn_id` and `prefix` were applied after the Manager's cut. See [Large OMP tables](#large-omp-tables-sd-wan-managers-row-limit) |
+| `manager_filter: "ignored"` in an OMP routes answer | The Manager release returns rows that do not match `vpn-id` / `prefix`. The server still filters them, but a route beyond the Manager's limit cannot be read through the API on that release. Use `show omp routes` on the device |
+| No IPv6 prefixes in `get_omp_routes` | The default `family` is `ipv4`. Pass `family: "ipv6"` or `"all"` (1.2.0) |
+| `family must be one of: ipv4, ipv6, all` | Use one of those values |
 | `truncated` in a response | The response was larger than the limit. Continue with `offset` set to `truncated.nextOffset`, summarize with `count_by`, or filter (for example `vpn_id`, `site_id`, `filter`) or lower `max_items`. For statistics `.../page` operations, `all_pages: true` follows the scroll pages up to `max_items` rows. |
 | Node warns about `NODE_TLS_REJECT_UNAUTHORIZED` | Comes from your shell environment, not this server. Remove the variable if you don't need it. |
 | `The TLS certificate of vManage … is not trusted (self-signed certificate)` | Pin the certificate: `npm run fingerprint`, check the value, set `VMANAGE_TLS_FINGERPRINT`. For an internal CA, set `VMANAGE_CA_FILE` instead. |
