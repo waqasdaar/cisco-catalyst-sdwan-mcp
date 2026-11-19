@@ -239,7 +239,9 @@ const OMP_V4 = Array.from({ length: 4600 }, (_, i) => ({
 }));
 const OMP_V6 = [10, 20, 30].map((v) => ({ 'vpn-id': String(v), prefix: `2001:db8:${v}::/48`, 'from-peer': '192.0.2.11', color: 'mpls', status: 'C,R' }));
 const ompStats = { queries: [] };
-const mock = { ompIgnoreFilters: false, extraEdges: 0, bfdDelayMs: 0, bfdStatus: 200, bfdCalls: 0, bfdInFlight: 0, bfdMaxInFlight: 0, templateListDelayMs: 3000, preview: null, migration: false };
+const mock = { ompIgnoreFilters: false, extraEdges: 0, bfdDelayMs: 0, bfdStatus: 200, bfdCalls: 0, bfdInFlight: 0, bfdMaxInFlight: 0, templateListDelayMs: 3000, preview: null, migration: false, echo: false, echoStatus: 0, echoRows: 0, echoDelayMs: 0, echoMalformed: false };
+const monStats = { calls: [], inFlight: 0, maxInFlight: 0 };
+const deviceIdOf = (url) => url.searchParams.get('deviceId');
 // Multi-tenant Manager: provider account switches tenants with a VSessionId header.
 const TENANTS = [
   { tenantId: 't-1', name: 'Tenant-A', orgName: 'Org A', subDomain: 'a.example.com' },
@@ -287,6 +289,22 @@ function handler(req, res) {
     const authorized = (bearer && tokens.has(bearer)) || req.headers.cookie?.includes('JSESSIONID=sess-1');
     if (!authorized) return send(401, { error: 'unauthorized' });
     if (p === '/dataservice/client/token') return send(200, '"xsrf"');
+    // Monitoring tests: every request except the device inventory is recorded and echoed (or failed / slowed / enlarged).
+    if (mock.echo && p !== '/dataservice/device') {
+      monStats.calls.push({ method: req.method, path: p, query: Object.fromEntries(url.searchParams), body: raw ? JSON.parse(raw) : undefined });
+      monStats.maxInFlight = Math.max(monStats.maxInFlight, ++monStats.inFlight);
+      const reply = () => {
+        monStats.inFlight--;
+        if (mock.echoStatus) return send(mock.echoStatus, { error: { message: 'Server error', details: 'simulated failure' } });
+        if (mock.echoMalformed) {
+          res.writeHead(200, { 'content-type': 'application/json' });
+          return res.end('{"data": [ {"truncated');
+        }
+        if (mock.echoRows) return send(200, { data: Array.from({ length: mock.echoRows }, (_, i) => ({ i, 'vdevice-name': deviceIdOf(url), state: i % 3 ? 'up' : 'down', pad: 'x'.repeat(80) })) });
+        return send(200, { data: [{ path: p, query: Object.fromEntries(url.searchParams) }] });
+      };
+      return mock.echoDelayMs ? setTimeout(reply, mock.echoDelayMs) : reply();
+    }
     if (mock.migration) {
       if (p === '/dataservice/template/device/config/input/' && req.method === 'POST') return send(200, TEMPLATE_INPUT);
       if (p === '/dataservice/template/config/device/mode/cli' && req.method === 'POST') {
@@ -585,12 +603,13 @@ async function tool(client, name, args = {}) {
 // ---------- Tests ----------
 const c = await connect();
 const { tools } = await c.listTools();
-check('tool list (read-only server: write tools hidden)', tools.length === 121, `${tools.length} tools`);
+check('tool list (read-only server: write tools hidden)', tools.length === 127, `${tools.length} tools`);
 check(
   'write tools hidden when writes are disabled; call_api_operation kept',
-  !tools.some((x) => /^(create|update|delete|associate|clone|deploy)_/.test(x.name)) && tools.some((x) => x.name === 'call_api_operation')
+  !tools.some((x) => /^(create|update|delete|associate|clone|deploy|run)_/.test(x.name)) && tools.some((x) => x.name === 'call_api_operation')
 );
-check('tool list stays compact', JSON.stringify(tools).length < 110_000, `${JSON.stringify(tools).length} bytes`);
+// 1.2.0: ~108 KB; the six monitoring tools add ~19 KB, half of it their view enums.
+check('tool list stays compact', JSON.stringify(tools).length < 130_000, `${JSON.stringify(tools).length} bytes`);
 
 let t = Date.now();
 let r = await tool(c, 'get_omp_status');
@@ -1414,7 +1433,7 @@ check('IPv6 writes disabled by default', /VMANAGE_ALLOW_WRITE=true/.test(r.error
 await cv.close();
 
 const wv = await connect({ VMANAGE_ALLOW_WRITE: 'true' });
-check('tool list with writes enabled', (await wv.listTools()).tools.length === 163);
+check('tool list with writes enabled', (await wv.listTools()).tools.length === 170);
 const lastV6Write = () => stats.v6Writes.at(-1);
 const PREFIX_LIST = { name: 'Branch-v6', description: 'test', entries: [{ ipv6Prefix: '2001:db8:10::/48' }] };
 r = await tool(wv, 'create_ipv6_policy_object', { kind: 'prefix-list', body: PREFIX_LIST });
@@ -1989,6 +2008,218 @@ mock.extraEdges = 0;
     t.value?.manager_filter === 'ignored' && t.value?.page?.total === 800, `${t.value?.manager_filter} ${t.value?.page?.total}`);
   mock.ompIgnoreFilters = false;
   await omp.close();
+}
+
+// ---------- Monitoring and troubleshooting tools (SD-WAN Manager 26.2): one view per API operation ----------
+{
+  const { MONITORING_VIEWS, STATISTICS_DATASETS, STATISTICS_OPERATIONS } = await import('../build/services/monitoringCatalog.js');
+  const specPaths = JSON.parse(SPEC.toString()).paths;
+  const specOp = (method, path) => specPaths[path]?.[method.toLowerCase()];
+  const DEVICE = new Set(['deviceId', 'deviceIp', 'deviceIP', 'deviceUUID', 'uuid']);
+  const sample = (p) => {
+    const s = p.schema ?? {};
+    const e = s.enum ?? s.items?.enum;
+    if (e) return String(e[0]);
+    if (s.type === 'integer' || s.type === 'number') return '1';
+    if (s.type === 'boolean') return 'true';
+    return p.name === 'query' ? '{}' : 'x1';
+  };
+  // Arguments a caller would give: device_id for device parameters, every other required parameter by name.
+  const argsFor = (method, path) => {
+    const op = specOp(method, path);
+    const args = { query: {}, path_params: {} };
+    for (const p of op.parameters ?? []) {
+      if (DEVICE.has(p.name)) {
+        if (p.in === 'path' || p.required) args.device_id = 'Branch-1';
+      } else if (p.in === 'path') args.path_params[p.name] = sample(p);
+      else if (p.in === 'query' && p.required) args.query[p.name] = sample(p);
+    }
+    if (method === 'POST' && op.requestBody?.required) args.body = {};
+    return args;
+  };
+  const matches = (template, call) =>
+    new RegExp(`^/dataservice${template.replace(/[.*+?^$()|[\]\\]/g, '\\$&').replace(/\{[^}]+\}/g, '[^/]+')}$`).test(call.path);
+  const deviceSent = (call) => call.query.deviceId === '192.0.2.11' || Object.values(call.query).includes('u-11') || /\/(192\.0\.2\.11|u-11)(\/|$)/.test(call.path);
+
+  const m = await connect();
+  // Resident memory (MB) and CPU seconds used so far by the server process.
+  const usage = () => {
+    const [rss, cpu] = execFileSync('ps', ['-o', 'rss=,time=', '-p', String(m.transport.pid)]).toString().trim().split(/\s+/);
+    const seconds = cpu.split(':').reverse().reduce((s, part, i) => s + Number(part) * 60 ** i, 0);
+    return { rssMb: Number(rss) / 1024, cpuS: seconds };
+  };
+  await tool(m, 'list_devices');
+  const before = usage();
+  mock.echo = true;
+  const durations = [];
+  let swept = 0;
+  const wrong = [];
+  for (const [toolName, table] of Object.entries(MONITORING_VIEWS)) {
+    if (toolName === 'run_device_diagnostic') continue;
+    for (const [view, raw] of Object.entries(table)) {
+      const v = typeof raw === 'string' ? { path: raw } : raw;
+      for (const synced of v.synced ? [false, true] : [false]) {
+        const path = synced ? v.synced : v.path;
+        const method = v.method ?? 'GET';
+        const args = { view, ...argsFor(method, path), ...(synced ? { synced: true } : {}) };
+        monStats.calls = [];
+        const start = performance.now();
+        const res = await tool(m, toolName, args);
+        durations.push(performance.now() - start);
+        swept++;
+        const call = monStats.calls.at(-1);
+        const ok = !res.error && monStats.calls.length === 1 && call.method === method && matches(path, call) && (!args.device_id || deviceSent(call)) &&
+          !specOp(method, path).deprecated;
+        if (!ok) wrong.push(`${toolName}/${view}${synced ? ' (synced)' : ''}: ${res.error ?? JSON.stringify(monStats.calls)}`);
+      }
+    }
+  }
+  const expectedViews = Object.entries(MONITORING_VIEWS)
+    .filter(([t]) => t !== 'run_device_diagnostic')
+    .reduce((n, [, table]) => n + Object.values(table).reduce((k, raw) => k + (typeof raw === 'object' && raw.synced ? 2 : 1), 0), 0);
+  check(`monitoring: all ${expectedViews} views call exactly their 26.2 spec operation (device resolved, not deprecated)`, swept === expectedViews && !wrong.length, wrong.slice(0, 5).join(' | '));
+  durations.sort((a, b) => a - b);
+  const avg = durations.reduce((a, b) => a + b, 0) / durations.length;
+  console.log(`      timing over ${durations.length} calls against the local mock: avg ${avg.toFixed(1)} ms, p95 ${durations[Math.floor(durations.length * 0.95)].toFixed(1)} ms, max ${durations.at(-1).toFixed(1)} ms`);
+  const afterSweep = usage();
+  console.log(`      server process: ${(afterSweep.cpuS - before.cpuS).toFixed(2)} s CPU for the sweep, RSS ${before.rssMb.toFixed(0)} -> ${afterSweep.rssMb.toFixed(0)} MB`);
+
+  // query_statistics: every dataset and operation present in the spec reaches its endpoint.
+  const statWrong = [];
+  let statSwept = 0;
+  for (const [dataset, base] of Object.entries(STATISTICS_DATASETS)) {
+    for (const operation of Object.keys(STATISTICS_OPERATIONS)) {
+      const path = `/statistics${base ? `/${base}` : ''}${STATISTICS_OPERATIONS[operation].path}`;
+      const post = specOp('POST', path);
+      const get = specOp('GET', path);
+      if (!post && !get) continue;
+      const args = post ? { ...(post.requestBody ? { body: { query: { condition: 'AND', rules: [] } } } : {}), query: argsFor('POST', path).query } : { query: argsFor('GET', path).query };
+      monStats.calls = [];
+      const res = await tool(m, 'query_statistics', { dataset, operation, ...args });
+      statSwept++;
+      const call = monStats.calls.at(-1);
+      if (res.error || monStats.calls.length !== 1 || call.method !== (post ? 'POST' : 'GET') || call.path !== `/dataservice${path}` || (post?.requestBody && !call.body?.query)) {
+        statWrong.push(`${dataset}/${operation}: ${res.error ?? JSON.stringify(monStats.calls)}`);
+      }
+    }
+  }
+  check(`query_statistics: all ${statSwept} dataset operations reach their endpoint`, statSwept > 150 && !statWrong.length, statWrong.slice(0, 5).join(' | '));
+  monStats.calls = [];
+  r = await tool(m, 'query_statistics', { dataset: 'interface', query: { query: '{"query":{"condition":"AND","rules":[]}}' } });
+  check('query_statistics: raw with a query string and no body uses the GET variant', !r.error && monStats.calls[0]?.method === 'GET' && monStats.calls[0].path === '/dataservice/statistics/interface', JSON.stringify(monStats.calls[0] ?? r.error));
+  monStats.calls = [];
+  r = await tool(m, 'query_statistics', { dataset: 'interface' });
+  check('query_statistics: raw with nothing given sends an empty POST query', !r.error && monStats.calls[0]?.method === 'POST' && monStats.calls[0].path === '/dataservice/statistics/interface', JSON.stringify(monStats.calls[0] ?? r.error));
+
+  r = await tool(m, 'get_monitoring_info');
+  check(
+    'monitoring: omitting view lists every view with its endpoint and parameters',
+    r.value?.views?.length === Object.keys(MONITORING_VIEWS.get_monitoring_info).length && r.value.views.every((v) => v.endpoint && v.available !== false) &&
+      r.value.views.find((v) => v.view === 'alarm')?.params?.includes('path:alarm_uuid*'),
+    JSON.stringify(r.value?.views?.find((v) => v.view === 'alarm') ?? r.error)
+  );
+  monStats.calls = [];
+  r = await tool(m, 'get_bfd_summary', { device_id: 'Branch-1' });
+  check('get_bfd_summary keeps its default (summary) behaviour', !r.error && monStats.calls[0]?.path === '/dataservice/device/bfd/summary', JSON.stringify(monStats.calls[0] ?? r.error));
+  monStats.calls = [];
+  r = await tool(m, 'get_control_summary', { device_id: 'Branch-1' });
+  check('get_control_summary keeps its default (summary) behaviour', !r.error && monStats.calls[0]?.path === '/dataservice/device/control/summary', JSON.stringify(monStats.calls[0] ?? r.error));
+
+  for (const [label, name, args, pattern] of [
+    ['monitoring: unknown view rejected', 'get_device_system_realtime', { view: 'constructor' }, /view must be one of/],
+    ['monitoring: fabric-wide view refuses device_id', 'get_device_system_realtime', { view: 'hardware-errors', device_id: 'Branch-1' }, /fabric-wide/],
+    ['monitoring: device view needs device_id', 'get_device_interface_realtime', { view: 'interface-stats' }, /device_id is required/],
+    ['monitoring: unknown device rejected', 'get_device_interface_realtime', { view: 'interface-stats', device_id: 'nope' }, /Unknown device/],
+    ['monitoring: query parameter not in the spec rejected', 'get_device_interface_realtime', { view: 'interface-stats', device_id: 'Branch-1', query: { 'no-such': '1' } }, /Unknown query parameter/],
+    ['monitoring: missing required parameter rejected', 'get_device_system_realtime', { view: 'crash-log', device_id: 'Branch-1' }, /Missing required query parameter "filename"/],
+    ['monitoring: synced on a view without a synced copy', 'get_device_system_realtime', { view: 'system-info', device_id: 'Branch-1', synced: true }, /no synced copy/],
+    ['monitoring: body on a GET view rejected', 'get_monitoring_info', { view: 'events', body: {} }, /takes no body/],
+    ['monitoring: path traversal in path_params refused', 'get_monitoring_info', { view: 'alarm', path_params: { alarm_uuid: '..' } }, /cannot be/],
+    ['monitoring: query must be an object', 'get_monitoring_info', { view: 'events', query: 'x' }, /query must be an object/],
+    ['query_statistics: deprecated dataset not offered', 'query_statistics', { dataset: 'bfd' }, /dataset must be one of/],
+    ['get_bfd_summary: view summary still needs device_id', 'get_bfd_summary', {}, /device_id is required/],
+    ['run_device_diagnostic refused on a read-only server', 'run_device_diagnostic', { view: 'ping', device_id: 'Branch-1', body: { host: '192.0.2.2' }, confirm: true }, /VMANAGE_ALLOW_WRITE=true/],
+  ]) {
+    monStats.calls = [];
+    r = await tool(m, name, args);
+    check(label, pattern.test(r.error ?? '') && monStats.calls.length === 0, r.error ?? 'not rejected');
+  }
+
+  // Failures from SD-WAN Manager: reported, retried when transient, and the server keeps working.
+  mock.echoStatus = 500;
+  monStats.calls = [];
+  r = await tool(m, 'get_device_interface_realtime', { view: 'interface-stats', device_id: 'Branch-1' });
+  check('monitoring: HTTP 500 reported with the Manager message, not retried', /500/.test(r.error ?? '') && /simulated failure|Server error/.test(r.error ?? '') && monStats.calls.length === 1, r.error ?? 'no error');
+  mock.echoStatus = 503;
+  monStats.calls = [];
+  r = await tool(m, 'get_device_interface_realtime', { view: 'interface-stats', device_id: 'Branch-1' });
+  check('monitoring: HTTP 503 retried with backoff, then reported', !!r.error && monStats.calls.length === 3, `${monStats.calls.length} attempts: ${r.error}`);
+  mock.echoStatus = 0;
+  mock.echoMalformed = true;
+  r = await tool(m, 'get_device_interface_realtime', { view: 'interface-stats', device_id: 'Branch-1' });
+  const malformed = r;
+  mock.echoMalformed = false;
+  r = await tool(m, 'get_device_interface_realtime', { view: 'interface-stats', device_id: 'Branch-1' });
+  check('monitoring: malformed JSON answer handled, next call fine', (!!malformed.error || typeof malformed.value === 'string') && !r.error, `${malformed.error ?? typeof malformed.value} / ${r.error ?? 'ok'}`);
+  mock.echoDelayMs = 2500;
+  let t0 = Date.now();
+  r = await tool(m, 'get_device_interface_realtime', { view: 'interface-stats', device_id: 'Branch-1' });
+  check('monitoring: real-time timeout (VMANAGE_TIMEOUT_MS) reported', !!r.error && Date.now() - t0 < 8000, `${Date.now() - t0} ms: ${r.error}`);
+  mock.echoDelayMs = 0;
+
+  // Large answer: 50,000 rows, returned in pages within the response size limit, filterable and countable.
+  mock.echoRows = 50_000;
+  t0 = performance.now();
+  r = await tool(m, 'get_device_dataplane_realtime', { view: 'tunnel-statistics', device_id: 'Branch-1' });
+  const bigMs = performance.now() - t0;
+  check('monitoring: 50,000-row answer cut to the size limit with nextOffset', r.value?.truncated?.total === 50_000 && r.value.truncated.nextOffset > 0 && r.value.data.length === r.value.truncated.nextOffset, JSON.stringify(r.value?.truncated ?? r.error));
+  t0 = performance.now();
+  r = await tool(m, 'get_device_dataplane_realtime', { view: 'tunnel-statistics', device_id: 'Branch-1', offset: 49_950, limit: 100 });
+  check('monitoring: offset/limit paging over the large answer', r.value?.data?.length === 50 && r.value.page?.total === 50_000 && r.value.data[0].i === 49_950, JSON.stringify(r.value?.page ?? r.error));
+  r = await tool(m, 'get_device_dataplane_realtime', { view: 'tunnel-statistics', device_id: 'Branch-1', count_by: 'state' });
+  check('monitoring: count_by over the large answer', r.value?.countBy?.rows === 50_000 && r.value.data.length === 2, JSON.stringify(r.value?.countBy ?? r.error));
+  console.log(`      50,000-row answer (~5.6 MB JSON) from the local mock: ${bigMs.toFixed(0)} ms to first page`);
+  const afterBig = usage();
+  check('monitoring: server memory stays bounded after three 50,000-row answers', afterBig.rssMb < 400, `${afterBig.rssMb.toFixed(0)} MB RSS`);
+  console.log(`      server process after the large answers: RSS ${afterBig.rssMb.toFixed(0)} MB, ${(afterBig.cpuS - afterSweep.cpuS).toFixed(2)} s CPU for them`);
+  mock.echoRows = 0;
+
+  // Concurrency: identical concurrent reads share one request; distinct ones never exceed VMANAGE_MAX_CONCURRENCY (8).
+  mock.echoDelayMs = 100;
+  // The request abandoned by the timeout test is still open on the mock until its delayed reply.
+  while (monStats.inFlight) await new Promise((resolve) => setTimeout(resolve, 50));
+  monStats.calls = [];
+  let parallel = await Promise.all(Array.from({ length: 10 }, () => tool(m, 'get_device_system_realtime', { view: 'ntp-status', device_id: 'Branch-1' })));
+  check('monitoring: 10 identical concurrent calls share one Manager request', parallel.every((x) => !x.error) && monStats.calls.length === 1, `${monStats.calls.length} requests`);
+  monStats.maxInFlight = 0;
+  monStats.calls = [];
+  t0 = performance.now();
+  parallel = await Promise.all(
+    Array.from({ length: 40 }, (_, i) => tool(m, 'get_device_interface_realtime', { view: 'interface-stats', device_id: ['Branch-1', 'Branch-2'][i % 2], query: { 'vpn-id': String(i) } }))
+  );
+  const parallelMs = performance.now() - t0;
+  check(
+    'monitoring: 40 distinct parallel calls all succeed with at most 8 in flight on the Manager',
+    parallel.every((x) => !x.error) && monStats.calls.length === 40 && monStats.maxInFlight === 8 && parallelMs >= 480,
+    `max in flight ${monStats.maxInFlight}, ${monStats.calls.length} requests, ${parallelMs.toFixed(0)} ms`
+  );
+  console.log(`      40 distinct parallel calls (100 ms simulated Manager latency): ${parallelMs.toFixed(0)} ms, max ${monStats.maxInFlight} in flight`);
+  mock.echoDelayMs = 0;
+  await m.close();
+
+  // Diagnostics: listed and runnable only with writes enabled and explicit confirmation.
+  const wd = await connect({ VMANAGE_ALLOW_WRITE: 'true' });
+  check('run_device_diagnostic listed when writes are enabled', (await wd.listTools()).tools.some((x) => x.name === 'run_device_diagnostic'));
+  monStats.calls = [];
+  r = await tool(wd, 'run_device_diagnostic', { view: 'ping', device_id: 'Branch-1', body: { host: '192.0.2.2', vpn: '0' } });
+  check('run_device_diagnostic needs confirm: true', /confirm: true/.test(r.error ?? '') && monStats.calls.length === 0, r.error ?? 'not rejected');
+  r = await tool(wd, 'run_device_diagnostic', { view: 'ping', device_id: 'Branch-1', body: { host: '192.0.2.2', vpn: '0' }, confirm: true });
+  const ping = monStats.calls.at(-1);
+  check('run_device_diagnostic ping', !r.error && ping?.method === 'POST' && ping.path === '/dataservice/device/tools/ping/192.0.2.11' && ping.body?.host === '192.0.2.2', JSON.stringify(ping ?? r.error));
+  r = await tool(wd, 'run_device_diagnostic', { view: 'traceroute', device_id: 'Branch-1', confirm: true });
+  check('run_device_diagnostic: body required by the spec', /requires a request body/.test(r.error ?? ''), r.error ?? 'accepted');
+  await wd.close();
+  mock.echo = false;
 }
 
 // Multi-tenant: fixed tenant, per-call switching, cache isolation, expired VSessionId.

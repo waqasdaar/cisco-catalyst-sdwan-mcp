@@ -93,7 +93,7 @@ const METHODS = ['get', 'post', 'put', 'delete', 'patch'];
 const SENSITIVE_PATH = /(token|password|credential|bootstrap|privatekey|\/otp(\/|$))/i;
 // POSTs whose operationId marks them as queries that do not change state.
 const READ_POST_OPERATION =
-  /^(get|list|fetch|find|search|query)|^post(AggregationData|DocCount|Page|Count|RawAlarmData)|^(cellular|unique)Aggregation$/i;
+  /^(get|list|fetch|find|search|query)|^post(AggregationData|DocCount|Page|Count|RawAlarmData|Events$)|^(cellular|unique)Aggregation$/i;
 // Query-style POSTs that nevertheless start device sessions or workflows.
 const READ_POST_EXCLUDED_PATH = /^\/(stream|troubleshooting)\/|\/sync$|^\/setting\/configuration\/webserver\/certificate$/;
 // GETs that change vManage or device state.
@@ -293,6 +293,12 @@ export class ApiCatalog {
 
   allOperations(): ApiOperation[] {
     return this.operations;
+  }
+
+  /** The operation for a method and path template exactly as the spec writes it (without /dataservice). */
+  async operation(method: HttpMethod, path: string): Promise<ApiOperation | undefined> {
+    await this.load();
+    return this.operations.find((o) => o.method === method && o.path === path);
   }
 
   async categories(filter?: string) {

@@ -21,6 +21,7 @@ import { maskConfig, maskLine, reviewConfig, SIG_LINES } from './services/config
 import { planTemplate, TemplateMigration, type MigrationDeps, type MigrationState } from './services/templateMigration.js';
 import { shownPlan } from './services/configVariables.js';
 import { MigrationStore } from './services/migrationStore.js';
+import { MONITORING_VIEWS, STATISTICS_DATASETS, STATISTICS_OPERATIONS, view as monitoringView } from './services/monitoringCatalog.js';
 import { loadConfig, type VManageConfig } from './utils/config.js';
 
 const MAX_RESPONSE_CHARS = 200_000;
@@ -389,7 +390,30 @@ const WRITE_CONFIRM = {
   confirm: { type: 'boolean', description: 'Must be true, only after the user explicitly approves this change' },
 };
 const WRITE_NOTE = 'Changes configuration: needs VMANAGE_ALLOW_WRITE=true on the server and confirm: true after explicit user approval.';
-const WRITE_TOOL = /^(create|update|delete|associate|clone|deploy)_/;
+const WRITE_TOOL = /^(create|update|delete|associate|clone|deploy|run)_/;
+
+// Arguments of the view-based monitoring tools; parameters are checked against the Manager's own API spec.
+const MONITORING_ARGS = {
+  device_id: { type: 'string', description: 'Device (hostname, system IP, UUID or serial) for device views' },
+  query: { type: 'object', additionalProperties: true, description: 'Other query parameters by API name, e.g. {"vpn-id":"10"}' },
+  path_params: { type: 'object', additionalProperties: true, description: 'Path parameters not taken from device_id, e.g. {"type":"loss_percentage"}' },
+};
+const MONITORING_BODY = { body: { type: 'object', description: 'Request body of POST (*-query) views: the vManage query' } };
+// Real-time tables are returned whole; offset/limit/filter and the response size limit page through them.
+const MONITORING_MAX_ITEMS = Number.MAX_SAFE_INTEGER;
+const DEVICE_PARAM: Record<string, 'ip' | 'uuid'> = { deviceId: 'ip', deviceIp: 'ip', deviceIP: 'ip', deviceUUID: 'uuid', uuid: 'uuid' };
+
+/** A tool whose `view` selects one Monitoring / Real-Time Monitoring / Troubleshooting operation. */
+function monitoringTool(name: string, description: string, extra: Record<string, object> = {}): Tool {
+  return {
+    name,
+    description: `${description} Omit view to list the views with their endpoint and parameters.`,
+    inputSchema: {
+      type: 'object',
+      properties: { view: { type: 'string', enum: Object.keys(MONITORING_VIEWS[name]) }, ...MONITORING_ARGS, ...extra },
+    },
+  };
+}
 
 type HierarchyNode = Record<string, unknown> & { name?: string; hierarchyPath?: string; deviceCount?: number; data?: Record<string, unknown> };
 const hierarchyNodeId = (n: HierarchyNode) => String(n.id ?? n.uuid ?? '');
@@ -586,6 +610,11 @@ const isOverload = (err: unknown) => {
 
 const dataOf = (body: unknown) => (body as { data?: unknown })?.data ?? body;
 const errorMessage = (err: unknown) => (err instanceof Error ? err.message : String(err));
+const objectArg = (value: unknown, name: string): Record<string, unknown> => {
+  if (value === undefined || value === null) return {};
+  if (typeof value !== 'object' || Array.isArray(value)) throw new Error(`${name} must be an object`);
+  return { ...(value as Record<string, unknown>) };
+};
 
 /** Device counts per type and reachability. */
 function summarizeDevices(rows: DeviceRow[]) {
@@ -811,7 +840,7 @@ export class CatalystSdwanMCPServer {
     this.server = new Server(
       {
         name: 'catalyst-sdwan-mcp',
-        version: '1.2.0',
+        version: '1.3.0',
       },
       {
         capabilities: {
@@ -1127,11 +1156,14 @@ export class CatalystSdwanMCPServer {
       },
       {
         name: 'get_control_summary',
-        description: 'Get control plane summary (device count) for a device.',
+        description:
+          'Get control plane summary (device count) for a device. Other views: device-summary, connections-info, region-connections, wan-interface-color.',
         inputSchema: {
           type: 'object',
           properties: {
             device_id: { type: 'string', description: 'Device ID or system-ip' },
+            view: { type: 'string', enum: ['summary', ...Object.keys(MONITORING_VIEWS.get_control_summary)], description: 'Default: summary' },
+            query: MONITORING_ARGS.query,
           },
           required: ['device_id'],
         },
@@ -1344,13 +1376,15 @@ export class CatalystSdwanMCPServer {
       },
       {
         name: 'get_bfd_summary',
-        description: 'Get BFD session summary for a device.',
+        description:
+          'Get BFD session summary for a device (view summary). Device views: device-summary, device-state, device-tloc-state, tloc-interface-map, history. Fabric views (no device_id): links (query state), status, sites-summary (query vpnId), sites-detail, remote-sites (query site-id), tloc-detail.',
         inputSchema: {
           type: 'object',
           properties: {
-            device_id: { type: 'string', description: 'Device ID or system-ip' },
+            device_id: { type: 'string', description: 'Device ID or system-ip (device views)' },
+            view: { type: 'string', enum: ['summary', ...Object.keys(MONITORING_VIEWS.get_bfd_summary)], description: 'Default: summary' },
+            query: MONITORING_ARGS.query,
           },
-          required: ['device_id'],
         },
       },
       {
@@ -2569,6 +2603,53 @@ export class CatalystSdwanMCPServer {
           required: ['device_id'],
         },
       },
+
+      // === Monitoring and troubleshooting (SD-WAN Manager 26.2): one view per API operation ===
+      monitoringTool(
+        'get_device_system_realtime',
+        'Device system state (real time): system info/clock/CPU/memory, hardware, software/SMU, reboots, crash logs, licenses, NTP, power, SFP, GNSS, AAA users, PKI, NFVIS/CSP, VMs, netstat/ss/nslookup.',
+        { synced: SYNCED_OPTION }
+      ),
+      monitoringTool(
+        'get_device_interface_realtime',
+        'Device interfaces and access (real time): interface/queue/QoS/error stats, LACP, switchport, VLAN, VRRP, PPP(oE), DHCP, 802.1X, cellular/EIOLTE/LTE450, VDSL, WLAN/wireless, CFM, raw sockets, voice.'
+      ),
+      monitoringTool(
+        'get_device_security_realtime',
+        'Device security (real time): IPsec/IKE SAs, IPv4 policy (ACL, data/app-route, QoS map), ZBFW, UTD/IPS/URL-F, Umbrella, DNS defense, NGFW, SSL proxy, SIG/SSE tunnels, TrustSec, security health and advisories.',
+        MONITORING_BODY
+      ),
+      monitoringTool(
+        'get_device_dataplane_realtime',
+        'Device data plane (real time): tunnel/BFD/IPsec/FEC stats, FIB and route table, NAT, per-tunnel QoS, QFP, drops, AppQoE/DRE/TCP opt, DPI, cflowd/FNF, app hosting, Cloud OnRamp exits, trackers.',
+        MONITORING_BODY
+      ),
+      monitoringTool(
+        'get_monitoring_info',
+        'Manager-side monitoring and troubleshooting: alarms and events (queries, severity, counts), device/site/tunnel/app health, device state and statistics data, approute/DPI/QFP summaries, search, admin-tech and NWPI history, device bring-up, device groups.',
+        MONITORING_BODY
+      ),
+      {
+        name: 'query_statistics',
+        description:
+          'Query a SD-WAN Manager statistics dataset (Monitoring statistics APIs). operation: fields / query-fields (schema), raw, aggregation, app-aggregation, doccount, page (scrollId). body is the vManage query, e.g. {"query":{"condition":"AND","rules":[{"field":"entry_time","type":"date","operator":"last_n_hours","value":["1"]}]},"aggregation":{...}}.',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            dataset: { type: 'string', enum: Object.keys(STATISTICS_DATASETS) },
+            operation: { type: 'string', enum: Object.keys(STATISTICS_OPERATIONS), description: 'Default: raw' },
+            body: { type: 'object', description: 'vManage statistics query (POST); without it, raw/page use GET' },
+            query: MONITORING_ARGS.query,
+            all_pages: { type: 'boolean', description: 'operation page: follow scrollId until all rows (max 50 pages)' },
+          },
+          required: ['dataset'],
+        },
+      },
+      monitoringTool(
+        'run_device_diagnostic',
+        `Run ping, traceroute, nping, tunnel-path or service-path from a device (via SD-WAN Manager). body e.g. ping {"host":"10.1.12.16","vpn":"0","source":"10.1.12.15","count":"5"}. Generates traffic on the device, so it is gated like a change: needs VMANAGE_ALLOW_WRITE=true on the server and confirm: true after explicit user approval.`,
+        { ...MONITORING_BODY, ...WRITE_CONFIRM }
+      ),
     ];
   }
 
@@ -2863,6 +2944,7 @@ export class CatalystSdwanMCPServer {
       case 'get_control_connections_history':
         return deviceGet('/dataservice/device/control/connectionshistory');
       case 'get_control_summary':
+        if (args.view !== undefined && args.view !== 'summary') return this.monitoringCall(name, args, 'read');
         return this.apiService.get(addDeviceId('/dataservice/device/control/summary'));
       case 'get_control_statistics':
         return this.apiService.get(addDeviceId('/dataservice/device/control/statistics'));
@@ -2950,6 +3032,8 @@ export class CatalystSdwanMCPServer {
           ? deviceGet('/dataservice/device/bfd/synced/sessions')
           : this.apiService.get(addDeviceId('/dataservice/device/bfd/sessions'));
       case 'get_bfd_summary':
+        if (args.view !== undefined && args.view !== 'summary') return this.monitoringCall(name, args, 'read');
+        if (!deviceId) throw new Error('device_id is required for view summary');
         return this.apiService.get(addDeviceId('/dataservice/device/bfd/summary'));
       case 'get_bfd_tloc':
         return this.apiService.get(addDeviceId('/dataservice/device/bfd/tloc'));
@@ -3495,6 +3579,35 @@ export class CatalystSdwanMCPServer {
         return this.apiService.get(addDeviceId('/dataservice/device/tloc'));
       case 'get_bridge_table':
         return this.apiService.get(addDeviceId('/dataservice/device/bridge/table'));
+
+      case 'get_device_system_realtime':
+      case 'get_device_interface_realtime':
+      case 'get_device_security_realtime':
+      case 'get_device_dataplane_realtime':
+      case 'get_monitoring_info':
+        return this.monitoringCall(name, args, 'read');
+      case 'run_device_diagnostic':
+        return this.monitoringCall(name, args, 'write');
+      case 'query_statistics': {
+        const base = pick('dataset', STATISTICS_DATASETS, '');
+        const operation = pick('operation', Object.fromEntries(Object.keys(STATISTICS_OPERATIONS).map((k) => [k, k])), 'raw');
+        const spec = STATISTICS_OPERATIONS[operation];
+        const path = `/statistics${base ? `/${base}` : ''}${spec.path}`;
+        const query = objectArg(args.query, 'query');
+        // Without a body, the GET variant (query as a JSON string parameter) is used when its required parameters are given.
+        const get = args.body === undefined ? await this.catalog.operation('GET', path) : undefined;
+        const getReady = get?.spec.parameters?.every((p) => p.in !== 'query' || !p.required || query[p.name] !== undefined);
+        const op = (getReady ? get : undefined) ?? (await this.catalog.operation(spec.method ?? 'GET', path)) ?? get;
+        if (!op) throw new Error(`Dataset ${args.dataset} has no ${operation} operation in this Manager's API`);
+        if (op.deprecated || op.access !== 'read') throw new Error(`${op.operationId} is ${op.deprecated ? 'deprecated' : 'not a read'}; not used`);
+        return this.catalog.call({
+          operationId: op.operationId,
+          query,
+          body: op.method === 'POST' && op.spec.requestBody ? args.body ?? {} : args.body,
+          maxItems: MONITORING_MAX_ITEMS,
+          allPages: args.all_pages === true,
+        });
+      }
 
       case 'get_ux2_overview': {
         const solution = String(args.solution ?? 'sdwan');
@@ -4105,6 +4218,76 @@ export class CatalystSdwanMCPServer {
     const device = await this.findDevice(input);
     if (!device.uuid) throw new Error(`Device "${input}" has no UUID`);
     return device.uuid;
+  }
+
+  /**
+   * Runs one view of a monitoring tool: the operation is taken from the connected Manager's API spec, so a deprecated
+   * operation, one this Manager lacks, or one that changes state (for a read tool) is refused before any request.
+   * device_id fills the operation's device parameter (deviceId / deviceIP as system IP, deviceUUID / uuid as UUID).
+   */
+  private async monitoringCall(tool: string, args: Record<string, unknown>, access: 'read' | 'write'): Promise<unknown> {
+    const views = MONITORING_VIEWS[tool];
+    if (args.view === undefined) return this.listMonitoringViews(tool);
+    const name = String(args.view);
+    if (!Object.hasOwn(views, name)) throw new Error(`view must be one of: ${Object.keys(views).join(', ')}`);
+    const v = monitoringView(views[name]);
+    if (args.synced === true && !v.synced) throw new Error(`View ${name} has no synced copy; omit synced`);
+    const path = args.synced === true ? v.synced! : v.path;
+    const method = v.method ?? 'GET';
+    const op = await this.catalog.operation(method, path);
+    if (!op) throw new Error(`View ${name} (${method} /dataservice${path}) is not in this Manager's API (spec ${this.catalog.version ?? 'unknown'})`);
+    if (op.deprecated) throw new Error(`View ${name}: ${op.operationId} is deprecated on this Manager; not used`);
+    if (op.access !== access) throw new Error(`View ${name}: ${op.operationId} is classified ${op.access} (${op.accessReason}); not used by this tool`);
+    if (method === 'GET' && args.body !== undefined) throw new Error(`View ${name} is a GET and takes no body (use query)`);
+
+    const params = op.spec.parameters ?? [];
+    const query = objectArg(args.query, 'query');
+    const pathParams = objectArg(args.path_params, 'path_params');
+    const slots = params.filter((p) => (p.in === 'query' || p.in === 'path') && Object.hasOwn(DEVICE_PARAM, p.name));
+    if (args.device_id !== undefined) {
+      if (!slots.length) throw new Error(`View ${name} is fabric-wide and takes no device_id`);
+      for (const p of slots) {
+        const target = p.in === 'path' ? pathParams : query;
+        if (target[p.name] !== undefined) continue;
+        const ref = String(args.device_id);
+        target[p.name] = DEVICE_PARAM[p.name] === 'uuid' ? await this.resolveDeviceUuid(ref) : await this.resolveDevice(ref);
+      }
+    } else {
+      const missing = slots.find((p) => (p.in === 'path' || p.required) && (p.in === 'path' ? pathParams : query)[p.name] === undefined);
+      if (missing) throw new Error(`device_id is required for view ${name}`);
+    }
+    return this.catalog.call({
+      operationId: op.operationId,
+      pathParams,
+      query,
+      body: method === 'POST' ? args.body ?? (op.spec.requestBody?.required ? undefined : {}) : undefined,
+      confirm: args.confirm === true,
+      maxItems: MONITORING_MAX_ITEMS,
+    });
+  }
+
+  /** The views of a monitoring tool with their endpoint, device handling and parameters (required ones end in *). */
+  private async listMonitoringViews(tool: string) {
+    const rows = await Promise.all(
+      Object.entries(MONITORING_VIEWS[tool]).map(async ([name, raw]) => {
+        const v = monitoringView(raw);
+        const op = await this.catalog.operation(v.method ?? 'GET', v.path);
+        if (!op) return { view: name, endpoint: `${v.method ?? 'GET'} /dataservice${v.path}`, available: false };
+        const params = op.spec.parameters ?? [];
+        const device = params.find((p) => Object.hasOwn(DEVICE_PARAM, p.name));
+        const other = params.filter((p) => !Object.hasOwn(DEVICE_PARAM, p.name) && (p.in === 'query' || p.in === 'path'));
+        return {
+          view: name,
+          endpoint: `${op.method} /dataservice${op.path}`,
+          summary: op.summary,
+          device: device ? (device.in === 'path' || device.required ? 'required' : 'optional') : 'none',
+          ...(v.synced ? { synced: true } : {}),
+          ...(other.length ? { params: other.map((p) => `${p.in === 'path' ? 'path:' : ''}${p.name}${p.in === 'path' || p.required ? '*' : ''}`) } : {}),
+          ...(op.method === 'POST' ? { body: op.spec.requestBody?.required ? 'required' : 'optional' } : {}),
+        };
+      })
+    );
+    return { tool, views: rows };
   }
 
   private async listGroups(kind: 'config-group' | 'policy-group' | 'topology-group', solution?: string, groupName?: string): Promise<UxGroup[]> {

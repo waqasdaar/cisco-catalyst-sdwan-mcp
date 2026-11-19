@@ -1,6 +1,6 @@
 # Cisco Catalyst SD-WAN MCP Server
 
-[![Version](https://img.shields.io/badge/version-1.2.0-blue.svg)](https://github.com/waqasdaar/cisco-catalyst-sdwan-mcp)
+[![Version](https://img.shields.io/badge/version-1.3.0-blue.svg)](https://github.com/waqasdaar/cisco-catalyst-sdwan-mcp)
 [![CI](https://github.com/waqasdaar/cisco-catalyst-sdwan-mcp/actions/workflows/ci.yml/badge.svg)](https://github.com/waqasdaar/cisco-catalyst-sdwan-mcp/actions/workflows/ci.yml)
 
 
@@ -8,8 +8,9 @@ A [Model Context Protocol (MCP)](https://modelcontextprotocol.io/) server for **
 
 All requests go through vManage. The server never connects to routers directly.
 
-- **163 MCP tools** (121 listed on a read-only server, 163 with writes enabled): 159 purpose-built tools, including fabric-wide health, BFD and TLOC checks in a single call, BGP, OSPF, OSPFv3, EIGRP, multicast (IGMP, PIM, MFIB) and IPv6 monitoring and configuration (UX 2.0 features and UX 1.0 templates/policy objects), CLI add-on configuration (for example RIP/RIPng), UX 2.0 configuration, policy and topology groups (read, preview, create, change, associate devices, set variables, deploy), feature profiles and the network hierarchy (regions, areas, sites and their Cyber Vision network settings), plus 4 general tools that reach **every operation in the vManage OpenAPI spec** (4,128 operations on 26.2).
-- **Lean tool list.** Write tools are listed only when `VMANAGE_ALLOW_WRITE=true`, so a read-only server offers 121 tools (under VS Code's 128-tool limit) in a tool list under 110 KB, about a third smaller than before. Assistants answer faster and spend fewer tokens on every request.
+- **170 MCP tools** (127 listed on a read-only server, 170 with writes enabled): 166 purpose-built tools, including fabric-wide health, BFD and TLOC checks in a single call, BGP, OSPF, OSPFv3, EIGRP, multicast (IGMP, PIM, MFIB) and IPv6 monitoring and configuration (UX 2.0 features and UX 1.0 templates/policy objects), CLI add-on configuration (for example RIP/RIPng), UX 2.0 configuration, policy and topology groups (read, preview, create, change, associate devices, set variables, deploy), feature profiles and the network hierarchy (regions, areas, sites and their Cyber Vision network settings), plus 4 general tools that reach **every operation in the vManage OpenAPI spec** (4,128 operations on 26.2).
+- **Every supported monitoring and troubleshooting API of SD-WAN Manager 26.2** (1.3.0). The Monitoring, Real-Time Monitoring and Troubleshooting operations of the 26.2 API (1,114 in the 26.2.1 spec) are each reachable through a dedicated tool: 933 through a tool or tool view, the rest excluded on purpose with the reason recorded (51 deprecated, 84 that change state or start sessions, 46 reads that return files, configuration text with secrets, or the data of a streaming session). See [Monitoring and troubleshooting](#monitoring-and-troubleshooting-sd-wan-manager-262-7).
+- **Lean tool list.** Write tools are listed only when `VMANAGE_ALLOW_WRITE=true`, so a read-only server offers 127 tools (under VS Code's 128-tool limit). The monitoring tools group their operations by `view` rather than one tool per endpoint; the read-only tool list is about 127 KB (108 KB in 1.2.0).
 - **Read-only by default.** Operations that change configuration or state are disabled unless you enable them, and each call then needs explicit confirmation.
 - **BGP, OSPF, OSPFv3 and EIGRP end to end.** Real-time neighbors, routes, interfaces, topology and LSDB; UX 2.0 feature reads and writes for SD-WAN and SD-Routing profiles; UX 1.0 feature templates (list, read, schema, create, update, delete, clone). Every BGP, OSPF and EIGRP operation in the 26.2 spec has a dedicated tool.
 - **Multicast end to end.** IGMP, PIM, overlay multicast (topology, RPF, replicators, tunnels) and MFIB monitoring; UX 2.0 multicast features (read, schema, write); UX 1.0 IGMP, PIM and multicast templates. Every multicast operation in the 26.2 spec has a dedicated tool.
@@ -41,7 +42,7 @@ flowchart LR
 
   subgraph MCP["catalyst-sdwan MCP server · Node.js"]
     direction TB
-    T["Tool router<br/>156 dedicated + 4 general tools"]
+    T["Tool router<br/>166 dedicated + 4 general tools"]
     R["Name resolution<br/>hostname · system IP · UUID<br/>group · profile · hierarchy node"]
     G{"Write gate<br/>VMANAGE_ALLOW_WRITE<br/>+ confirm: true"}
     C["API catalog<br/>checks each call against the OpenAPI spec"]
@@ -103,10 +104,12 @@ A question goes from the AI client to the matching tool. The server resolves nam
 - [Architecture](#architecture)
 - [Quick start](#quick-start)
 - [Versions and compatibility](#versions-and-compatibility)
+  - [What's new in 1.3.0](#whats-new-in-130)
   - [What's new in 1.2.0](#whats-new-in-120)
 - [Supported functionality](#supported-functionality)
   - [General API tools](#general-api-tools-full-vmanage-api)
   - [Dedicated tools (full reference)](#dedicated-tools)
+  - [Monitoring and troubleshooting (SD-WAN Manager 26.2)](#monitoring-and-troubleshooting-sd-wan-manager-262-7)
   - [Routing protocols: BGP, OSPF, OSPFv3, EIGRP](#routing-protocols-at-a-glance)
   - [Multicast (IGMP, PIM, MFIB)](#multicast-igmp-pim-overlay-multicast-mfib-10)
   - [OMP, and large OMP tables](#omp--overlay-management-protocol-9)
@@ -155,6 +158,12 @@ Ask questions about your SD-WAN fabric in plain language and get answers built f
 | **Network hierarchy (UX 2.0)** | "Show the regions, areas and sites. Which devices are in site 105? Which Cyber Vision centers are configured?" | `get_network_hierarchy`, `get_hierarchy_cybervision`, `create_hierarchy_cybervision` (opt-in) |
 | **Templates and policies (UX 1.0)** | "Which device templates and centralized policies are in use? Which BGP, OSPF, EIGRP or PIM templates exist?" | `list_device_templates`, `get_attached_devices`, `list_policies`, `list_routing_templates` |
 | **Operations** | "Any critical alarms? Certificates expiring? Is the Manager cluster healthy?" | `list_alarms`, `get_certificate_summary`, `get_cluster_status` |
+| **Device health and hardware** | "Did Branch-1 reboot or crash? Any hardware alarms, SFP errors, licence or NTP problems?" | `get_device_system_realtime` (`reboot-history`, `crash-logs`, `hardware-alarms`, `sfp-diagnostic`, `ntp-status`, ...) |
+| **Interfaces, WAN transports and access** | "Which interfaces on Branch-2 have errors or drops? How is its LTE signal? Any 802.1X failures?" | `get_device_interface_realtime` (`interface-errors`, `interface-queues`, `cellular-radio`, `dot1x-clients`, ...) |
+| **IPsec, policy and security** | "Are the IKE sessions up? Which ACLs and ZBFW zone pairs drop traffic? Is UTD up to date?" | `get_device_security_realtime` (`ipsec-ike-sessions`, `policy-acl-counters`, `zbfw-drops`, `utd-engine-status`, ...) |
+| **Tunnels, forwarding, QoS and app optimisation** | "Tunnel loss and FEC per tunnel? Is the route in the FIB? QFP drops? AppQoE status?" | `get_device_dataplane_realtime` (`tunnel-statistics`, `fib`, `qfp-drops`, `appqoe-status`, ...) |
+| **Alarms, events and historical statistics** | "Critical events in the last 24 h? Interface throughput trend for site 100? Worst tunnels by loss?" | `get_monitoring_info` (`events-by-severity`, `approute-tunnels`, ...), `query_statistics` |
+| **Active troubleshooting (opt-in)** | "Ping 10.1.1.1 from Branch-1 in VPN 10. Traceroute to the hub." | `run_device_diagnostic` (`VMANAGE_ALLOW_WRITE=true`, `confirm: true`) |
 | **Anything else in the API** | "Show IPsec/IKE sessions", "audit log for today" | `search_api_operations` → `describe_api_operation` → `call_api_operation` |
 | **Controlled changes (opt-in)** | Any POST/PUT/DELETE operation, only after you approve it | The routing write tools, or `call_api_operation`, with `confirm: true` and `VMANAGE_ALLOW_WRITE=true` |
 
@@ -221,13 +230,30 @@ See [Installation](#installation), [Configuration](#configuration) and [Integrat
 
 | Component | Version | Notes |
 |---|---|---|
-| MCP server | **1.2.0** | `package.json` version, reported in the MCP `initialize` response |
-| Catalyst SD-WAN Manager | **Tested on 26.2.1** | Controllers 26.2.1, WAN edges Catalyst 8000V IOS XE 26.02.01 |
+| MCP server | **1.3.0** | `package.json` version, reported in the MCP `initialize` response |
+| Catalyst SD-WAN Manager API | **26.2** | Bundled spec 26.2.1; monitoring and troubleshooting checked against Cisco's [26.2 Monitoring and Troubleshooting API reference](https://developer.cisco.com/docs/sd-wan/26-2/api-reference-monitoring-and-troubleshooting-overview/) (document 26.2.0+2026-07-29) |
+| Catalyst SD-WAN Manager (tested) | **Tested on 26.2.1** | Controllers 26.2.1, WAN edges Catalyst 8000V IOS XE 26.02.01. The 1.3.0 monitoring tools were run live with `npm run test:monitoring` (701 read calls; results under [Live tests](#live-tests)) |
 | Catalyst SD-WAN Manager (auth) | 20.18.1+ for JWT | Older releases: set `VMANAGE_USE_JWT=false` (session cookie + XSRF token) |
 | Node.js | 20.12+ | CI runs the offline tests on Node.js 20, 22 and 24; tested live on Node.js 26 |
 | MCP TypeScript SDK | `@modelcontextprotocol/sdk` ^1.0.4 | Tested with 1.27.1 |
 | Transport | stdio | The client starts the server as a child process |
 | MCP clients tested | OpenChamber 2.5 (bundled OpenCode 2.0.32), OpenCode 1.19 | Other clients use their documented standard MCP config |
+
+### What's new in 1.3.0
+
+Dedicated tools for every supported Monitoring, Real-Time Monitoring and Troubleshooting operation of the SD-WAN Manager 26.2 API. Existing tools and calls are unchanged.
+
+| Change | Before (1.2.0) | Now (1.3.0) |
+|---|---|---|
+| Monitoring and troubleshooting coverage | 112 of the 1,114 operations through dedicated tools; the rest only through `call_api_operation` | 933 through dedicated tools (112 existing + 821 new views); every other operation excluded with a recorded reason ([inventory](#monitoring-and-troubleshooting-inventory)) |
+| New read tools | – | `get_device_system_realtime` (81 views, 9 with a synced copy), `get_device_interface_realtime` (84), `get_device_security_realtime` (82), `get_device_dataplane_realtime` (86), `get_monitoring_info` (157), `query_statistics` (36 datasets, up to 7 operations each) |
+| New opt-in tool | – | `run_device_diagnostic`: ping, traceroute, nping, tunnel path, service path (needs `VMANAGE_ALLOW_WRITE=true` and `confirm: true`) |
+| Existing tools extended | – | `get_bfd_summary` (`view`: 11 more BFD operations, device and fabric-wide), `get_control_summary` (`view`: 4 more control-plane operations). Their default view is unchanged |
+| Deprecated APIs | – | Never called: the 51 deprecated operations are not offered, and a view whose operation is deprecated on the connected Manager is refused |
+| Tool count | 121 read-only / 163 with writes | 127 read-only / 170 with writes (still under VS Code's 128-tool limit) |
+| Concurrency cap | A request slot freed while others waited could be taken by a newcomer, so `VMANAGE_MAX_CONCURRENCY` could be exceeded by one | The freed slot passes straight to the next waiting request; the cap holds exactly (tested with 40 parallel calls) |
+| `call_api_operation` | `postEvents` (POST `/event`, an event query) was treated as a write | Treated as the read-only query it is |
+| Checks | 354 offline checks | 388 offline checks, plus `npm run verify:monitoring` (every operation accounted for, every view a supported 26.2.1 operation) |
 
 ### What's new in 1.2.0
 
@@ -631,7 +657,1224 @@ The write tools follow the same rules as the other write tools (`VMANAGE_ALLOW_W
 | `get_cluster_status` | Manager cluster health per node | – | "Is the vManage cluster healthy?" |
 | `list_custom_apps` | Custom application definitions | – | "List the custom applications." |
 
-Anything without a dedicated tool, such as OSPF, EIGRP, NAT, IPsec/IKE, QoS, multicast, cellular, UTD, statistics or the audit log, is available through `search_api_operations` and `call_api_operation`.
+Anything else in the API, such as the audit log, software images or certificates management, is available through `search_api_operations` and `call_api_operation`.
+
+#### Monitoring and troubleshooting: SD-WAN Manager 26.2 (7)
+
+These tools cover the [Monitoring and Troubleshooting](https://developer.cisco.com/docs/sd-wan/26-2/api-reference-monitoring-and-troubleshooting-overview/) section of the SD-WAN Manager 26.2 API: Monitoring, Real-Time Monitoring and Troubleshooting. Cisco's 26.2 reference (document 26.2.0+2026-07-29) has 1,094 operations, all present in the bundled 26.2.1 spec, which adds 20 more (GNSS, LTE450, raw socket, file-based data collection): 1,114 in all.
+
+One tool per operation would mean more than 900 tools, far past the 128 tools VS Code accepts. Each tool therefore groups an area's operations under `view`: one view is one API operation (method and endpoint), with its own parameters. Omit `view` and the tool lists its views with endpoint, summary, device handling and parameters (required ones end in `*`).
+
+| Tool | Views | What it covers | Key parameters | Example prompt |
+|---|---:|---|---|---|
+| `get_device_system_realtime` | 81 (+9 synced) | System info, clock, CPU and memory, hardware inventory/environment/alarms/errors, software and SMUs, reboot history, crash logs, licences, NTP, power, SFP diagnostics, GNSS, geofencing, ignition, feature list, commit list, AAA servers and users, logging, PKI trustpoints, insecure configuration, NFVIS/CSP and VMs, virtual applications, netstat/ss/nslookup, on-demand status | `view`, `device_id`, `synced`, `query`, `path_params` | "Did Branch-1 crash or reboot this week?" |
+| `get_device_interface_realtime` | 84 | Interface, error, queue, QoS, port, packet-size and ARP statistics, serial, TrustSec and VPN interfaces, LACP, switchport, VLAN, VRRP, PPP and PPPoE, DHCP client/server, 802.1X, bridge, transport connections, cellular, EIOLTE, LTE450, VDSL, WLAN and wireless, CFM, raw sockets, voice | `view`, `device_id`, `query` | "Which interfaces on Branch-2 have input errors?" |
+| `get_device_security_realtime` | 82 | IPsec and IKE SAs and sessions (including pairwise keys), IPv4 ACL names/associations/counters/policers, data and app-route policy filters, QoS map/scheduler, policy from the Controller, identity bindings and pxGrid, ZBFW and zone pairs, policer, UTD, Umbrella, DNS defense, NGFW, SSL proxy, SIG and SSE tunnels, TrustSec, security device health and advisories, firewall/IPS/URL-F per device | `view`, `device_id`, `query`, `body` | "Are the IKE sessions on Hub-1 up?" |
+| `get_device_dataplane_realtime` | 86 | Tunnel, BFD, IPsec, FEC, GRE keepalive and packet-duplication statistics, FIB and route table, NAT, per-tunnel QoS, QFP resources and drops, SD-WAN drop statistics, AppQoE, DRE, TCP optimisation and proxy, DPI, cflowd collectors/templates and FNF, app hosting, Cloud OnRamp gateway and local exits, endpoint and static-route trackers | `view`, `device_id`, `query`, `body` | "Show FEC recovery per tunnel on Branch-1." |
+| `get_monitoring_info` | 157 | Alarms (queries, counts, severity, top N, fields, notification rules, underlay), events (queries, severity, components, types), device and hardware health, device status and counters, TLOC utilisation, CDP/LLDP neighbours, boot-up time, device state and statistics data, approute tunnel/transport summaries, device/tunnel/site/application health, QFP drop, temperature, interface, DPI, QoS, SDRA, power, crypto VPN, EIOLTE and network-availability summaries, statistics processing status and bulk-download Managers, search, server info, device bring-up and control-connection troubleshooting, admin-tech lists, file-based data-collection status, NWPI task/trace history, log sessions, device groups | `view`, `device_id`, `query`, `path_params`, `body` | "Critical events at site 100 in the last 24 hours?" |
+| `query_statistics` | 36 datasets | The statistics API of SD-WAN Manager: `apphosting`, `apphostinginterface`, `approute`, `approute-fec`, `art`, `bridgeinterface`, `bridgemac`, `cloudx`, `dpi`, `dpi-agg-app`, `dpi-packet-dup`, `dpi-recovery`, `eiolte`, `endpointTracker`, `flowlog`, `fwall`, `interface`, `ipsalert`, `nwa`, `perfmon`, `powerconsumption`, `ppl-ctg`, `ppl-reordering`, `qfp`, `qfpdrop`, `qos`, `sitehealth`, `speedtest`, `sul-connections`, `system`, `temperature`, `tunnel-health`, `umbrella`, `urlf`, `vnfstatistics`, `wlanclientinfo`. Operations: `fields`, `query-fields`, `raw`, `aggregation`, `app-aggregation`, `doccount`, `page` | `dataset`\*, `operation`, `body`, `query`, `all_pages` | "Average interface throughput per site, last hour." |
+| `run_device_diagnostic` | 5 | **Opt-in.** Ping, traceroute, nping, tunnel path and service path from a device, through SD-WAN Manager | `view`\*, `device_id`\*, `body`\*, `confirm`\* | "Ping 10.1.1.1 from Branch-1 in VPN 10." |
+
+Two existing tools gained views. Their default view is unchanged:
+
+| Tool | New views |
+|---|---|
+| `get_bfd_summary` | Device: `device-summary`, `device-state`, `device-tloc-state`, `tloc-interface-map`, `history`. Fabric-wide (no `device_id`): `links`, `status`, `sites-summary`, `sites-detail`, `remote-sites`, `tloc-detail` |
+| `get_control_summary` | `device-summary`, `connections-info`, `region-connections`, `wan-interface-color` |
+
+**Parameters.**
+
+- `device_id` takes a hostname, system IP, UUID or serial number. The server fills the operation's device parameter with it: `deviceId`, `deviceIp` and `deviceIP` get the system IP, `deviceUUID` and `uuid` get the UUID. A fabric-wide view refuses `device_id`; a device view without it is refused before any request.
+- `query` carries the other query parameters by their API name (for example `{"vpn-id": "10"}`, `{"ifname": "GigabitEthernet1"}`, `{"query": "{...}"}`). Names, required parameters, types and enums are checked against the Manager's own spec; an unknown name is refused with the list of allowed ones.
+- `path_params` fills path parameters that do not identify the device, for example `{"type": "loss_percentage"}` for `approute-tunnels` or `{"alarm_uuid": "..."}` for `alarm`.
+- `body` is the request of the POST views (`*-query`, `alarms-top-n`, `events-by-uuids`, `admin-techs-on-device`, the diagnostics) and of `query_statistics`. It is the vManage query document, for example `{"query": {"condition": "AND", "rules": [{"value": ["24"], "field": "entry_time", "type": "date", "operator": "last_n_hours"}]}}`.
+- `synced: true` reads the Manager's cached copy instead of the device, for the 9 system views that have one (hardware inventory, environment and alarms, software, SMUs, reboot history, crash logs, feature list, NFVIS pNICs).
+- Every view returns rows that `fields`, `filter`, `count_by`, `offset` and `limit` can shape, like the other list tools.
+
+**Examples.**
+
+```json
+{ "tool": "get_device_interface_realtime", "arguments": { "view": "interface-errors", "device_id": "Branch-2", "query": { "vpn-id": "0" } } }
+{ "tool": "get_device_system_realtime", "arguments": { "view": "reboot-history", "device_id": "Branch-1", "synced": true } }
+{ "tool": "get_device_security_realtime", "arguments": { "view": "ipsec-ike-sessions", "device_id": "Hub-1", "fields": ["remote-tloc-address", "state"] } }
+{ "tool": "get_device_dataplane_realtime", "arguments": { "view": "tunnel-statistics", "device_id": "Branch-1", "count_by": "dest-ip" } }
+{ "tool": "get_monitoring_info", "arguments": { "view": "events-by-severity", "query": { "severity-level": "critical", "site-id": "100" } } }
+{ "tool": "get_monitoring_info", "arguments": { "view": "approute-tunnels", "path_params": { "type": "loss_percentage" }, "query": { "limit": 10 } } }
+{ "tool": "get_bfd_summary", "arguments": { "view": "sites-summary", "query": { "vpnId": "0" } } }
+{ "tool": "query_statistics", "arguments": { "dataset": "interface", "operation": "aggregation", "body": { "query": { "condition": "AND", "rules": [{ "value": ["1"], "field": "entry_time", "type": "date", "operator": "last_n_hours" }] }, "aggregation": { "field": [{ "property": "interface", "sequence": 1 }], "metrics": [{ "property": "tx_kbps", "type": "avg" }] } } } }
+{ "tool": "run_device_diagnostic", "arguments": { "view": "ping", "device_id": "Branch-1", "body": { "host": "10.1.1.1", "vpn": "10", "count": "5" }, "confirm": true } }
+```
+
+**How a view runs.** The view names an operation (method and path template) in the 26.2 spec. At call time the server looks the operation up in the spec published by the connected Manager and refuses it, before sending anything, when the Manager does not have it, when it is deprecated there, or when its access level does not match the tool (a read tool never runs an operation classified as state-changing). Parameters are then validated by the API catalog and the request goes through the shared client: pooled keep-alive connections, one shared login, the `VMANAGE_MAX_CONCURRENCY` cap, combining of identical concurrent requests, retries with jittered backoff for GETs on 429/502/503/504 and dropped connections (not on other errors, timeouts or POSTs), and the real-time (`VMANAGE_TIMEOUT_MS`) or list (`VMANAGE_LIST_TIMEOUT_MS`) timeout. Real-time answers are never cached, so they are always current.
+
+**Large answers.** A device table is returned whole to the server, which keeps the reply under 200,000 characters: a larger answer is cut at a row boundary with `truncated.nextOffset`. Continue with `offset`, or reduce it with `filter`, `fields`, `count_by`, or the API's own filters in `query` (sent to the device, which is cheaper). Statistics `page` operations follow `scrollId` with `all_pages: true` (up to 50 pages).
+
+**Deliberately not implemented.** 181 operations of the three categories have no view, each for a recorded reason:
+
+- **Deprecated (51).** Marked deprecated in the 26.2 spec: the `bfd`, `cflowd`, `device` and `system/stats` statistics families, SecureX tokens, `/device/config/html`, `/device/dpi/qosmos/applications` and the UMTS statistics. Cisco names no replacement in the spec; the inventory lists the closest supported tool or view.
+- **State-changing (84).** They start, stop or change something: admin-tech generation, copy and deletion, factory reset, interface and user reset, port-hop color change, alarm and notification-rule settings, statistics collection and queue settings, packet capture, debug log, speed test and NWPI sessions, MRE workflows, CLI analysis. `call_api_operation` runs them when `VMANAGE_ALLOW_WRITE=true` and `confirm: true`.
+- **Files, secrets and session data (46).** CSV exports of JSON operations and file downloads, device running configurations and interface running config (they can hold passwords and keys; `preview_config_group_device_config` returns a masked running configuration), reads of a streaming troubleshooting session that only a state-changing operation can start, one GET that runs statistics processing, one token-path download and one file upload.
+
+##### Monitoring and troubleshooting inventory
+
+Every operation of the three categories, with the tool and view that implements it or the reason it has none.
+
+<!-- monitoring-inventory:start -->
+Generated by `npm run verify:monitoring -- --write` from the bundled SD-WAN Manager 2.0.0 spec (26.2.1).
+
+| Item | Count |
+|---|---|
+| Monitoring, Real-Time Monitoring and Troubleshooting operations | 1114 |
+| Supported (not deprecated) | 1063 |
+| Implemented by the 1.3.0 monitoring tools and views | 821 |
+| Already served by earlier dedicated tools | 112 |
+| Excluded: deprecated | 51 |
+| Excluded: state-changing | 84 |
+| Excluded: excluded read | 44 |
+| Excluded: unsupported over mcp | 2 |
+
+<details><summary>Implemented operations (tool and view per endpoint)</summary>
+
+| Category | Method | Endpoint | Tool | View |
+|---|---|---|---|---|
+| File based RealTime Data Collection - Get Data Collection status for a Request UUID | GET | `/dataservice/device/file-based/data-collection/status/{requestUUID}` | `get_monitoring_info` | `data-collection-status` |
+| File based RealTime Data Collection - Get Data Collection status for Device UUID | GET | `/dataservice/device/file-based/data-collection/all-statuses/{deviceUUID}` | `get_monitoring_info` | `data-collection-statuses` |
+| File based RealTime Data Collection - Get Supported Commands List for a Device UUID | GET | `/dataservice/device/file-based/data-collection/supported-commands/{deviceUUID}` | `get_monitoring_info` | `data-collection-commands` |
+| Monitoring: Alarms Details | POST | `/dataservice/alarms` | `get_monitoring_info` | `alarms-query` |
+| Monitoring: Alarms Details | GET | `/dataservice/alarms/aggregation` | `get_monitoring_info` | `alarms-aggregation` |
+| Monitoring: Alarms Details | POST | `/dataservice/alarms/aggregation` | `get_monitoring_info` | `alarms-aggregation-query` |
+| Monitoring: Alarms Details | GET | `/dataservice/alarms/count` | `get_monitoring_info` | `alarms-count` |
+| Monitoring: Alarms Details | POST | `/dataservice/alarms/count` | `get_monitoring_info` | `alarms-count-query` |
+| Monitoring: Alarms Details | GET | `/dataservice/alarms/disabled` | `get_monitoring_info` | `alarms-disabled` |
+| Monitoring: Alarms Details | GET | `/dataservice/alarms/doccount` | `get_monitoring_info` | `alarms-doccount` |
+| Monitoring: Alarms Details | POST | `/dataservice/alarms/doccount` | `get_monitoring_info` | `alarms-doccount-query` |
+| Monitoring: Alarms Details | GET | `/dataservice/alarms/fields` | `get_monitoring_info` | `alarm-fields` |
+| Monitoring: Alarms Details | GET | `/dataservice/alarms/link-state-alarm` | `get_monitoring_info` | `alarm-link-state-config` |
+| Monitoring: Alarms Details | GET | `/dataservice/alarms/master` | `get_monitoring_info` | `alarms-leader` |
+| Monitoring: Alarms Details | GET | `/dataservice/alarms/notviewed` | `get_monitoring_info` | `alarms-not-viewed` |
+| Monitoring: Alarms Details | GET | `/dataservice/alarms/page` | `get_monitoring_info` | `alarms-page` |
+| Monitoring: Alarms Details | POST | `/dataservice/alarms/page` | `get_monitoring_info` | `alarms-page-query` |
+| Monitoring: Alarms Details | GET | `/dataservice/alarms/purgefrequency` | `get_monitoring_info` | `alarms-purge-frequency` |
+| Monitoring: Alarms Details | GET | `/dataservice/alarms/query/fields` | `get_monitoring_info` | `alarm-query-fields` |
+| Monitoring: Alarms Details | GET | `/dataservice/alarms/query/input` | `get_monitoring_info` | `alarm-query-input` |
+| Monitoring: Alarms Details | GET | `/dataservice/alarms/rulenamedisplay/keyvalue` | `get_monitoring_info` | `alarm-types` |
+| Monitoring: Alarms Details | GET | `/dataservice/alarms/severity` | `get_monitoring_info` | `alarms-by-severity` |
+| Monitoring: Alarms Details | GET | `/dataservice/alarms/severity/summary` | `get_monitoring_info` | `alarms-severity-summary` |
+| Monitoring: Alarms Details | GET | `/dataservice/alarms/severitymappings` | `get_monitoring_info` | `alarm-severity-mappings` |
+| Monitoring: Alarms Details | GET | `/dataservice/alarms/stats` | `get_monitoring_info` | `alarms-stats` |
+| Monitoring: Alarms Details | GET | `/dataservice/alarms/topic` | `get_monitoring_info` | `alarm-topic` |
+| Monitoring: Alarms Details | POST | `/dataservice/alarms/topn` | `get_monitoring_info` | `alarms-top-n` |
+| Monitoring: Alarms Details | GET | `/dataservice/alarms/uuid/{alarm_uuid}` | `get_monitoring_info` | `alarm` |
+| Monitoring: Alarms Notification | GET | `/dataservice/notifications/rules` | `get_monitoring_info` | `alarm-notification-rules` |
+| Monitoring: App Hosting | GET | `/dataservice/statistics/apphosting` | `query_statistics` | `apphosting / raw` |
+| Monitoring: App Hosting | POST | `/dataservice/statistics/apphosting` | `query_statistics` | `apphosting / raw` |
+| Monitoring: App Hosting | GET | `/dataservice/statistics/apphosting/aggregation` | `query_statistics` | `apphosting / aggregation` |
+| Monitoring: App Hosting | POST | `/dataservice/statistics/apphosting/aggregation` | `query_statistics` | `apphosting / aggregation` |
+| Monitoring: App Hosting | GET | `/dataservice/statistics/apphosting/doccount` | `query_statistics` | `apphosting / doccount` |
+| Monitoring: App Hosting | POST | `/dataservice/statistics/apphosting/doccount` | `query_statistics` | `apphosting / doccount` |
+| Monitoring: App Hosting | GET | `/dataservice/statistics/apphosting/fields` | `query_statistics` | `apphosting / fields` |
+| Monitoring: App Hosting | GET | `/dataservice/statistics/apphosting/page` | `query_statistics` | `apphosting / page` |
+| Monitoring: App Hosting | POST | `/dataservice/statistics/apphosting/page` | `query_statistics` | `apphosting / page` |
+| Monitoring: App Hosting | GET | `/dataservice/statistics/apphosting/query/fields` | `query_statistics` | `apphosting / query-fields` |
+| Monitoring: App Hosting | GET | `/dataservice/statistics/apphostinginterface` | `query_statistics` | `apphostinginterface / raw` |
+| Monitoring: App Hosting | POST | `/dataservice/statistics/apphostinginterface` | `query_statistics` | `apphostinginterface / raw` |
+| Monitoring: App Hosting | GET | `/dataservice/statistics/apphostinginterface/aggregation` | `query_statistics` | `apphostinginterface / aggregation` |
+| Monitoring: App Hosting | POST | `/dataservice/statistics/apphostinginterface/aggregation` | `query_statistics` | `apphostinginterface / aggregation` |
+| Monitoring: App Hosting | GET | `/dataservice/statistics/apphostinginterface/doccount` | `query_statistics` | `apphostinginterface / doccount` |
+| Monitoring: App Hosting | POST | `/dataservice/statistics/apphostinginterface/doccount` | `query_statistics` | `apphostinginterface / doccount` |
+| Monitoring: App Hosting | GET | `/dataservice/statistics/apphostinginterface/fields` | `query_statistics` | `apphostinginterface / fields` |
+| Monitoring: App Hosting | GET | `/dataservice/statistics/apphostinginterface/page` | `query_statistics` | `apphostinginterface / page` |
+| Monitoring: App Hosting | POST | `/dataservice/statistics/apphostinginterface/page` | `query_statistics` | `apphostinginterface / page` |
+| Monitoring: App Hosting | GET | `/dataservice/statistics/apphostinginterface/query/fields` | `query_statistics` | `apphostinginterface / query-fields` |
+| Monitoring: Application Aware Routing | GET | `/dataservice/statistics/approute` | `query_statistics` | `approute / raw` |
+| Monitoring: Application Aware Routing | POST | `/dataservice/statistics/approute` | `query_statistics` | `approute / raw` |
+| Monitoring: Application Aware Routing | GET | `/dataservice/statistics/approute/aggregation` | `query_statistics` | `approute / aggregation` |
+| Monitoring: Application Aware Routing | POST | `/dataservice/statistics/approute/aggregation` | `query_statistics` | `approute / aggregation` |
+| Monitoring: Application Aware Routing | POST | `/dataservice/statistics/approute/app-agg/aggregation` | `query_statistics` | `approute / app-aggregation` |
+| Monitoring: Application Aware Routing | GET | `/dataservice/statistics/approute/device/tunnel/summary` | `get_monitoring_info` | `approute-device-tunnel-summary` |
+| Monitoring: Application Aware Routing | GET | `/dataservice/statistics/approute/device/tunnels` | `get_monitoring_info` | `approute-device-tunnels` |
+| Monitoring: Application Aware Routing | GET | `/dataservice/statistics/approute/doccount` | `query_statistics` | `approute / doccount` |
+| Monitoring: Application Aware Routing | POST | `/dataservice/statistics/approute/doccount` | `query_statistics` | `approute / doccount` |
+| Monitoring: Application Aware Routing | POST | `/dataservice/statistics/approute/fec/aggregation` | `query_statistics` | `approute-fec / aggregation` |
+| Monitoring: Application Aware Routing | GET | `/dataservice/statistics/approute/fields` | `query_statistics` | `approute / fields` |
+| Monitoring: Application Aware Routing | GET | `/dataservice/statistics/approute/page` | `query_statistics` | `approute / page` |
+| Monitoring: Application Aware Routing | POST | `/dataservice/statistics/approute/page` | `query_statistics` | `approute / page` |
+| Monitoring: Application Aware Routing | GET | `/dataservice/statistics/approute/query/fields` | `query_statistics` | `approute / query-fields` |
+| Monitoring: Application Aware Routing | POST | `/dataservice/statistics/approute/tloc` | `get_monitoring_info` | `approute-tloc` |
+| Monitoring: Application Aware Routing | GET | `/dataservice/statistics/approute/transport/{type}` | `get_monitoring_info` | `approute-transport` |
+| Monitoring: Application Aware Routing | GET | `/dataservice/statistics/approute/transport/summary/{type}` | `get_monitoring_info` | `approute-transport-summary` |
+| Monitoring: Application Aware Routing | GET | `/dataservice/statistics/approute/tunnel/{type}/summary` | `get_monitoring_info` | `approute-tunnel-summary` |
+| Monitoring: Application Aware Routing | GET | `/dataservice/statistics/approute/tunnels/{type}` | `get_monitoring_info` | `approute-tunnels` |
+| Monitoring: Application Aware Routing | GET | `/dataservice/statistics/approute/tunnels/health/{type}` | `get_monitoring_info` | `approute-tunnels-health` |
+| Monitoring: Application Aware Routing | GET | `/dataservice/statistics/approute/tunnels/summary/{type}` | `get_monitoring_info` | `approute-tunnels-summary` |
+| Monitoring: ART | GET | `/dataservice/statistics/art` | `query_statistics` | `art / raw` |
+| Monitoring: ART | POST | `/dataservice/statistics/art` | `query_statistics` | `art / raw` |
+| Monitoring: ART | GET | `/dataservice/statistics/art/aggregation` | `query_statistics` | `art / aggregation` |
+| Monitoring: ART | POST | `/dataservice/statistics/art/aggregation` | `query_statistics` | `art / aggregation` |
+| Monitoring: ART | GET | `/dataservice/statistics/art/doccount` | `query_statistics` | `art / doccount` |
+| Monitoring: ART | POST | `/dataservice/statistics/art/doccount` | `query_statistics` | `art / doccount` |
+| Monitoring: ART | GET | `/dataservice/statistics/art/fields` | `query_statistics` | `art / fields` |
+| Monitoring: ART | GET | `/dataservice/statistics/art/page` | `query_statistics` | `art / page` |
+| Monitoring: ART | POST | `/dataservice/statistics/art/page` | `query_statistics` | `art / page` |
+| Monitoring: ART | GET | `/dataservice/statistics/art/query/fields` | `query_statistics` | `art / query-fields` |
+| Monitoring: BootUp Time | GET | `/dataservice/device/bootup/time` | `get_monitoring_info` | `bootup-time` |
+| Monitoring: Bridge | GET | `/dataservice/statistics/bridgeinterface` | `query_statistics` | `bridgeinterface / raw` |
+| Monitoring: Bridge | POST | `/dataservice/statistics/bridgeinterface` | `query_statistics` | `bridgeinterface / raw` |
+| Monitoring: Bridge | GET | `/dataservice/statistics/bridgeinterface/aggregation` | `query_statistics` | `bridgeinterface / aggregation` |
+| Monitoring: Bridge | POST | `/dataservice/statistics/bridgeinterface/aggregation` | `query_statistics` | `bridgeinterface / aggregation` |
+| Monitoring: Bridge | GET | `/dataservice/statistics/bridgeinterface/doccount` | `query_statistics` | `bridgeinterface / doccount` |
+| Monitoring: Bridge | POST | `/dataservice/statistics/bridgeinterface/doccount` | `query_statistics` | `bridgeinterface / doccount` |
+| Monitoring: Bridge | GET | `/dataservice/statistics/bridgeinterface/fields` | `query_statistics` | `bridgeinterface / fields` |
+| Monitoring: Bridge | GET | `/dataservice/statistics/bridgeinterface/page` | `query_statistics` | `bridgeinterface / page` |
+| Monitoring: Bridge | POST | `/dataservice/statistics/bridgeinterface/page` | `query_statistics` | `bridgeinterface / page` |
+| Monitoring: Bridge | GET | `/dataservice/statistics/bridgeinterface/query/fields` | `query_statistics` | `bridgeinterface / query-fields` |
+| Monitoring: Bridge | GET | `/dataservice/statistics/bridgemac` | `query_statistics` | `bridgemac / raw` |
+| Monitoring: Bridge | POST | `/dataservice/statistics/bridgemac` | `query_statistics` | `bridgemac / raw` |
+| Monitoring: Bridge | GET | `/dataservice/statistics/bridgemac/aggregation` | `query_statistics` | `bridgemac / aggregation` |
+| Monitoring: Bridge | POST | `/dataservice/statistics/bridgemac/aggregation` | `query_statistics` | `bridgemac / aggregation` |
+| Monitoring: Bridge | GET | `/dataservice/statistics/bridgemac/doccount` | `query_statistics` | `bridgemac / doccount` |
+| Monitoring: Bridge | POST | `/dataservice/statistics/bridgemac/doccount` | `query_statistics` | `bridgemac / doccount` |
+| Monitoring: Bridge | GET | `/dataservice/statistics/bridgemac/fields` | `query_statistics` | `bridgemac / fields` |
+| Monitoring: Bridge | GET | `/dataservice/statistics/bridgemac/page` | `query_statistics` | `bridgemac / page` |
+| Monitoring: Bridge | POST | `/dataservice/statistics/bridgemac/page` | `query_statistics` | `bridgemac / page` |
+| Monitoring: Bridge | GET | `/dataservice/statistics/bridgemac/query/fields` | `query_statistics` | `bridgemac / query-fields` |
+| Monitoring: CDP | GET | `/dataservice/device/cdp/neighbors` | `get_monitoring_info` | `cdp-neighbors` |
+| Monitoring: Cedge Cflowd | GET | `/dataservice/device/cedgecflowd/app-fwd-cflowd-flows` | `get_device_dataplane_realtime` | `cedge-cflowd-flows` |
+| Monitoring: Cedge Cflowd | GET | `/dataservice/device/redundancy-group/app-group` | `get_device_dataplane_realtime` | `redundancy-group-apps` |
+| Monitoring: Cellular-EIOLTE | GET | `/dataservice/statistics/eiolte` | `query_statistics` | `eiolte / raw` |
+| Monitoring: Cellular-EIOLTE | POST | `/dataservice/statistics/eiolte` | `query_statistics` | `eiolte / raw` |
+| Monitoring: Cellular-EIOLTE | GET | `/dataservice/statistics/eiolte/aggregation` | `query_statistics` | `eiolte / aggregation` |
+| Monitoring: Cellular-EIOLTE | POST | `/dataservice/statistics/eiolte/aggregation` | `query_statistics` | `eiolte / aggregation` |
+| Monitoring: Cellular-EIOLTE | POST | `/dataservice/statistics/eiolte/cellularAggregation` | `get_monitoring_info` | `eiolte-cellular-query` |
+| Monitoring: Cellular-EIOLTE | GET | `/dataservice/statistics/eiolte/doccount` | `query_statistics` | `eiolte / doccount` |
+| Monitoring: Cellular-EIOLTE | POST | `/dataservice/statistics/eiolte/doccount` | `query_statistics` | `eiolte / doccount` |
+| Monitoring: Cellular-EIOLTE | GET | `/dataservice/statistics/eiolte/fields` | `query_statistics` | `eiolte / fields` |
+| Monitoring: Cellular-EIOLTE | GET | `/dataservice/statistics/eiolte/page` | `query_statistics` | `eiolte / page` |
+| Monitoring: Cellular-EIOLTE | POST | `/dataservice/statistics/eiolte/page` | `query_statistics` | `eiolte / page` |
+| Monitoring: Cellular-EIOLTE | GET | `/dataservice/statistics/eiolte/query/fields` | `query_statistics` | `eiolte / query-fields` |
+| Monitoring: Cellular-EIOLTE | POST | `/dataservice/statistics/eiolte/uniqueAggregation` | `get_monitoring_info` | `eiolte-unique-query` |
+| Monitoring: Cflowd | GET | `/dataservice/device/cflowd/application/fields` | `get_device_dataplane_realtime` | `cflowd-application-fields` |
+| Monitoring: Cflowd | GET | `/dataservice/device/cflowd/collector` | `get_device_dataplane_realtime` | `cflowd-collectors` |
+| Monitoring: Cflowd | GET | `/dataservice/device/cflowd/device/fields` | `get_device_dataplane_realtime` | `cflowd-device-fields` |
+| Monitoring: Cflowd | GET | `/dataservice/device/cflowd/flows-count` | `get_device_dataplane_realtime` | `cflowd-flow-count` |
+| Monitoring: Cflowd | GET | `/dataservice/device/cflowd/fnf/cache-stats` | `get_device_dataplane_realtime` | `fnf-cache-stats` |
+| Monitoring: Cflowd | GET | `/dataservice/device/cflowd/fnf/export-client-stats` | `get_device_dataplane_realtime` | `fnf-export-client-stats` |
+| Monitoring: Cflowd | GET | `/dataservice/device/cflowd/fnf/export-stats` | `get_device_dataplane_realtime` | `fnf-export-stats` |
+| Monitoring: Cflowd | GET | `/dataservice/device/cflowd/fnf/flow-monitor` | `get_device_dataplane_realtime` | `fnf-flow-monitor` |
+| Monitoring: Cflowd | GET | `/dataservice/device/cflowd/fnf/monitor-stats` | `get_device_dataplane_realtime` | `fnf-monitor-stats` |
+| Monitoring: Cflowd | GET | `/dataservice/device/cflowd/template` | `get_device_dataplane_realtime` | `cflowd-template` |
+| Monitoring: CloudExpress | GET | `/dataservice/statistics/cloudx` | `query_statistics` | `cloudx / raw` |
+| Monitoring: CloudExpress | POST | `/dataservice/statistics/cloudx` | `query_statistics` | `cloudx / raw` |
+| Monitoring: CloudExpress | GET | `/dataservice/statistics/cloudx/aggregation` | `query_statistics` | `cloudx / aggregation` |
+| Monitoring: CloudExpress | POST | `/dataservice/statistics/cloudx/aggregation` | `query_statistics` | `cloudx / aggregation` |
+| Monitoring: CloudExpress | GET | `/dataservice/statistics/cloudx/doccount` | `query_statistics` | `cloudx / doccount` |
+| Monitoring: CloudExpress | POST | `/dataservice/statistics/cloudx/doccount` | `query_statistics` | `cloudx / doccount` |
+| Monitoring: CloudExpress | GET | `/dataservice/statistics/cloudx/fields` | `query_statistics` | `cloudx / fields` |
+| Monitoring: CloudExpress | GET | `/dataservice/statistics/cloudx/page` | `query_statistics` | `cloudx / page` |
+| Monitoring: CloudExpress | POST | `/dataservice/statistics/cloudx/page` | `query_statistics` | `cloudx / page` |
+| Monitoring: CloudExpress | GET | `/dataservice/statistics/cloudx/query/fields` | `query_statistics` | `cloudx / query-fields` |
+| Monitoring: Crypto VPN | POST | `/dataservice/statistics/cryptovpn/common` | `get_monitoring_info` | `cryptovpn-query` |
+| Monitoring: Crypto VPN | POST | `/dataservice/statistics/cryptovpn/dmvpn` | `get_monitoring_info` | `cryptovpn-dmvpn-query` |
+| Monitoring: Device Configuration Security Advisories | GET | `/dataservice/advisories/insecure-config/devices` | `get_device_security_realtime` | `advisories-devices` |
+| Monitoring: Device Configuration Security Advisories | GET | `/dataservice/advisories/insecure-config/devices/{deviceIP}` | `get_device_security_realtime` | `advisories-device` |
+| Monitoring: Device Configuration Security Advisories | GET | `/dataservice/advisories/insecure-config/summary` | `get_device_security_realtime` | `advisories-summary` |
+| Monitoring: Device Details | GET | `/dataservice/data/device/state/{state_data_type}` | `get_monitoring_info` | `device-state-data` |
+| Monitoring: Device Details | GET | `/dataservice/data/device/state/{state_data_type}/fields` | `get_monitoring_info` | `device-state-fields` |
+| Monitoring: Device Details | GET | `/dataservice/data/device/state/{state_data_type}/query` | `get_monitoring_info` | `device-state-query` |
+| Monitoring: Device Details | GET | `/dataservice/device/counters` | `get_monitoring_info` | `device-counters` |
+| Monitoring: Device Details | GET | `/dataservice/device/devicestatus` | `get_monitoring_info` | `device-only-status` |
+| Monitoring: Device Details | GET | `/dataservice/device/featuresupport` | `get_monitoring_info` | `device-feature-support` |
+| Monitoring: Device Details | GET | `/dataservice/device/hardwarehealth/detail` | `get_monitoring_info` | `hardware-health-detail` |
+| Monitoring: Device Details | GET | `/dataservice/device/hardwarehealth/summary` | `get_monitoring_info` | `hardware-health-summary` |
+| Monitoring: Device Details | GET | `/dataservice/device/keyvalue` | `get_monitoring_info` | `device-key-values` |
+| Monitoring: Device Details | GET | `/dataservice/device/models` | `get_monitoring_info` | `device-models` |
+| Monitoring: Device Details | GET | `/dataservice/device/models/{uuid}` | `get_monitoring_info` | `device-model` |
+| Monitoring: Device Details | GET | `/dataservice/device/monitor` | `get_monitoring_info` | `device-monitor` |
+| Monitoring: Device Details | GET | `/dataservice/device/queues` | `get_monitoring_info` | `sync-queues` |
+| Monitoring: Device Details | GET | `/dataservice/device/stats` | `get_monitoring_info` | `stats-queues` |
+| Monitoring: Device Details | GET | `/dataservice/device/status` | `get_monitoring_info` | `device-status` |
+| Monitoring: Device Details | GET | `/dataservice/device/sync_status` | `get_monitoring_info` | `syncing-devices` |
+| Monitoring: Device Details | GET | `/dataservice/device/tier` | `get_monitoring_info` | `device-tiers` |
+| Monitoring: Device Details | GET | `/dataservice/device/tlocutil` | `get_monitoring_info` | `tloc-utilization` |
+| Monitoring: Device Details | GET | `/dataservice/device/tlocutil/detail` | `get_monitoring_info` | `tloc-utilization-detail` |
+| Monitoring: Device Details | GET | `/dataservice/device/unconfigured` | `get_monitoring_info` | `unconfigured-devices` |
+| Monitoring: Device Details | GET | `/dataservice/device/unreachable` | `get_monitoring_info` | `unreachable-devices` |
+| Monitoring: Device Details | GET | `/dataservice/device/vedgeinventory/summary` | `get_monitoring_info` | `vedge-inventory-summary` |
+| Monitoring: Device Details | GET | `/dataservice/device/vmanage` | `get_monitoring_info` | `manager-system-ip` |
+| Monitoring: Device Health | GET | `/dataservice/statistics/devicehealth/history` | `get_monitoring_info` | `device-health-history` |
+| Monitoring: Device Health | GET | `/dataservice/statistics/devicehealth/overview/{type}` | `get_monitoring_info` | `device-health-overview` |
+| Monitoring: Device Statistics Details | GET | `/dataservice/data/device/statistics` | `get_monitoring_info` | `device-statistics-types` |
+| Monitoring: Device Statistics Details | GET | `/dataservice/data/device/statistics/{state_data_type}` | `get_monitoring_info` | `device-statistics` |
+| Monitoring: Device Statistics Details | GET | `/dataservice/data/device/statistics/{state_data_type}/doccount` | `get_monitoring_info` | `device-statistics-doccount` |
+| Monitoring: Device Statistics Details | GET | `/dataservice/data/device/statistics/{state_data_type}/fields` | `get_monitoring_info` | `device-statistics-fields` |
+| Monitoring: Device Statistics Details | GET | `/dataservice/data/device/statistics/alarm/active` | `get_monitoring_info` | `device-active-alarms` |
+| Monitoring: Device Statistics Details V2 | GET | `/dataservice/v2/data/device/statistics/interfacestatistics` | `get_monitoring_info` | `interface-statistics-v2` |
+| Monitoring: Device Statistics Details V2 | GET | `/dataservice/v2/data/device/statistics/interfacestatistics/doccount` | `get_monitoring_info` | `interface-statistics-v2-doccount` |
+| Monitoring: Device Statistics Details V2 | GET | `/dataservice/v2/data/device/statistics/interfacestatistics/fields` | `get_monitoring_info` | `interface-statistics-v2-fields` |
+| Monitoring: DPI | GET | `/dataservice/statistics/dpi` | `query_statistics` | `dpi / raw` |
+| Monitoring: DPI | POST | `/dataservice/statistics/dpi` | `query_statistics` | `dpi / raw` |
+| Monitoring: DPI | POST | `/dataservice/statistics/dpi/agg-app/aggregation` | `query_statistics` | `dpi-agg-app / aggregation` |
+| Monitoring: DPI | GET | `/dataservice/statistics/dpi/aggregation` | `query_statistics` | `dpi / aggregation` |
+| Monitoring: DPI | POST | `/dataservice/statistics/dpi/aggregation` | `query_statistics` | `dpi / aggregation` |
+| Monitoring: DPI | GET | `/dataservice/statistics/dpi/applications` | `get_monitoring_info` | `dpi-top-applications` |
+| Monitoring: DPI | GET | `/dataservice/statistics/dpi/applications/summary` | `get_monitoring_info` | `dpi-applications-summary` |
+| Monitoring: DPI | GET | `/dataservice/statistics/dpi/device/application/flowcount` | `get_monitoring_info` | `dpi-application-flow-count` |
+| Monitoring: DPI | GET | `/dataservice/statistics/dpi/device/applications` | `get_monitoring_info` | `dpi-device-applications` |
+| Monitoring: DPI | GET | `/dataservice/statistics/dpi/device/details/applications` | `get_monitoring_info` | `dpi-device-application-details` |
+| Monitoring: DPI | GET | `/dataservice/statistics/dpi/doccount` | `query_statistics` | `dpi / doccount` |
+| Monitoring: DPI | POST | `/dataservice/statistics/dpi/doccount` | `query_statistics` | `dpi / doccount` |
+| Monitoring: DPI | GET | `/dataservice/statistics/dpi/fields` | `query_statistics` | `dpi / fields` |
+| Monitoring: DPI | GET | `/dataservice/statistics/dpi/page` | `query_statistics` | `dpi / page` |
+| Monitoring: DPI | POST | `/dataservice/statistics/dpi/page` | `query_statistics` | `dpi / page` |
+| Monitoring: DPI | POST | `/dataservice/statistics/dpi/pktdup/aggregation` | `query_statistics` | `dpi-packet-dup / aggregation` |
+| Monitoring: DPI | GET | `/dataservice/statistics/dpi/query/fields` | `query_statistics` | `dpi / query-fields` |
+| Monitoring: DPI | POST | `/dataservice/statistics/dpi/recovery/aggregation` | `query_statistics` | `dpi-recovery / aggregation` |
+| Monitoring: DPI - On-demand troubleshooting | GET | `/dataservice/statistics/on-demand/queue` | `get_monitoring_info` | `stats-on-demand-queue` |
+| Monitoring: DPI - On-demand troubleshooting | GET | `/dataservice/statistics/on-demand/queue/properties` | `get_monitoring_info` | `stats-on-demand-properties` |
+| Monitoring: Endpoint Tracker Status | GET | `/dataservice/statistics/endpointTracker` | `query_statistics` | `endpointTracker / raw` |
+| Monitoring: Endpoint Tracker Status | POST | `/dataservice/statistics/endpointTracker` | `query_statistics` | `endpointTracker / raw` |
+| Monitoring: Endpoint Tracker Status | GET | `/dataservice/statistics/endpointTracker/aggregation` | `query_statistics` | `endpointTracker / aggregation` |
+| Monitoring: Endpoint Tracker Status | POST | `/dataservice/statistics/endpointTracker/aggregation` | `query_statistics` | `endpointTracker / aggregation` |
+| Monitoring: Endpoint Tracker Status | GET | `/dataservice/statistics/endpointTracker/doccount` | `query_statistics` | `endpointTracker / doccount` |
+| Monitoring: Endpoint Tracker Status | POST | `/dataservice/statistics/endpointTracker/doccount` | `query_statistics` | `endpointTracker / doccount` |
+| Monitoring: Endpoint Tracker Status | GET | `/dataservice/statistics/endpointTracker/fields` | `query_statistics` | `endpointTracker / fields` |
+| Monitoring: Endpoint Tracker Status | GET | `/dataservice/statistics/endpointTracker/page` | `query_statistics` | `endpointTracker / page` |
+| Monitoring: Endpoint Tracker Status | POST | `/dataservice/statistics/endpointTracker/page` | `query_statistics` | `endpointTracker / page` |
+| Monitoring: Endpoint Tracker Status | GET | `/dataservice/statistics/endpointTracker/query/fields` | `query_statistics` | `endpointTracker / query-fields` |
+| Monitoring: Events | GET | `/dataservice/event` | `get_monitoring_info` | `events` |
+| Monitoring: Events | POST | `/dataservice/event` | `get_monitoring_info` | `events-query` |
+| Monitoring: Events | GET | `/dataservice/event/aggregation` | `get_monitoring_info` | `events-aggregation` |
+| Monitoring: Events | POST | `/dataservice/event/aggregation` | `get_monitoring_info` | `events-aggregation-query` |
+| Monitoring: Events | POST | `/dataservice/event/byuuids` | `get_monitoring_info` | `events-by-uuids` |
+| Monitoring: Events | GET | `/dataservice/event/component/keyvalue` | `get_monitoring_info` | `event-components` |
+| Monitoring: Events | GET | `/dataservice/event/doccount` | `get_monitoring_info` | `events-doccount` |
+| Monitoring: Events | POST | `/dataservice/event/doccount` | `get_monitoring_info` | `events-doccount-query` |
+| Monitoring: Events | GET | `/dataservice/event/getEventsByComponent` | `get_monitoring_info` | `event-names-by-component` |
+| Monitoring: Events | GET | `/dataservice/event/listeners` | `get_monitoring_info` | `event-listeners` |
+| Monitoring: Events | GET | `/dataservice/event/page` | `get_monitoring_info` | `events-page` |
+| Monitoring: Events | POST | `/dataservice/event/page` | `get_monitoring_info` | `events-page-query` |
+| Monitoring: Events | GET | `/dataservice/event/query/fields` | `get_monitoring_info` | `event-query-fields` |
+| Monitoring: Events | GET | `/dataservice/event/query/input` | `get_monitoring_info` | `event-query-input` |
+| Monitoring: Events | GET | `/dataservice/event/severity` | `get_monitoring_info` | `events-by-severity` |
+| Monitoring: Events | GET | `/dataservice/event/severity/summary` | `get_monitoring_info` | `events-severity-summary` |
+| Monitoring: Events | GET | `/dataservice/event/types/keyvalue` | `get_monitoring_info` | `event-types` |
+| Monitoring: Flowlog | GET | `/dataservice/statistics/flowlog` | `query_statistics` | `flowlog / raw` |
+| Monitoring: Flowlog | POST | `/dataservice/statistics/flowlog` | `query_statistics` | `flowlog / raw` |
+| Monitoring: Flowlog | GET | `/dataservice/statistics/flowlog/aggregation` | `query_statistics` | `flowlog / aggregation` |
+| Monitoring: Flowlog | POST | `/dataservice/statistics/flowlog/aggregation` | `query_statistics` | `flowlog / aggregation` |
+| Monitoring: Flowlog | GET | `/dataservice/statistics/flowlog/doccount` | `query_statistics` | `flowlog / doccount` |
+| Monitoring: Flowlog | POST | `/dataservice/statistics/flowlog/doccount` | `query_statistics` | `flowlog / doccount` |
+| Monitoring: Flowlog | GET | `/dataservice/statistics/flowlog/fields` | `query_statistics` | `flowlog / fields` |
+| Monitoring: Flowlog | GET | `/dataservice/statistics/flowlog/page` | `query_statistics` | `flowlog / page` |
+| Monitoring: Flowlog | POST | `/dataservice/statistics/flowlog/page` | `query_statistics` | `flowlog / page` |
+| Monitoring: Flowlog | GET | `/dataservice/statistics/flowlog/query/fields` | `query_statistics` | `flowlog / query-fields` |
+| Monitoring: Health | GET | `/dataservice/health/devices/overview` | `get_monitoring_info` | `devices-health-overview` |
+| Monitoring: Interface Statistics | GET | `/dataservice/statistics/interface` | `query_statistics` | `interface / raw` |
+| Monitoring: Interface Statistics | POST | `/dataservice/statistics/interface` | `query_statistics` | `interface / raw` |
+| Monitoring: Interface Statistics | GET | `/dataservice/statistics/interface/aggregation` | `query_statistics` | `interface / aggregation` |
+| Monitoring: Interface Statistics | POST | `/dataservice/statistics/interface/aggregation` | `query_statistics` | `interface / aggregation` |
+| Monitoring: Interface Statistics | POST | `/dataservice/statistics/interface/app-agg/aggregation` | `query_statistics` | `interface / app-aggregation` |
+| Monitoring: Interface Statistics | GET | `/dataservice/statistics/interface/ccapacity/distribution` | `get_monitoring_info` | `interface-capacity` |
+| Monitoring: Interface Statistics | GET | `/dataservice/statistics/interface/doccount` | `query_statistics` | `interface / doccount` |
+| Monitoring: Interface Statistics | POST | `/dataservice/statistics/interface/doccount` | `query_statistics` | `interface / doccount` |
+| Monitoring: Interface Statistics | GET | `/dataservice/statistics/interface/fields` | `query_statistics` | `interface / fields` |
+| Monitoring: Interface Statistics | GET | `/dataservice/statistics/interface/page` | `query_statistics` | `interface / page` |
+| Monitoring: Interface Statistics | POST | `/dataservice/statistics/interface/page` | `query_statistics` | `interface / page` |
+| Monitoring: Interface Statistics | GET | `/dataservice/statistics/interface/query/fields` | `query_statistics` | `interface / query-fields` |
+| Monitoring: Interface Statistics | GET | `/dataservice/statistics/interface/type` | `get_monitoring_info` | `interface-types` |
+| Monitoring: IPsAlert | GET | `/dataservice/statistics/ipsalert` | `query_statistics` | `ipsalert / raw` |
+| Monitoring: IPsAlert | POST | `/dataservice/statistics/ipsalert` | `query_statistics` | `ipsalert / raw` |
+| Monitoring: IPsAlert | GET | `/dataservice/statistics/ipsalert/aggregation` | `query_statistics` | `ipsalert / aggregation` |
+| Monitoring: IPsAlert | POST | `/dataservice/statistics/ipsalert/aggregation` | `query_statistics` | `ipsalert / aggregation` |
+| Monitoring: IPsAlert | GET | `/dataservice/statistics/ipsalert/doccount` | `query_statistics` | `ipsalert / doccount` |
+| Monitoring: IPsAlert | POST | `/dataservice/statistics/ipsalert/doccount` | `query_statistics` | `ipsalert / doccount` |
+| Monitoring: IPsAlert | GET | `/dataservice/statistics/ipsalert/fields` | `query_statistics` | `ipsalert / fields` |
+| Monitoring: IPsAlert | GET | `/dataservice/statistics/ipsalert/page` | `query_statistics` | `ipsalert / page` |
+| Monitoring: IPsAlert | POST | `/dataservice/statistics/ipsalert/page` | `query_statistics` | `ipsalert / page` |
+| Monitoring: IPsAlert | GET | `/dataservice/statistics/ipsalert/query/fields` | `query_statistics` | `ipsalert / query-fields` |
+| Monitoring: LLDP | GET | `/dataservice/device/lldp/neighbors` | `get_monitoring_info` | `lldp-neighbors` |
+| Monitoring: Network Availability | POST | `/dataservice/statistics/nwa` | `query_statistics` | `nwa / raw` |
+| Monitoring: Network Availability | POST | `/dataservice/statistics/nwa/aggregation` | `query_statistics` | `nwa / aggregation` |
+| Monitoring: Network Availability | POST | `/dataservice/statistics/nwa/details` | `get_monitoring_info` | `network-availability-query` |
+| Monitoring: Performance Monitor | POST | `/dataservice/statistics/perfmon/aggregation` | `query_statistics` | `perfmon / aggregation` |
+| Monitoring: Performance Monitor | GET | `/dataservice/statistics/perfmon/application/heatmap/detail` | `get_monitoring_info` | `app-health-heatmap` |
+| Monitoring: Performance Monitor | POST | `/dataservice/statistics/perfmon/application/site/health` | `get_monitoring_info` | `app-health-site-query` |
+| Monitoring: Performance Monitor | GET | `/dataservice/statistics/perfmon/application/sites/health` | `get_monitoring_info` | `app-health-by-site` |
+| Monitoring: Performance Monitor | GET | `/dataservice/statistics/perfmon/applications/site/health` | `get_monitoring_info` | `app-health-site` |
+| Monitoring: Performance Monitor | GET | `/dataservice/statistics/perfmon/applications/sites/health` | `get_monitoring_info` | `app-health-sites` |
+| Monitoring: Power Consumption Statistics | POST | `/dataservice/statistics/powerconsumption` | `query_statistics` | `powerconsumption / raw` |
+| Monitoring: Power Consumption Statistics | POST | `/dataservice/statistics/powerconsumption/aggregation` | `query_statistics` | `powerconsumption / aggregation` |
+| Monitoring: Power Consumption Statistics | POST | `/dataservice/statistics/powerconsumption/device` | `get_monitoring_info` | `power-device-query` |
+| Monitoring: Power Consumption Statistics | POST | `/dataservice/statistics/powerconsumption/energymix` | `get_monitoring_info` | `power-energy-mix-query` |
+| Monitoring: Power Consumption Statistics | GET | `/dataservice/statistics/powerconsumption/supportdevicelist` | `get_monitoring_info` | `power-devices` |
+| Monitoring: Power Consumption Statistics | POST | `/dataservice/statistics/powerconsumption/total` | `get_monitoring_info` | `power-total-query` |
+| Monitoring: PPL | GET | `/dataservice/statistics/ppl/ctg` | `query_statistics` | `ppl-ctg / raw` |
+| Monitoring: PPL | POST | `/dataservice/statistics/ppl/ctg` | `query_statistics` | `ppl-ctg / raw` |
+| Monitoring: PPL | GET | `/dataservice/statistics/ppl/ctg/aggregation` | `query_statistics` | `ppl-ctg / aggregation` |
+| Monitoring: PPL | POST | `/dataservice/statistics/ppl/ctg/aggregation` | `query_statistics` | `ppl-ctg / aggregation` |
+| Monitoring: PPL | GET | `/dataservice/statistics/ppl/ctg/doccount` | `query_statistics` | `ppl-ctg / doccount` |
+| Monitoring: PPL | POST | `/dataservice/statistics/ppl/ctg/doccount` | `query_statistics` | `ppl-ctg / doccount` |
+| Monitoring: PPL | GET | `/dataservice/statistics/ppl/ctg/fields` | `query_statistics` | `ppl-ctg / fields` |
+| Monitoring: PPL | GET | `/dataservice/statistics/ppl/ctg/page` | `query_statistics` | `ppl-ctg / page` |
+| Monitoring: PPL | POST | `/dataservice/statistics/ppl/ctg/page` | `query_statistics` | `ppl-ctg / page` |
+| Monitoring: PPL | GET | `/dataservice/statistics/ppl/ctg/query/fields` | `query_statistics` | `ppl-ctg / query-fields` |
+| Monitoring: PPL | GET | `/dataservice/statistics/ppl/reordering` | `query_statistics` | `ppl-reordering / raw` |
+| Monitoring: PPL | POST | `/dataservice/statistics/ppl/reordering` | `query_statistics` | `ppl-reordering / raw` |
+| Monitoring: PPL | GET | `/dataservice/statistics/ppl/reordering/aggregation` | `query_statistics` | `ppl-reordering / aggregation` |
+| Monitoring: PPL | POST | `/dataservice/statistics/ppl/reordering/aggregation` | `query_statistics` | `ppl-reordering / aggregation` |
+| Monitoring: PPL | GET | `/dataservice/statistics/ppl/reordering/doccount` | `query_statistics` | `ppl-reordering / doccount` |
+| Monitoring: PPL | POST | `/dataservice/statistics/ppl/reordering/doccount` | `query_statistics` | `ppl-reordering / doccount` |
+| Monitoring: PPL | GET | `/dataservice/statistics/ppl/reordering/fields` | `query_statistics` | `ppl-reordering / fields` |
+| Monitoring: PPL | GET | `/dataservice/statistics/ppl/reordering/page` | `query_statistics` | `ppl-reordering / page` |
+| Monitoring: PPL | POST | `/dataservice/statistics/ppl/reordering/page` | `query_statistics` | `ppl-reordering / page` |
+| Monitoring: PPL | GET | `/dataservice/statistics/ppl/reordering/query/fields` | `query_statistics` | `ppl-reordering / query-fields` |
+| Monitoring: Qfp | GET | `/dataservice/statistics/qfp` | `query_statistics` | `qfp / raw` |
+| Monitoring: Qfp | POST | `/dataservice/statistics/qfp` | `query_statistics` | `qfp / raw` |
+| Monitoring: Qfp | GET | `/dataservice/statistics/qfp/aggregation` | `query_statistics` | `qfp / aggregation` |
+| Monitoring: Qfp | POST | `/dataservice/statistics/qfp/aggregation` | `query_statistics` | `qfp / aggregation` |
+| Monitoring: Qfp | GET | `/dataservice/statistics/qfp/doccount` | `query_statistics` | `qfp / doccount` |
+| Monitoring: Qfp | POST | `/dataservice/statistics/qfp/doccount` | `query_statistics` | `qfp / doccount` |
+| Monitoring: Qfp | GET | `/dataservice/statistics/qfp/fields` | `query_statistics` | `qfp / fields` |
+| Monitoring: Qfp | GET | `/dataservice/statistics/qfp/page` | `query_statistics` | `qfp / page` |
+| Monitoring: Qfp | POST | `/dataservice/statistics/qfp/page` | `query_statistics` | `qfp / page` |
+| Monitoring: Qfp | GET | `/dataservice/statistics/qfp/query/fields` | `query_statistics` | `qfp / query-fields` |
+| Monitoring: Qfp Drop Statistics | GET | `/dataservice/statistics/qfpdrop` | `query_statistics` | `qfpdrop / raw` |
+| Monitoring: Qfp Drop Statistics | POST | `/dataservice/statistics/qfpdrop` | `query_statistics` | `qfpdrop / raw` |
+| Monitoring: Qfp Drop Statistics | GET | `/dataservice/statistics/qfpdrop/aggregation` | `query_statistics` | `qfpdrop / aggregation` |
+| Monitoring: Qfp Drop Statistics | POST | `/dataservice/statistics/qfpdrop/aggregation` | `query_statistics` | `qfpdrop / aggregation` |
+| Monitoring: Qfp Drop Statistics | GET | `/dataservice/statistics/qfpdrop/doccount` | `query_statistics` | `qfpdrop / doccount` |
+| Monitoring: Qfp Drop Statistics | POST | `/dataservice/statistics/qfpdrop/doccount` | `query_statistics` | `qfpdrop / doccount` |
+| Monitoring: Qfp Drop Statistics | GET | `/dataservice/statistics/qfpdrop/fields` | `query_statistics` | `qfpdrop / fields` |
+| Monitoring: Qfp Drop Statistics | GET | `/dataservice/statistics/qfpdrop/overview/{type}` | `get_monitoring_info` | `qfp-drop-overview` |
+| Monitoring: Qfp Drop Statistics | GET | `/dataservice/statistics/qfpdrop/overview/droptype/{typename}` | `get_monitoring_info` | `qfp-drop-type` |
+| Monitoring: Qfp Drop Statistics | GET | `/dataservice/statistics/qfpdrop/page` | `query_statistics` | `qfpdrop / page` |
+| Monitoring: Qfp Drop Statistics | POST | `/dataservice/statistics/qfpdrop/page` | `query_statistics` | `qfpdrop / page` |
+| Monitoring: Qfp Drop Statistics | GET | `/dataservice/statistics/qfpdrop/query/fields` | `query_statistics` | `qfpdrop / query-fields` |
+| Monitoring: QoS | GET | `/dataservice/statistics/qos` | `query_statistics` | `qos / raw` |
+| Monitoring: QoS | POST | `/dataservice/statistics/qos` | `query_statistics` | `qos / raw` |
+| Monitoring: QoS | GET | `/dataservice/statistics/qos/aggregation` | `query_statistics` | `qos / aggregation` |
+| Monitoring: QoS | POST | `/dataservice/statistics/qos/aggregation` | `query_statistics` | `qos / aggregation` |
+| Monitoring: QoS | POST | `/dataservice/statistics/qos/app-agg/aggregation` | `query_statistics` | `qos / app-aggregation` |
+| Monitoring: QoS | GET | `/dataservice/statistics/qos/doccount` | `query_statistics` | `qos / doccount` |
+| Monitoring: QoS | POST | `/dataservice/statistics/qos/doccount` | `query_statistics` | `qos / doccount` |
+| Monitoring: QoS | GET | `/dataservice/statistics/qos/fields` | `query_statistics` | `qos / fields` |
+| Monitoring: QoS | GET | `/dataservice/statistics/qos/page` | `query_statistics` | `qos / page` |
+| Monitoring: QoS | POST | `/dataservice/statistics/qos/page` | `query_statistics` | `qos / page` |
+| Monitoring: QoS | GET | `/dataservice/statistics/qos/query/fields` | `query_statistics` | `qos / query-fields` |
+| Monitoring: QoS | GET | `/dataservice/statistics/qos/session/summary` | `get_monitoring_info` | `qos-session-history` |
+| Monitoring: SDRA | GET | `/dataservice/statistics/sdra/headends` | `get_monitoring_info` | `sdra-headends` |
+| Monitoring: SDRA | GET | `/dataservice/statistics/sdra/sessions` | `get_monitoring_info` | `sdra-sessions` |
+| Monitoring: Search | GET | `/dataservice/v1/search` | `get_monitoring_info` | `search` |
+| Monitoring: Search | GET | `/dataservice/v1/search/categories` | `get_monitoring_info` | `search-categories` |
+| Monitoring: Security Policy | GET | `/dataservice/security/device/health` | `get_device_security_realtime` | `security-device-health` |
+| Monitoring: Security Policy | GET | `/dataservice/security/policy/devicelist` | `get_device_security_realtime` | `security-policy-devices` |
+| Monitoring: Security Policy | POST | `/dataservice/security/policy/fwall/device` | `get_device_security_realtime` | `firewall-device-query` |
+| Monitoring: Security Policy | POST | `/dataservice/security/policy/ips/device` | `get_device_security_realtime` | `ips-device-query` |
+| Monitoring: Security Policy | POST | `/dataservice/security/policy/urlf/device` | `get_device_security_realtime` | `urlf-device-query` |
+| Monitoring: Security Unified Logging Connection Events | GET | `/dataservice/statistics/sul/connections` | `query_statistics` | `sul-connections / raw` |
+| Monitoring: Security Unified Logging Connection Events | POST | `/dataservice/statistics/sul/connections` | `query_statistics` | `sul-connections / raw` |
+| Monitoring: Security Unified Logging Connection Events | GET | `/dataservice/statistics/sul/connections/aggregation` | `query_statistics` | `sul-connections / aggregation` |
+| Monitoring: Security Unified Logging Connection Events | POST | `/dataservice/statistics/sul/connections/aggregation` | `query_statistics` | `sul-connections / aggregation` |
+| Monitoring: Security Unified Logging Connection Events | POST | `/dataservice/statistics/sul/connections/app-agg/aggregation` | `query_statistics` | `sul-connections / app-aggregation` |
+| Monitoring: Security Unified Logging Connection Events | GET | `/dataservice/statistics/sul/connections/doccount` | `query_statistics` | `sul-connections / doccount` |
+| Monitoring: Security Unified Logging Connection Events | POST | `/dataservice/statistics/sul/connections/doccount` | `query_statistics` | `sul-connections / doccount` |
+| Monitoring: Security Unified Logging Connection Events | GET | `/dataservice/statistics/sul/connections/fields` | `query_statistics` | `sul-connections / fields` |
+| Monitoring: Security Unified Logging Connection Events | GET | `/dataservice/statistics/sul/connections/filter/policy_name/{policyType}` | `get_monitoring_info` | `sul-policy-names` |
+| Monitoring: Security Unified Logging Connection Events | GET | `/dataservice/statistics/sul/connections/page` | `query_statistics` | `sul-connections / page` |
+| Monitoring: Security Unified Logging Connection Events | POST | `/dataservice/statistics/sul/connections/page` | `query_statistics` | `sul-connections / page` |
+| Monitoring: Security Unified Logging Connection Events | GET | `/dataservice/statistics/sul/connections/query/fields` | `query_statistics` | `sul-connections / query-fields` |
+| Monitoring: Server Info | GET | `/dataservice/server/info` | `get_monitoring_info` | `server-info` |
+| Monitoring: SiteHealth Monitor | GET | `/dataservice/statistics/sitehealth` | `query_statistics` | `sitehealth / raw` |
+| Monitoring: SiteHealth Monitor | POST | `/dataservice/statistics/sitehealth` | `query_statistics` | `sitehealth / raw` |
+| Monitoring: SiteHealth Monitor | GET | `/dataservice/statistics/sitehealth/aggregation` | `query_statistics` | `sitehealth / aggregation` |
+| Monitoring: SiteHealth Monitor | POST | `/dataservice/statistics/sitehealth/aggregation` | `query_statistics` | `sitehealth / aggregation` |
+| Monitoring: SiteHealth Monitor | GET | `/dataservice/statistics/sitehealth/common` | `get_monitoring_info` | `site-health` |
+| Monitoring: SiteHealth Monitor | GET | `/dataservice/statistics/sitehealth/doccount` | `query_statistics` | `sitehealth / doccount` |
+| Monitoring: SiteHealth Monitor | POST | `/dataservice/statistics/sitehealth/doccount` | `query_statistics` | `sitehealth / doccount` |
+| Monitoring: SiteHealth Monitor | GET | `/dataservice/statistics/sitehealth/fields` | `query_statistics` | `sitehealth / fields` |
+| Monitoring: SiteHealth Monitor | GET | `/dataservice/statistics/sitehealth/page` | `query_statistics` | `sitehealth / page` |
+| Monitoring: SiteHealth Monitor | POST | `/dataservice/statistics/sitehealth/page` | `query_statistics` | `sitehealth / page` |
+| Monitoring: SiteHealth Monitor | GET | `/dataservice/statistics/sitehealth/query/fields` | `query_statistics` | `sitehealth / query-fields` |
+| Monitoring: SiteHealth Monitor | GET | `/dataservice/statistics/sitehealth/topology` | `get_monitoring_info` | `site-health-topology` |
+| Monitoring: Stats Download | GET | `/dataservice/statistics/download/{processType}/fetchvManageList` | `get_monitoring_info` | `stats-download-managers` |
+| Monitoring: Stats Processing | GET | `/dataservice/statistics` | `query_statistics` | `tunnel-health / raw` |
+| Monitoring: Stats Processing | GET | `/dataservice/statistics/collect/thread/status` | `get_monitoring_info` | `stats-collect-threads` |
+| Monitoring: Stats Processing | GET | `/dataservice/statistics/process/counters` | `get_monitoring_info` | `stats-process-counters` |
+| Monitoring: Stats Processing | GET | `/dataservice/statistics/process/status` | `get_monitoring_info` | `stats-process-status` |
+| Monitoring: Stats Processing | GET | `/dataservice/statistics/process/thread/status` | `get_monitoring_info` | `stats-process-threads` |
+| Monitoring: Status | GET | `/dataservice/statistics/settings/disable/devicelist/{indexName}` | `get_monitoring_info` | `stats-disabled-devices` |
+| Monitoring: Status | GET | `/dataservice/statistics/settings/status` | `get_monitoring_info` | `stats-settings` |
+| Monitoring: Status | GET | `/dataservice/statistics/settings/status/device` | `get_monitoring_info` | `stats-settings-device` |
+| Monitoring: Temperature Statistics | GET | `/dataservice/statistics/temperature` | `query_statistics` | `temperature / raw` |
+| Monitoring: Temperature Statistics | POST | `/dataservice/statistics/temperature` | `query_statistics` | `temperature / raw` |
+| Monitoring: Temperature Statistics | GET | `/dataservice/statistics/temperature/aggregation` | `query_statistics` | `temperature / aggregation` |
+| Monitoring: Temperature Statistics | POST | `/dataservice/statistics/temperature/aggregation` | `query_statistics` | `temperature / aggregation` |
+| Monitoring: Temperature Statistics | GET | `/dataservice/statistics/temperature/doccount` | `query_statistics` | `temperature / doccount` |
+| Monitoring: Temperature Statistics | POST | `/dataservice/statistics/temperature/doccount` | `query_statistics` | `temperature / doccount` |
+| Monitoring: Temperature Statistics | GET | `/dataservice/statistics/temperature/fields` | `query_statistics` | `temperature / fields` |
+| Monitoring: Temperature Statistics | GET | `/dataservice/statistics/temperature/overview` | `get_monitoring_info` | `temperature-overview` |
+| Monitoring: Temperature Statistics | GET | `/dataservice/statistics/temperature/page` | `query_statistics` | `temperature / page` |
+| Monitoring: Temperature Statistics | POST | `/dataservice/statistics/temperature/page` | `query_statistics` | `temperature / page` |
+| Monitoring: Temperature Statistics | GET | `/dataservice/statistics/temperature/query/fields` | `query_statistics` | `temperature / query-fields` |
+| Monitoring: Tunnel Health | POST | `/dataservice/statistics` | `query_statistics` | `tunnel-health / raw` |
+| Monitoring: Tunnel Health | GET | `/dataservice/statistics/aggregation` | `query_statistics` | `tunnel-health / aggregation` |
+| Monitoring: Tunnel Health | POST | `/dataservice/statistics/aggregation` | `query_statistics` | `tunnel-health / aggregation` |
+| Monitoring: Tunnel Health | GET | `/dataservice/statistics/doccount` | `query_statistics` | `tunnel-health / doccount` |
+| Monitoring: Tunnel Health | POST | `/dataservice/statistics/doccount` | `query_statistics` | `tunnel-health / doccount` |
+| Monitoring: Tunnel Health | GET | `/dataservice/statistics/fields` | `query_statistics` | `tunnel-health / fields` |
+| Monitoring: Tunnel Health | GET | `/dataservice/statistics/page` | `query_statistics` | `tunnel-health / page` |
+| Monitoring: Tunnel Health | POST | `/dataservice/statistics/page` | `query_statistics` | `tunnel-health / page` |
+| Monitoring: Tunnel Health | GET | `/dataservice/statistics/query/fields` | `query_statistics` | `tunnel-health / query-fields` |
+| Monitoring: Tunnel Health | GET | `/dataservice/statistics/tunnelhealth/history` | `get_monitoring_info` | `tunnel-health-history` |
+| Monitoring: Tunnel Health | GET | `/dataservice/statistics/tunnelhealth/overview/{type}` | `get_monitoring_info` | `tunnel-health-overview` |
+| Monitoring: Umbrella | GET | `/dataservice/statistics/umbrella` | `query_statistics` | `umbrella / raw` |
+| Monitoring: Umbrella | POST | `/dataservice/statistics/umbrella` | `query_statistics` | `umbrella / raw` |
+| Monitoring: Umbrella | GET | `/dataservice/statistics/umbrella/aggregation` | `query_statistics` | `umbrella / aggregation` |
+| Monitoring: Umbrella | POST | `/dataservice/statistics/umbrella/aggregation` | `query_statistics` | `umbrella / aggregation` |
+| Monitoring: Umbrella | GET | `/dataservice/statistics/umbrella/doccount` | `query_statistics` | `umbrella / doccount` |
+| Monitoring: Umbrella | POST | `/dataservice/statistics/umbrella/doccount` | `query_statistics` | `umbrella / doccount` |
+| Monitoring: Umbrella | GET | `/dataservice/statistics/umbrella/fields` | `query_statistics` | `umbrella / fields` |
+| Monitoring: Umbrella | GET | `/dataservice/statistics/umbrella/page` | `query_statistics` | `umbrella / page` |
+| Monitoring: Umbrella | POST | `/dataservice/statistics/umbrella/page` | `query_statistics` | `umbrella / page` |
+| Monitoring: Umbrella | GET | `/dataservice/statistics/umbrella/query/fields` | `query_statistics` | `umbrella / query-fields` |
+| Monitoring: Umbrella Patterns | GET | `/dataservice/statistics/fwall` | `query_statistics` | `fwall / raw` |
+| Monitoring: Umbrella Patterns | POST | `/dataservice/statistics/fwall` | `query_statistics` | `fwall / raw` |
+| Monitoring: Umbrella Patterns | GET | `/dataservice/statistics/fwall/aggregation` | `query_statistics` | `fwall / aggregation` |
+| Monitoring: Umbrella Patterns | POST | `/dataservice/statistics/fwall/aggregation` | `query_statistics` | `fwall / aggregation` |
+| Monitoring: Umbrella Patterns | GET | `/dataservice/statistics/fwall/doccount` | `query_statistics` | `fwall / doccount` |
+| Monitoring: Umbrella Patterns | POST | `/dataservice/statistics/fwall/doccount` | `query_statistics` | `fwall / doccount` |
+| Monitoring: Umbrella Patterns | GET | `/dataservice/statistics/fwall/fields` | `query_statistics` | `fwall / fields` |
+| Monitoring: Umbrella Patterns | GET | `/dataservice/statistics/fwall/page` | `query_statistics` | `fwall / page` |
+| Monitoring: Umbrella Patterns | POST | `/dataservice/statistics/fwall/page` | `query_statistics` | `fwall / page` |
+| Monitoring: Umbrella Patterns | GET | `/dataservice/statistics/fwall/query/fields` | `query_statistics` | `fwall / query-fields` |
+| Monitoring: Underlay Alarms | GET | `/dataservice/device/underlay/alarms/{type}` | `get_monitoring_info` | `underlay-alarms` |
+| Monitoring: URL Filtering | GET | `/dataservice/statistics/urlf` | `query_statistics` | `urlf / raw` |
+| Monitoring: URL Filtering | POST | `/dataservice/statistics/urlf` | `query_statistics` | `urlf / raw` |
+| Monitoring: URL Filtering | GET | `/dataservice/statistics/urlf/aggregation` | `query_statistics` | `urlf / aggregation` |
+| Monitoring: URL Filtering | POST | `/dataservice/statistics/urlf/aggregation` | `query_statistics` | `urlf / aggregation` |
+| Monitoring: URL Filtering | GET | `/dataservice/statistics/urlf/doccount` | `query_statistics` | `urlf / doccount` |
+| Monitoring: URL Filtering | POST | `/dataservice/statistics/urlf/doccount` | `query_statistics` | `urlf / doccount` |
+| Monitoring: URL Filtering | GET | `/dataservice/statistics/urlf/fields` | `query_statistics` | `urlf / fields` |
+| Monitoring: URL Filtering | GET | `/dataservice/statistics/urlf/page` | `query_statistics` | `urlf / page` |
+| Monitoring: URL Filtering | POST | `/dataservice/statistics/urlf/page` | `query_statistics` | `urlf / page` |
+| Monitoring: URL Filtering | GET | `/dataservice/statistics/urlf/query/fields` | `query_statistics` | `urlf / query-fields` |
+| Monitoring: VNF Interface Statistics | GET | `/dataservice/statistics/vnfstatistics` | `query_statistics` | `vnfstatistics / raw` |
+| Monitoring: VNF Interface Statistics | POST | `/dataservice/statistics/vnfstatistics` | `query_statistics` | `vnfstatistics / raw` |
+| Monitoring: VNF Interface Statistics | GET | `/dataservice/statistics/vnfstatistics/aggregation` | `query_statistics` | `vnfstatistics / aggregation` |
+| Monitoring: VNF Interface Statistics | POST | `/dataservice/statistics/vnfstatistics/aggregation` | `query_statistics` | `vnfstatistics / aggregation` |
+| Monitoring: VNF Interface Statistics | GET | `/dataservice/statistics/vnfstatistics/doccount` | `query_statistics` | `vnfstatistics / doccount` |
+| Monitoring: VNF Interface Statistics | POST | `/dataservice/statistics/vnfstatistics/doccount` | `query_statistics` | `vnfstatistics / doccount` |
+| Monitoring: VNF Interface Statistics | GET | `/dataservice/statistics/vnfstatistics/fields` | `query_statistics` | `vnfstatistics / fields` |
+| Monitoring: VNF Interface Statistics | GET | `/dataservice/statistics/vnfstatistics/page` | `query_statistics` | `vnfstatistics / page` |
+| Monitoring: VNF Interface Statistics | POST | `/dataservice/statistics/vnfstatistics/page` | `query_statistics` | `vnfstatistics / page` |
+| Monitoring: VNF Interface Statistics | GET | `/dataservice/statistics/vnfstatistics/query/fields` | `query_statistics` | `vnfstatistics / query-fields` |
+| Monitoring: Wlan Client Info | GET | `/dataservice/statistics/wlanclientinfo` | `query_statistics` | `wlanclientinfo / raw` |
+| Monitoring: Wlan Client Info | POST | `/dataservice/statistics/wlanclientinfo` | `query_statistics` | `wlanclientinfo / raw` |
+| Monitoring: Wlan Client Info | GET | `/dataservice/statistics/wlanclientinfo/aggregation` | `query_statistics` | `wlanclientinfo / aggregation` |
+| Monitoring: Wlan Client Info | POST | `/dataservice/statistics/wlanclientinfo/aggregation` | `query_statistics` | `wlanclientinfo / aggregation` |
+| Monitoring: Wlan Client Info | GET | `/dataservice/statistics/wlanclientinfo/doccount` | `query_statistics` | `wlanclientinfo / doccount` |
+| Monitoring: Wlan Client Info | POST | `/dataservice/statistics/wlanclientinfo/doccount` | `query_statistics` | `wlanclientinfo / doccount` |
+| Monitoring: Wlan Client Info | GET | `/dataservice/statistics/wlanclientinfo/fields` | `query_statistics` | `wlanclientinfo / fields` |
+| Monitoring: Wlan Client Info | GET | `/dataservice/statistics/wlanclientinfo/page` | `query_statistics` | `wlanclientinfo / page` |
+| Monitoring: Wlan Client Info | POST | `/dataservice/statistics/wlanclientinfo/page` | `query_statistics` | `wlanclientinfo / page` |
+| Monitoring: Wlan Client Info | GET | `/dataservice/statistics/wlanclientinfo/query/fields` | `query_statistics` | `wlanclientinfo / query-fields` |
+| Real-Time: AAA | GET | `/dataservice/device/aaa/servers` | `get_device_system_realtime` | `aaa-servers` |
+| Real-Time: AAA | GET | `/dataservice/device/aaa/users` | `get_device_system_realtime` | `aaa-users` |
+| Real-Time: AAA | GET | `/dataservice/device/acl/matchcounter` | `get_device_system_realtime` | `acl-match-counters` |
+| Real-Time: AAA | GET | `/dataservice/device/logging` | `get_device_system_realtime` | `logging` |
+| Real-Time: AAA | GET | `/dataservice/device/unclaimed/vedges` | `get_device_system_realtime` | `unclaimed-vedges` |
+| Real-Time: AAA | GET | `/dataservice/device/users` | `get_device_system_realtime` | `users` |
+| Real-Time: AAA | GET | `/dataservice/device/users/list` | `get_device_system_realtime` | `users-list` |
+| Real-Time: App Hosting | GET | `/dataservice/device/app-hosting/attached-devices` | `get_device_dataplane_realtime` | `app-hosting-attached-devices` |
+| Real-Time: App Hosting | GET | `/dataservice/device/app-hosting/details` | `get_device_dataplane_realtime` | `app-hosting-details` |
+| Real-Time: App Hosting | GET | `/dataservice/device/app-hosting/guest-routes` | `get_device_dataplane_realtime` | `app-hosting-guest-routes` |
+| Real-Time: App Hosting | GET | `/dataservice/device/app-hosting/network-interfaces` | `get_device_dataplane_realtime` | `app-hosting-network-interfaces` |
+| Real-Time: App Hosting | GET | `/dataservice/device/app-hosting/network-utilization` | `get_device_dataplane_realtime` | `app-hosting-network-utilization` |
+| Real-Time: App Hosting | GET | `/dataservice/device/app-hosting/processes` | `get_device_dataplane_realtime` | `app-hosting-processes` |
+| Real-Time: App Hosting | GET | `/dataservice/device/app-hosting/storage-utilization` | `get_device_dataplane_realtime` | `app-hosting-storage-utilization` |
+| Real-Time: App Hosting | GET | `/dataservice/device/app-hosting/utilization` | `get_device_dataplane_realtime` | `app-hosting-utilization` |
+| Real-Time: Appqoe | GET | `/dataservice/device/appqoe/active-flow-id` | `get_device_dataplane_realtime` | `appqoe-active-flow` |
+| Real-Time: Appqoe | GET | `/dataservice/device/appqoe/appqoe-hput-stats` | `get_device_dataplane_realtime` | `appqoe-hput-stats` |
+| Real-Time: Appqoe | GET | `/dataservice/device/appqoe/appqoe-nat-stats` | `get_device_dataplane_realtime` | `appqoe-nat-stats` |
+| Real-Time: Appqoe | GET | `/dataservice/device/appqoe/appqoe-rm-resource` | `get_device_dataplane_realtime` | `appqoe-rm-resources` |
+| Real-Time: Appqoe | GET | `/dataservice/device/appqoe/appqoe-rm-stats` | `get_device_dataplane_realtime` | `appqoe-rm-stats` |
+| Real-Time: Appqoe | GET | `/dataservice/device/appqoe/appqoe-services-status` | `get_device_dataplane_realtime` | `appqoe-services-status` |
+| Real-Time: Appqoe | GET | `/dataservice/device/appqoe/appqoe-sppi-pipe-resource` | `get_device_dataplane_realtime` | `appqoe-sppi-pipes` |
+| Real-Time: Appqoe | GET | `/dataservice/device/appqoe/appqoe-sppi-queue-resource` | `get_device_dataplane_realtime` | `appqoe-sppi-queues` |
+| Real-Time: Appqoe | GET | `/dataservice/device/appqoe/cluster-summary` | `get_device_dataplane_realtime` | `appqoe-cluster-summary` |
+| Real-Time: Appqoe | GET | `/dataservice/device/appqoe/error-recent` | `get_device_dataplane_realtime` | `appqoe-recent-errors` |
+| Real-Time: Appqoe | GET | `/dataservice/device/appqoe/expired-flow-id` | `get_device_dataplane_realtime` | `appqoe-expired-flow` |
+| Real-Time: Appqoe | GET | `/dataservice/device/appqoe/flow-closed-error` | `get_device_dataplane_realtime` | `appqoe-flow-closed-errors` |
+| Real-Time: Appqoe | GET | `/dataservice/device/appqoe/flow-expired` | `get_device_dataplane_realtime` | `appqoe-flows-expired` |
+| Real-Time: Appqoe | GET | `/dataservice/device/appqoe/service-controllers` | `get_device_dataplane_realtime` | `appqoe-service-controllers` |
+| Real-Time: Appqoe | GET | `/dataservice/device/appqoe/status` | `get_device_dataplane_realtime` | `appqoe-status` |
+| Real-Time: Appqoe | GET | `/dataservice/device/appqoe/vpn-id` | `get_device_dataplane_realtime` | `appqoe-vpn-flows` |
+| Real-Time: BFD | GET | `/dataservice/device/bfd/history` | `get_bfd_summary` | `history` |
+| Real-Time: BFD | GET | `/dataservice/device/bfd/links` | `get_bfd_summary` | `links` |
+| Real-Time: BFD | GET | `/dataservice/device/bfd/sites/detail` | `get_bfd_summary` | `sites-detail` |
+| Real-Time: BFD | GET | `/dataservice/device/bfd/sites/summary` | `get_bfd_summary` | `sites-summary` |
+| Real-Time: BFD | GET | `/dataservice/device/bfd/state/device` | `get_bfd_summary` | `device-state` |
+| Real-Time: BFD | GET | `/dataservice/device/bfd/state/device/tloc` | `get_bfd_summary` | `device-tloc-state` |
+| Real-Time: BFD | GET | `/dataservice/device/bfd/state/device/tlocInterfaceMap` | `get_bfd_summary` | `tloc-interface-map` |
+| Real-Time: BFD | GET | `/dataservice/device/bfd/state/remoteSiteList` | `get_bfd_summary` | `remote-sites` |
+| Real-Time: BFD | GET | `/dataservice/device/bfd/status` | `get_bfd_summary` | `status` |
+| Real-Time: BFD | GET | `/dataservice/device/bfd/summary/device` | `get_bfd_summary` | `device-summary` |
+| Real-Time: BFD | GET | `/dataservice/device/bfd/tloc/detail` | `get_bfd_summary` | `tloc-detail` |
+| Real-Time: Bridge | GET | `/dataservice/device/bridge/interface` | `get_device_interface_realtime` | `bridge-interfaces` |
+| Real-Time: Bridge | GET | `/dataservice/device/bridge/mac` | `get_device_interface_realtime` | `bridge-mac` |
+| Real-Time: Cellular | GET | `/dataservice/device/cellular/connection` | `get_device_interface_realtime` | `cellular-connection` |
+| Real-Time: Cellular | GET | `/dataservice/device/cellular/dyingGasp` | `get_device_interface_realtime` | `cellular-dying-gasp` |
+| Real-Time: Cellular | GET | `/dataservice/device/cellular/gps` | `get_device_interface_realtime` | `cellular-gps` |
+| Real-Time: Cellular | GET | `/dataservice/device/cellular/hardware` | `get_device_interface_realtime` | `cellular-hardware` |
+| Real-Time: Cellular | GET | `/dataservice/device/cellular/modem` | `get_device_interface_realtime` | `cellular-modem` |
+| Real-Time: Cellular | GET | `/dataservice/device/cellular/network` | `get_device_interface_realtime` | `cellular-network` |
+| Real-Time: Cellular | GET | `/dataservice/device/cellular/profiles` | `get_device_interface_realtime` | `cellular-profiles` |
+| Real-Time: Cellular | GET | `/dataservice/device/cellular/radio` | `get_device_interface_realtime` | `cellular-radio` |
+| Real-Time: Cellular | GET | `/dataservice/device/cellular/sessions` | `get_device_interface_realtime` | `cellular-sessions` |
+| Real-Time: Cellular | GET | `/dataservice/device/cellular/status` | `get_device_interface_realtime` | `cellular-status` |
+| Real-Time: Cellular | GET | `/dataservice/device/cellular/ursp/routes` | `get_device_interface_realtime` | `cellular-ursp-routes` |
+| Real-Time: Cellular | GET | `/dataservice/device/cellular/ursp/rules` | `get_device_interface_realtime` | `cellular-ursp-rules` |
+| Real-Time: Cellular AON Ipsec Interface  | GET | `/dataservice/device/cellularEiolte/ipsec/interface/counters` | `get_device_interface_realtime` | `eiolte-ipsec-counters` |
+| Real-Time: Cellular AON Ipsec Interface  | GET | `/dataservice/device/cellularEiolte/ipsec/interface/session` | `get_device_interface_realtime` | `eiolte-ipsec-sessions` |
+| Real-Time: Cellular EIOLTE Connection Service | GET | `/dataservice/device/cellularEiolte/connections` | `get_device_interface_realtime` | `eiolte-connections` |
+| Real-Time: Cellular EIOLTE Connection Service | GET | `/dataservice/device/cellularEiolte/radio` | `get_device_interface_realtime` | `eiolte-radio` |
+| Real-Time: Cellular EIOLTE Hardware Service  | GET | `/dataservice/device/cellularEiolte/hardware` | `get_device_interface_realtime` | `eiolte-hardware` |
+| Real-Time: Cellular EIOLTE Network Service | GET | `/dataservice/device/cellularEiolte/network` | `get_device_interface_realtime` | `eiolte-network` |
+| Real-Time: Cellular EIOLTE Sim Service | GET | `/dataservice/device/cellularEiolte/sim` | `get_device_interface_realtime` | `eiolte-sim` |
+| Real-Time: CFM | GET | `/dataservice/device/cfm/mp/database` | `get_device_interface_realtime` | `cfm-database` |
+| Real-Time: CFM | GET | `/dataservice/device/cfm/mp/local/mep` | `get_device_interface_realtime` | `cfm-local-meps` |
+| Real-Time: CFM | GET | `/dataservice/device/cfm/mp/local/mip` | `get_device_interface_realtime` | `cfm-local-mips` |
+| Real-Time: CFM | GET | `/dataservice/device/cfm/mp/remotemep` | `get_device_interface_realtime` | `cfm-remote-meps` |
+| Real-Time: CloudExpress | GET | `/dataservice/device/cloudx/application/detail` | `get_device_dataplane_realtime` | `cloudx-application-detail` |
+| Real-Time: CloudExpress | GET | `/dataservice/device/cloudx/applications` | `get_device_dataplane_realtime` | `cloudx-applications` |
+| Real-Time: CloudExpress | GET | `/dataservice/device/cloudx/gatewayexits` | `get_device_dataplane_realtime` | `cloudx-gateway-exits` |
+| Real-Time: CloudExpress | GET | `/dataservice/device/cloudx/loadbalance` | `get_device_dataplane_realtime` | `cloudx-load-balance` |
+| Real-Time: CloudExpress | GET | `/dataservice/device/cloudx/localexits` | `get_device_dataplane_realtime` | `cloudx-local-exits` |
+| Real-Time: Commit List | GET | `/dataservice/device/configuration/commit-list` | `get_device_system_realtime` | `commit-list` |
+| Real-Time: Container Lifecycle | GET | `/dataservice/device/csp/containers/container` | `get_device_system_realtime` | `nfvis-containers` |
+| Real-Time: Crash Log | GET | `/dataservice/device/crashlog` | `get_device_system_realtime` | `crash-logs` |
+| Real-Time: Crash Log | GET | `/dataservice/device/crashlog/details` | `get_device_system_realtime` | `crash-logs-all` |
+| Real-Time: Crash Log | GET | `/dataservice/device/crashlog/log` | `get_device_system_realtime` | `crash-log` |
+| Real-Time: Crash Log | GET | `/dataservice/device/crashlog/synced` | `get_device_system_realtime` | `crash-logs (synced: true)` |
+| Real-Time: Device Control | GET | `/dataservice/device/control/connectionsinfo` | `get_control_summary` | `connections-info` |
+| Real-Time: Device Control | GET | `/dataservice/device/control/regionconnections` | `get_control_summary` | `region-connections` |
+| Real-Time: Device Control | GET | `/dataservice/device/control/summary/device` | `get_control_summary` | `device-summary` |
+| Real-Time: Device Control | GET | `/dataservice/device/control/waninterface/color` | `get_control_summary` | `wan-interface-color` |
+| Real-Time: Device Feature List | GET | `/dataservice/device/featurelist` | `get_device_system_realtime` | `feature-list` |
+| Real-Time: Device Feature List | GET | `/dataservice/device/featurelist/synced` | `get_device_system_realtime` | `feature-list (synced: true)` |
+| Real-Time: Device System Stats | GET | `/dataservice/statistics/system` | `query_statistics` | `system / raw` |
+| Real-Time: Device System Stats | POST | `/dataservice/statistics/system` | `query_statistics` | `system / raw` |
+| Real-Time: Device System Stats | GET | `/dataservice/statistics/system/aggregation` | `query_statistics` | `system / aggregation` |
+| Real-Time: Device System Stats | POST | `/dataservice/statistics/system/aggregation` | `query_statistics` | `system / aggregation` |
+| Real-Time: Device System Stats | GET | `/dataservice/statistics/system/cpu` | `get_device_system_realtime` | `system-cpu` |
+| Real-Time: Device System Stats | GET | `/dataservice/statistics/system/doccount` | `query_statistics` | `system / doccount` |
+| Real-Time: Device System Stats | POST | `/dataservice/statistics/system/doccount` | `query_statistics` | `system / doccount` |
+| Real-Time: Device System Stats | GET | `/dataservice/statistics/system/fields` | `query_statistics` | `system / fields` |
+| Real-Time: Device System Stats | GET | `/dataservice/statistics/system/memory` | `get_device_system_realtime` | `system-memory` |
+| Real-Time: Device System Stats | GET | `/dataservice/statistics/system/page` | `query_statistics` | `system / page` |
+| Real-Time: Device System Stats | POST | `/dataservice/statistics/system/page` | `query_statistics` | `system / page` |
+| Real-Time: Device System Stats | GET | `/dataservice/statistics/system/query/fields` | `query_statistics` | `system / query-fields` |
+| Real-Time: device/vlan | GET | `/dataservice/device/vlan` | `get_device_interface_realtime` | `vlan` |
+| Real-Time: DHCP | GET | `/dataservice/device/dhcp/client` | `get_device_interface_realtime` | `dhcp-client` |
+| Real-Time: DHCP | GET | `/dataservice/device/dhcp/interface` | `get_device_interface_realtime` | `dhcp-interface` |
+| Real-Time: DHCP | GET | `/dataservice/device/dhcp/server` | `get_device_interface_realtime` | `dhcp-server` |
+| Real-Time: Dns Defense | GET | `/dataservice/device/dns/defense/device-registration` | `get_device_security_realtime` | `dns-defense-registration` |
+| Real-Time: Dns Defense | GET | `/dataservice/device/dns/defense/info` | `get_device_security_realtime` | `dns-defense-info` |
+| Real-Time: DOT1x | GET | `/dataservice/device/dot1x/clients` | `get_device_interface_realtime` | `dot1x-clients` |
+| Real-Time: DOT1x | GET | `/dataservice/device/dot1x/interfaces` | `get_device_interface_realtime` | `dot1x-interfaces` |
+| Real-Time: DOT1x | GET | `/dataservice/device/dot1x/radius` | `get_device_interface_realtime` | `dot1x-radius` |
+| Real-Time: DPI | GET | `/dataservice/device/dpi/application-mapping` | `get_device_dataplane_realtime` | `dpi-application-mapping` |
+| Real-Time: DPI | GET | `/dataservice/device/dpi/application/fields` | `get_device_dataplane_realtime` | `dpi-application-fields` |
+| Real-Time: DPI | GET | `/dataservice/device/dpi/applications` | `get_device_dataplane_realtime` | `dpi-applications` |
+| Real-Time: DPI | GET | `/dataservice/device/dpi/common/applications` | `get_device_dataplane_realtime` | `dpi-common-applications` |
+| Real-Time: DPI | GET | `/dataservice/device/dpi/device/fields` | `get_device_dataplane_realtime` | `dpi-device-fields` |
+| Real-Time: DPI | GET | `/dataservice/device/dpi/devicedetails/fields` | `get_device_dataplane_realtime` | `dpi-device-details-fields` |
+| Real-Time: DPI | GET | `/dataservice/device/dpi/flows` | `get_device_dataplane_realtime` | `dpi-flows` |
+| Real-Time: DPI | GET | `/dataservice/device/dpi/qosmos-static/applications` | `get_device_dataplane_realtime` | `dpi-qosmos-static-applications` |
+| Real-Time: DPI | GET | `/dataservice/device/dpi/summary` | `get_device_dataplane_realtime` | `dpi-summary` |
+| Real-Time: DPI | GET | `/dataservice/device/dpi/supported-applications` | `get_device_dataplane_realtime` | `dpi-supported-applications` |
+| Real-Time: DRE | GET | `/dataservice/device/dre/auto-bypass-stats` | `get_device_dataplane_realtime` | `dre-auto-bypass` |
+| Real-Time: DRE | GET | `/dataservice/device/dre/dre-stats` | `get_device_dataplane_realtime` | `dre-stats` |
+| Real-Time: DRE | GET | `/dataservice/device/dre/dre-status` | `get_device_dataplane_realtime` | `dre-status` |
+| Real-Time: DRE | GET | `/dataservice/device/dre/peer-stats` | `get_device_dataplane_realtime` | `dre-peer-stats` |
+| Real-Time: Dual Static Route Tracker Service | GET | `/dataservice/device/dualStaticRouteTracker` | `get_device_dataplane_realtime` | `dual-static-route-trackers` |
+| Real-Time: Endpoint Tracker Group Service | GET | `/dataservice/device/endpointTrackerGroup` | `get_device_dataplane_realtime` | `endpoint-tracker-groups` |
+| Real-Time: Endpoint Tracker Service | GET | `/dataservice/device/endpointTracker` | `get_device_dataplane_realtime` | `endpoint-trackers` |
+| Real-Time: Geo-fencing | GET | `/dataservice/device/geofence/status` | `get_device_system_realtime` | `geofence-status` |
+| Real-Time: GNSS | GET | `/dataservice/device/gnss/gnss-devices` | `get_device_system_realtime` | `gnss-devices` |
+| Real-Time: GNSS | GET | `/dataservice/device/gnss/gnss-location` | `get_device_system_realtime` | `gnss-location` |
+| Real-Time: GNSS | GET | `/dataservice/device/gnss/gnss-satellite` | `get_device_system_realtime` | `gnss-satellites` |
+| Real-Time: GNSS | GET | `/dataservice/device/gnss/gnss-status` | `get_device_system_realtime` | `gnss-status` |
+| Real-Time: GNSS | GET | `/dataservice/device/gnss/gnss-time` | `get_device_system_realtime` | `gnss-time` |
+| Real-Time: Hardware | GET | `/dataservice/device/hardware/alarms` | `get_device_system_realtime` | `hardware-alarms` |
+| Real-Time: Hardware | GET | `/dataservice/device/hardware/environment` | `get_device_system_realtime` | `hardware-environment` |
+| Real-Time: Hardware | GET | `/dataservice/device/hardware/errors` | `get_device_system_realtime` | `hardware-errors` |
+| Real-Time: Hardware | GET | `/dataservice/device/hardware/inventory` | `get_device_system_realtime` | `hardware-inventory` |
+| Real-Time: Hardware | GET | `/dataservice/device/hardware/status/summary` | `get_device_system_realtime` | `hardware-status` |
+| Real-Time: Hardware | GET | `/dataservice/device/hardware/synced/alarms` | `get_device_system_realtime` | `hardware-alarms (synced: true)` |
+| Real-Time: Hardware | GET | `/dataservice/device/hardware/synced/environment` | `get_device_system_realtime` | `hardware-environment (synced: true)` |
+| Real-Time: Hardware | GET | `/dataservice/device/hardware/synced/inventory` | `get_device_system_realtime` | `hardware-inventory (synced: true)` |
+| Real-Time: Hardware | GET | `/dataservice/device/hardware/system` | `get_device_system_realtime` | `hardware-system` |
+| Real-Time: Hardware | GET | `/dataservice/device/hardware/threshold` | `get_device_system_realtime` | `hardware-threshold` |
+| Real-Time: Ignition Status | GET | `/dataservice/device/ignition/status` | `get_device_system_realtime` | `ignition-status` |
+| Real-Time: Insecure Device Configuration | GET | `/dataservice/device/insecure-config` | `get_device_system_realtime` | `insecure-config` |
+| Real-Time: Interface | GET | `/dataservice/device/interface/arp_stats` | `get_device_interface_realtime` | `interface-arp-stats` |
+| Real-Time: Interface | GET | `/dataservice/device/interface/error_stats` | `get_device_interface_realtime` | `interface-errors` |
+| Real-Time: Interface | GET | `/dataservice/device/interface/pkt_size` | `get_device_interface_realtime` | `interface-packet-sizes` |
+| Real-Time: Interface | GET | `/dataservice/device/interface/port_stats` | `get_device_interface_realtime` | `interface-ports` |
+| Real-Time: Interface | GET | `/dataservice/device/interface/qosStats` | `get_device_interface_realtime` | `interface-qos` |
+| Real-Time: Interface | GET | `/dataservice/device/interface/queue_stats` | `get_device_interface_realtime` | `interface-queues` |
+| Real-Time: Interface | GET | `/dataservice/device/interface/serial` | `get_device_interface_realtime` | `interface-serial` |
+| Real-Time: Interface | GET | `/dataservice/device/interface/stats` | `get_device_interface_realtime` | `interface-stats` |
+| Real-Time: Interface | GET | `/dataservice/device/interface/trustsec` | `get_device_interface_realtime` | `interface-trustsec` |
+| Real-Time: Interface | GET | `/dataservice/device/interface/vpn` | `get_device_interface_realtime` | `interface-vpn` |
+| Real-Time: IP | GET | `/dataservice/device/ip/fib` | `get_device_dataplane_realtime` | `fib` |
+| Real-Time: IP | GET | `/dataservice/device/ip/nat/filter` | `get_device_dataplane_realtime` | `nat-filters` |
+| Real-Time: IP | GET | `/dataservice/device/ip/nat/interface` | `get_device_dataplane_realtime` | `nat-interfaces` |
+| Real-Time: IP | GET | `/dataservice/device/ip/nat/interfacestatistics` | `get_device_dataplane_realtime` | `nat-interface-stats` |
+| Real-Time: IP | GET | `/dataservice/device/ip/nat/translation` | `get_device_dataplane_realtime` | `nat-translations` |
+| Real-Time: IP | GET | `/dataservice/device/ip/routetable` | `get_device_dataplane_realtime` | `route-table` |
+| Real-Time: IPsec | GET | `/dataservice/device/ipsec/identity` | `get_device_security_realtime` | `ipsec-identity` |
+| Real-Time: IPsec | GET | `/dataservice/device/ipsec/ike/inbound` | `get_device_security_realtime` | `ipsec-ike-inbound` |
+| Real-Time: IPsec | GET | `/dataservice/device/ipsec/ike/outbound` | `get_device_security_realtime` | `ipsec-ike-outbound` |
+| Real-Time: IPsec | GET | `/dataservice/device/ipsec/ike/sessions` | `get_device_security_realtime` | `ipsec-ike-sessions` |
+| Real-Time: IPsec | GET | `/dataservice/device/ipsec/ikev1` | `get_device_security_realtime` | `ipsec-ikev1` |
+| Real-Time: IPsec | GET | `/dataservice/device/ipsec/ikev2` | `get_device_security_realtime` | `ipsec-ikev2` |
+| Real-Time: IPsec | GET | `/dataservice/device/ipsec/inbound` | `get_device_security_realtime` | `ipsec-inbound` |
+| Real-Time: IPsec | GET | `/dataservice/device/ipsec/localsa` | `get_device_security_realtime` | `ipsec-local-sa` |
+| Real-Time: IPsec | GET | `/dataservice/device/ipsec/outbound` | `get_device_security_realtime` | `ipsec-outbound` |
+| Real-Time: IPsec | GET | `/dataservice/device/ipsec/pwk/inbound` | `get_device_security_realtime` | `ipsec-pwk-inbound` |
+| Real-Time: IPsec | GET | `/dataservice/device/ipsec/pwk/localsa` | `get_device_security_realtime` | `ipsec-pwk-local-sa` |
+| Real-Time: IPsec | GET | `/dataservice/device/ipsec/pwk/outbound` | `get_device_security_realtime` | `ipsec-pwk-outbound` |
+| Real-Time: IPv4 FIB | GET | `/dataservice/device/ip/v4fib` | `get_device_dataplane_realtime` | `ipv4-fib` |
+| Real-Time: Lacp | GET | `/dataservice/device/lacp/info` | `get_device_interface_realtime` | `lacp-info` |
+| Real-Time: Lacp | GET | `/dataservice/device/lacp/members` | `get_device_interface_realtime` | `lacp-members` |
+| Real-Time: License Info | GET | `/dataservice/device/license/evaluation` | `get_device_system_realtime` | `license-evaluation` |
+| Real-Time: License Info | GET | `/dataservice/device/license/pak` | `get_device_system_realtime` | `license-pak` |
+| Real-Time: License Info | GET | `/dataservice/device/license/privacy` | `get_device_system_realtime` | `license-privacy` |
+| Real-Time: License Info | GET | `/dataservice/device/license/registration` | `get_device_system_realtime` | `license-registration` |
+| Real-Time: License Info | GET | `/dataservice/device/license/udi` | `get_device_system_realtime` | `license-udi` |
+| Real-Time: License Info | GET | `/dataservice/device/license/usage` | `get_device_system_realtime` | `license-usage` |
+| Real-Time: Lpshield | GET | `/dataservice/device/system/lpshield` | `get_device_system_realtime` | `lpshield` |
+| Real-Time: LTE450 Cellular | GET | `/dataservice/device/lte450Cellular/hardware` | `get_device_interface_realtime` | `lte450-hardware` |
+| Real-Time: LTE450 Cellular | GET | `/dataservice/device/lte450Cellular/network` | `get_device_interface_realtime` | `lte450-network` |
+| Real-Time: LTE450 Cellular | GET | `/dataservice/device/lte450Cellular/radio` | `get_device_interface_realtime` | `lte450-radio` |
+| Real-Time: NetworkHub Resources | GET | `/dataservice/device/csp/resources/cpu-info/allocation` | `get_device_system_realtime` | `nfvis-cpu-allocation` |
+| Real-Time: NetworkHub Resources | GET | `/dataservice/device/csp/resources/cpu-info/cpus` | `get_device_system_realtime` | `nfvis-cpus` |
+| Real-Time: NetworkHub Resources | GET | `/dataservice/device/csp/resources/cpu-info/vnfs` | `get_device_system_realtime` | `nfvis-vnf-cpus` |
+| Real-Time: Next Generation Firewall Update Status | GET | `/dataservice/device/ngfw/engine-status` | `get_device_security_realtime` | `ngfw-engine` |
+| Real-Time: Next Generation Firewall Update Status | GET | `/dataservice/device/ngfw/lsp-update-status` | `get_device_security_realtime` | `ngfw-lsp-update` |
+| Real-Time: Next Generation Firewall Update Status | GET | `/dataservice/device/ngfw/vdb-update-status` | `get_device_security_realtime` | `ngfw-vdb-update` |
+| Real-Time: Next Generation Firewall Update Status | GET | `/dataservice/device/ngfw/version-status` | `get_device_security_realtime` | `ngfw-version` |
+| Real-Time: NMS | GET | `/dataservice/device/nms/running` | `get_device_system_realtime` | `nms-running` |
+| Real-Time: NTP | GET | `/dataservice/device/ntp/associations` | `get_device_system_realtime` | `ntp-associations` |
+| Real-Time: NTP | GET | `/dataservice/device/ntp/peer` | `get_device_system_realtime` | `ntp-peers` |
+| Real-Time: NTP | GET | `/dataservice/device/ntp/status` | `get_device_system_realtime` | `ntp-status` |
+| Real-Time: NTP | GET | `/dataservice/device/virtualApplication/te` | `get_device_system_realtime` | `virtual-app-te` |
+| Real-Time: NTP | GET | `/dataservice/device/virtualApplication/utd` | `get_device_system_realtime` | `virtual-app-utd` |
+| Real-Time: NTP | GET | `/dataservice/device/virtualApplication/waas` | `get_device_system_realtime` | `virtual-app-waas` |
+| Real-Time: PIM | GET | `/dataservice/device/ppp/interface` | `get_device_interface_realtime` | `ppp-interfaces` |
+| Real-Time: Pki Trustpoint | GET | `/dataservice/device/pki/trustpoint` | `get_device_system_realtime` | `pki-trustpoints` |
+| Real-Time: Policer | GET | `/dataservice/device/policer` | `get_device_security_realtime` | `policer` |
+| Real-Time: Policy | GET | `/dataservice/device/policy/accesslistassociations` | `get_device_security_realtime` | `policy-acl-associations` |
+| Real-Time: Policy | GET | `/dataservice/device/policy/accesslistcounters` | `get_device_security_realtime` | `policy-acl-counters` |
+| Real-Time: Policy | GET | `/dataservice/device/policy/accesslistnames` | `get_device_security_realtime` | `policy-acl-names` |
+| Real-Time: Policy | GET | `/dataservice/device/policy/accesslistpolicers` | `get_device_security_realtime` | `policy-acl-policers` |
+| Real-Time: Policy | GET | `/dataservice/device/policy/approutepolicyfilter` | `get_device_security_realtime` | `policy-approute-filter` |
+| Real-Time: Policy | GET | `/dataservice/device/policy/datapolicyfilter` | `get_device_security_realtime` | `policy-data-filter` |
+| Real-Time: Policy | GET | `/dataservice/device/policy/filtermemoryusage` | `get_device_security_realtime` | `policy-filter-memory` |
+| Real-Time: Policy | GET | `/dataservice/device/policy/iptosgtbindings` | `get_device_security_realtime` | `identity-ip-sgt-bindings` |
+| Real-Time: Policy | GET | `/dataservice/device/policy/iptouserbindings` | `get_device_security_realtime` | `identity-ip-user-bindings` |
+| Real-Time: Policy | GET | `/dataservice/device/policy/pxgridstatus` | `get_device_security_realtime` | `pxgrid-status` |
+| Real-Time: Policy | GET | `/dataservice/device/policy/pxgridusersessions` | `get_device_security_realtime` | `pxgrid-user-sessions` |
+| Real-Time: Policy | GET | `/dataservice/device/policy/qosmapinfo` | `get_device_security_realtime` | `policy-qos-map` |
+| Real-Time: Policy | GET | `/dataservice/device/policy/qosschedulerinfo` | `get_device_security_realtime` | `policy-qos-scheduler` |
+| Real-Time: Policy | GET | `/dataservice/device/policy/rewriteassociations` | `get_device_security_realtime` | `policy-rewrite-associations` |
+| Real-Time: Policy | GET | `/dataservice/device/policy/userusergroupbindings` | `get_device_security_realtime` | `identity-user-group-bindings` |
+| Real-Time: Policy | GET | `/dataservice/device/policy/vsmart` | `get_device_security_realtime` | `policy-from-controller` |
+| Real-Time: Policy | GET | `/dataservice/device/policy/zbfwdropstatistics` | `get_device_security_realtime` | `zbfw-drops` |
+| Real-Time: Policy | GET | `/dataservice/device/policy/zbfwstatistics` | `get_device_security_realtime` | `zbfw-statistics` |
+| Real-Time: Policy | GET | `/dataservice/device/policy/zonepairsessions` | `get_device_security_realtime` | `zone-pair-sessions` |
+| Real-Time: Policy | GET | `/dataservice/device/policy/zonepairstatistics` | `get_device_security_realtime` | `zone-pair-statistics` |
+| Real-Time: Policy | GET | `/dataservice/device/policy/zonepolicyfilter` | `get_device_security_realtime` | `zone-policy-filters` |
+| Real-Time: Power Consumption | GET | `/dataservice/device/powerconsumption` | `get_device_system_realtime` | `power-consumption` |
+| Real-Time: Power Management | GET | `/dataservice/device/powermgmt/status` | `get_device_system_realtime` | `power-status` |
+| Real-Time: Power Management Daily History | GET | `/dataservice/device/powermgmt/history/daily` | `get_device_system_realtime` | `power-history-daily` |
+| Real-Time: Power Management Hourly History | GET | `/dataservice/device/powermgmt/history/hourly` | `get_device_system_realtime` | `power-history-hourly` |
+| Real-Time: PPPoE | GET | `/dataservice/device/pppoe/session` | `get_device_interface_realtime` | `pppoe-sessions` |
+| Real-Time: PPPoE | GET | `/dataservice/device/pppoe/statistic` | `get_device_interface_realtime` | `pppoe-statistics` |
+| Real-Time: QFP | GET | `/dataservice/device/qfp/classificationmem` | `get_device_dataplane_realtime` | `qfp-classification-memory` |
+| Real-Time: QFP | GET | `/dataservice/device/qfp/classificationtcam` | `get_device_dataplane_realtime` | `qfp-classification-tcam` |
+| Real-Time: QFP | GET | `/dataservice/device/qfp/cpustat` | `get_device_dataplane_realtime` | `qfp-cpu` |
+| Real-Time: QFP | GET | `/dataservice/device/qfp/memstat` | `get_device_dataplane_realtime` | `qfp-memory` |
+| Real-Time: QFP | GET | `/dataservice/device/qfp/qfpdrop` | `get_device_dataplane_realtime` | `qfp-drops` |
+| Real-Time: QoS | GET | `/dataservice/device/qos/session/details` | `get_device_dataplane_realtime` | `qos-session-details` |
+| Real-Time: QoS | GET | `/dataservice/device/qos/session/summary` | `get_device_dataplane_realtime` | `qos-sessions` |
+| Real-Time: QoS | POST | `/dataservice/device/qos/session/summary` | `get_device_dataplane_realtime` | `qos-sessions-query` |
+| Real-Time: Raw Socket | GET | `/dataservice/device/rawsocket/tcp-session` | `get_device_interface_realtime` | `rawsocket-tcp-sessions` |
+| Real-Time: Raw Socket | GET | `/dataservice/device/rawsocket/tcp-session-local` | `get_device_interface_realtime` | `rawsocket-tcp-sessions-local` |
+| Real-Time: Raw Socket | GET | `/dataservice/device/rawsocket/tcp-statistics` | `get_device_interface_realtime` | `rawsocket-tcp-stats` |
+| Real-Time: Raw Socket | GET | `/dataservice/device/rawsocket/udp-session` | `get_device_interface_realtime` | `rawsocket-udp-sessions` |
+| Real-Time: Raw Socket | GET | `/dataservice/device/rawsocket/udp-session-local` | `get_device_interface_realtime` | `rawsocket-udp-sessions-local` |
+| Real-Time: Raw Socket | GET | `/dataservice/device/rawsocket/udp-statistics` | `get_device_interface_realtime` | `rawsocket-udp-stats` |
+| Real-Time: RBAC | GET | `/dataservice/device/csp/pnic` | `get_device_system_realtime` | `nfvis-pnic` |
+| Real-Time: RBAC | GET | `/dataservice/device/csp/pnic/synced` | `get_device_system_realtime` | `nfvis-pnic (synced: true)` |
+| Real-Time: RBAC | GET | `/dataservice/device/csp/rbac` | `get_device_system_realtime` | `nfvis-rbac` |
+| Real-Time: Reboot History | GET | `/dataservice/device/reboothistory` | `get_device_system_realtime` | `reboot-history` |
+| Real-Time: Reboot History | GET | `/dataservice/device/reboothistory/details` | `get_device_system_realtime` | `reboot-history-all` |
+| Real-Time: Reboot History | GET | `/dataservice/device/reboothistory/synced` | `get_device_system_realtime` | `reboot-history (synced: true)` |
+| Real-Time: SDWAN Statistics | GET | `/dataservice/device/sdwan-global-drop-statistics` | `get_device_dataplane_realtime` | `sdwan-drop-statistics` |
+| Real-Time: Security | GET | `/dataservice/device/security/information` | `get_device_security_realtime` | `security-info` |
+| Real-Time: SFP | GET | `/dataservice/device/sfp/detail` | `get_device_system_realtime` | `sfp-detail` |
+| Real-Time: SFP | GET | `/dataservice/device/sfp/diagnostic` | `get_device_system_realtime` | `sfp-diagnostic` |
+| Real-Time: SFP | GET | `/dataservice/device/sfp/diagnosticMeasurementAlarm` | `get_device_system_realtime` | `sfp-alarms` |
+| Real-Time: SFP | GET | `/dataservice/device/sfp/diagnosticMeasurementValue` | `get_device_system_realtime` | `sfp-measurements` |
+| Real-Time: Show On Demand Local | GET | `/dataservice/device/ondemand/local` | `get_device_system_realtime` | `ondemand-local` |
+| Real-Time: Show On Demand Remote | GET | `/dataservice/device/ondemand/remote` | `get_device_system_realtime` | `ondemand-remote` |
+| Real-Time: SIG | GET | `/dataservice/device/sig/getSigTunnelList` | `get_device_security_realtime` | `sig-tunnels` |
+| Real-Time: SIG | GET | `/dataservice/device/sig/getSigTunnelTotal` | `get_device_security_realtime` | `sig-tunnel-total` |
+| Real-Time: SIG | GET | `/dataservice/device/sig/tunnelDashboard` | `get_device_security_realtime` | `sig-dashboard` |
+| Real-Time: SIG | GET | `/dataservice/device/sig/umbrella/tunnels` | `get_device_security_realtime` | `sig-umbrella-tunnels` |
+| Real-Time: SIG | GET | `/dataservice/device/sig/zscaler/tunnels` | `get_device_security_realtime` | `sig-zscaler-tunnels` |
+| Real-Time: Software | GET | `/dataservice/device/smu` | `get_device_system_realtime` | `smu` |
+| Real-Time: Software | GET | `/dataservice/device/smu/synced` | `get_device_system_realtime` | `smu (synced: true)` |
+| Real-Time: Software | GET | `/dataservice/device/software` | `get_device_system_realtime` | `software` |
+| Real-Time: Software | GET | `/dataservice/device/software/synced` | `get_device_system_realtime` | `software (synced: true)` |
+| Real-Time: SSE | GET | `/dataservice/device/sse/tunnels` | `get_device_security_realtime` | `sse-tunnels` |
+| Real-Time: Sslproxy | GET | `/dataservice/device/sslproxy/statistics` | `get_device_security_realtime` | `sslproxy-statistics` |
+| Real-Time: Sslproxy | GET | `/dataservice/device/sslproxy/status` | `get_device_security_realtime` | `sslproxy-status` |
+| Real-Time: Static Route Tracker Service | GET | `/dataservice/device/staticRouteTracker` | `get_device_dataplane_realtime` | `static-route-trackers` |
+| Real-Time: Switchport | GET | `/dataservice/device/switchport` | `get_device_interface_realtime` | `switchport` |
+| Real-Time: System | GET | `/dataservice/device/csp/system/native` | `get_device_system_realtime` | `nfvis-system-native` |
+| Real-Time: System | GET | `/dataservice/device/csp/system/processlist` | `get_device_system_realtime` | `nfvis-processes` |
+| Real-Time: System | GET | `/dataservice/device/csp/system/settings` | `get_device_system_realtime` | `nfvis-settings` |
+| Real-Time: System | GET | `/dataservice/device/csp/system/status` | `get_device_system_realtime` | `nfvis-status` |
+| Real-Time: System | GET | `/dataservice/device/system/clock` | `get_device_system_realtime` | `system-clock` |
+| Real-Time: System | GET | `/dataservice/device/system/info` | `get_device_system_realtime` | `system-info` |
+| Real-Time: System | GET | `/dataservice/device/system/statistics` | `get_device_system_realtime` | `system-statistics` |
+| Real-Time: TCP Optimization | GET | `/dataservice/device/tcpopt/activeflows` | `get_device_dataplane_realtime` | `tcpopt-active-flows` |
+| Real-Time: TCP Optimization | GET | `/dataservice/device/tcpopt/expiredflows` | `get_device_dataplane_realtime` | `tcpopt-expired-flows` |
+| Real-Time: TCP Optimization | GET | `/dataservice/device/tcpopt/summary` | `get_device_dataplane_realtime` | `tcpopt-summary` |
+| Real-Time: Tcpproxy | GET | `/dataservice/device/tcpproxy/statistics` | `get_device_dataplane_realtime` | `tcpproxy-statistics` |
+| Real-Time: Tcpproxy | GET | `/dataservice/device/tcpproxy/status` | `get_device_dataplane_realtime` | `tcpproxy-status` |
+| Real-Time: Tools | GET | `/dataservice/device/tools/netstat` | `get_device_system_realtime` | `tools-netstat` |
+| Real-Time: Tools | GET | `/dataservice/device/tools/nslookup` | `get_device_system_realtime` | `tools-nslookup` |
+| Real-Time: Tools | GET | `/dataservice/device/tools/realtimeinfo` | `get_device_system_realtime` | `tools-realtime-info` |
+| Real-Time: Tools | GET | `/dataservice/device/tools/ss` | `get_device_system_realtime` | `tools-ss` |
+| Real-Time: Tools | GET | `/dataservice/device/tools/system-netfilter` | `get_device_system_realtime` | `tools-netfilter` |
+| Real-Time: Transport | GET | `/dataservice/device/transport/connection` | `get_device_interface_realtime` | `transport-connections` |
+| Real-Time: Trustsec | GET | `/dataservice/device/ctsPac` | `get_device_security_realtime` | `trustsec-pac` |
+| Real-Time: Trustsec | GET | `/dataservice/device/environmentData` | `get_device_security_realtime` | `trustsec-environment` |
+| Real-Time: Trustsec | GET | `/dataservice/device/environmentData/radiusServer` | `get_device_security_realtime` | `trustsec-radius` |
+| Real-Time: Trustsec | GET | `/dataservice/device/roleBasedCounters` | `get_device_security_realtime` | `trustsec-counters` |
+| Real-Time: Trustsec | GET | `/dataservice/device/roleBasedPermissions` | `get_device_security_realtime` | `trustsec-permissions` |
+| Real-Time: Trustsec | GET | `/dataservice/device/roleBasedSgtMap` | `get_device_security_realtime` | `trustsec-sgt-map` |
+| Real-Time: Trustsec | GET | `/dataservice/device/sxpConnections` | `get_device_security_realtime` | `trustsec-sxp` |
+| Real-Time: Tunnel | GET | `/dataservice/device/tunnel/bfd_statistics` | `get_device_dataplane_realtime` | `tunnel-bfd-statistics` |
+| Real-Time: Tunnel | GET | `/dataservice/device/tunnel/fec_statistics` | `get_device_dataplane_realtime` | `tunnel-fec-statistics` |
+| Real-Time: Tunnel | GET | `/dataservice/device/tunnel/gre-keepalives` | `get_device_dataplane_realtime` | `tunnel-gre-keepalives` |
+| Real-Time: Tunnel | GET | `/dataservice/device/tunnel/ipsec_statistics` | `get_device_dataplane_realtime` | `tunnel-ipsec-statistics` |
+| Real-Time: Tunnel | GET | `/dataservice/device/tunnel/packet-duplicate` | `get_device_dataplane_realtime` | `tunnel-packet-duplicate` |
+| Real-Time: Tunnel | GET | `/dataservice/device/tunnel/statistics` | `get_device_dataplane_realtime` | `tunnel-statistics` |
+| Real-Time: Ucse | GET | `/dataservice/device/ucse/stats` | `get_device_system_realtime` | `ucse-stats` |
+| Real-Time: Umbrella | GET | `/dataservice/device/umbrella/device-registration` | `get_device_security_realtime` | `umbrella-registration` |
+| Real-Time: Umbrella | GET | `/dataservice/device/umbrella/dnscrypt` | `get_device_security_realtime` | `umbrella-dnscrypt` |
+| Real-Time: Umbrella | GET | `/dataservice/device/umbrella/dp-stats` | `get_device_security_realtime` | `umbrella-dp-stats` |
+| Real-Time: Umbrella | GET | `/dataservice/device/umbrella/overview` | `get_device_security_realtime` | `umbrella-overview` |
+| Real-Time: Umbrella | GET | `/dataservice/device/umbrella/umbrella-config` | `get_device_security_realtime` | `umbrella-config` |
+| Real-Time: UTD | GET | `/dataservice/device/utd/dataplane-config` | `get_device_security_realtime` | `utd-dataplane-config` |
+| Real-Time: UTD | GET | `/dataservice/device/utd/dataplane-global` | `get_device_security_realtime` | `utd-dataplane-global` |
+| Real-Time: UTD | GET | `/dataservice/device/utd/dataplane-stats` | `get_device_security_realtime` | `utd-dataplane-stats` |
+| Real-Time: UTD | GET | `/dataservice/device/utd/dataplane-stats-summary` | `get_device_security_realtime` | `utd-dataplane-summary` |
+| Real-Time: UTD | GET | `/dataservice/device/utd/engine-instance-status` | `get_device_security_realtime` | `utd-engine-instances` |
+| Real-Time: UTD | GET | `/dataservice/device/utd/engine-status` | `get_device_security_realtime` | `utd-engine-status` |
+| Real-Time: UTD | GET | `/dataservice/device/utd/file-analysis-status` | `get_device_security_realtime` | `utd-file-analysis` |
+| Real-Time: UTD | GET | `/dataservice/device/utd/file-reputation-status` | `get_device_security_realtime` | `utd-file-reputation` |
+| Real-Time: UTD | GET | `/dataservice/device/utd/ips-update-status` | `get_device_security_realtime` | `utd-ips-update` |
+| Real-Time: UTD | GET | `/dataservice/device/utd/signature/version/details` | `get_device_security_realtime` | `utd-signature-version` |
+| Real-Time: UTD | GET | `/dataservice/device/utd/urlf-con-status` | `get_device_security_realtime` | `utd-urlf-connection` |
+| Real-Time: UTD | GET | `/dataservice/device/utd/urlf-update-status` | `get_device_security_realtime` | `utd-urlf-update` |
+| Real-Time: UTD | GET | `/dataservice/device/utd/version-status` | `get_device_security_realtime` | `utd-version` |
+| Real-Time: VDSL Service | GET | `/dataservice/device/vdslService/coLineSpecificStats` | `get_device_interface_realtime` | `vdsl-co-line-stats` |
+| Real-Time: VDSL Service | GET | `/dataservice/device/vdslService/coStats` | `get_device_interface_realtime` | `vdsl-co-stats` |
+| Real-Time: VDSL Service | GET | `/dataservice/device/vdslService/cpeLineSpecificStats` | `get_device_interface_realtime` | `vdsl-cpe-line-stats` |
+| Real-Time: VDSL Service | GET | `/dataservice/device/vdslService/cpeStats` | `get_device_interface_realtime` | `vdsl-cpe-stats` |
+| Real-Time: VDSL Service | GET | `/dataservice/device/vdslService/lineBondingStats` | `get_device_interface_realtime` | `vdsl-line-bonding` |
+| Real-Time: VDSL Service | GET | `/dataservice/device/vdslService/lineSpecificStats` | `get_device_interface_realtime` | `vdsl-line-stats` |
+| Real-Time: VDSL Service | GET | `/dataservice/device/vdslService/vdslInfo` | `get_device_interface_realtime` | `vdsl-info` |
+| Real-Time: VM | GET | `/dataservice/device/vm/nics` | `get_device_system_realtime` | `vm-nics` |
+| Real-Time: VM | GET | `/dataservice/device/vm/notifications` | `get_device_system_realtime` | `vm-notifications` |
+| Real-Time: VM | GET | `/dataservice/device/vm/oper/state` | `get_device_system_realtime` | `vm-oper-state` |
+| Real-Time: VM | GET | `/dataservice/device/vm/state` | `get_device_system_realtime` | `vm-state` |
+| Real-Time: Voice | GET | `/dataservice/device/voice/dspActive` | `get_device_interface_realtime` | `voice-dsp-active` |
+| Real-Time: Voice | GET | `/dataservice/device/voice/phoneInfo` | `get_device_interface_realtime` | `voice-phones` |
+| Real-Time: Voice | GET | `/dataservice/device/voice/profiles` | `get_device_interface_realtime` | `voice-dsp-profiles` |
+| Real-Time: Voice | GET | `/dataservice/device/voice/sccpCcmGroups` | `get_device_interface_realtime` | `voice-sccp-groups` |
+| Real-Time: Voice | GET | `/dataservice/device/voice/sccpConnections` | `get_device_interface_realtime` | `voice-sccp-connections` |
+| Real-Time: Voice | GET | `/dataservice/device/voice/voiceCalls` | `get_device_interface_realtime` | `voice-calls` |
+| Real-Time: Voice | GET | `/dataservice/device/voice/voipCalls` | `get_device_interface_realtime` | `voip-calls` |
+| Real-Time: Voice | GET | `/dataservice/device/voiceisdninfo/isdnstatus` | `get_device_interface_realtime` | `voice-isdn-status` |
+| Real-Time: Voice | GET | `/dataservice/device/voicet1e1controllerinfo/current15minstats` | `get_device_interface_realtime` | `voice-t1e1-15min` |
+| Real-Time: Voice | GET | `/dataservice/device/voicet1e1controllerinfo/totalstats` | `get_device_interface_realtime` | `voice-t1e1-total` |
+| Real-Time: VRRP | GET | `/dataservice/device/vrrp` | `get_device_interface_realtime` | `vrrp` |
+| Real-Time: Wireless | GET | `/dataservice/device/wireless/client` | `get_device_interface_realtime` | `wireless-clients` |
+| Real-Time: Wireless | GET | `/dataservice/device/wireless/radio` | `get_device_interface_realtime` | `wireless-radios` |
+| Real-Time: Wireless | GET | `/dataservice/device/wireless/ssid` | `get_device_interface_realtime` | `wireless-ssids` |
+| Real-Time: Wireless | GET | `/dataservice/device/wireless/status` | `get_device_interface_realtime` | `wireless-status` |
+| Real-Time: WLAN | GET | `/dataservice/device/wlan/clients` | `get_device_interface_realtime` | `wlan-clients` |
+| Real-Time: WLAN | GET | `/dataservice/device/wlan/interfaces` | `get_device_interface_realtime` | `wlan-interfaces` |
+| Real-Time: WLAN | GET | `/dataservice/device/wlan/radios` | `get_device_interface_realtime` | `wlan-radios` |
+| Real-Time: WLAN | GET | `/dataservice/device/wlan/radius` | `get_device_interface_realtime` | `wlan-radius` |
+| Troubleshooting: Device Connectivity | GET | `/dataservice/device/tools/admintech/supportedfeatures/{deviceModel}/{deviceIP}/{personality}` | `get_monitoring_info` | `admin-tech-features` |
+| Troubleshooting: Device Connectivity | POST | `/dataservice/device/tools/admintechlist` | `get_monitoring_info` | `admin-techs-on-device` |
+| Troubleshooting: Device Connectivity | GET | `/dataservice/device/tools/admintechs` | `get_monitoring_info` | `admin-techs` |
+| Troubleshooting: Device Connectivity | GET | `/dataservice/device/tools/admintechs/inprogress` | `get_monitoring_info` | `admin-techs-in-progress` |
+| Troubleshooting: Device Connectivity | POST | `/dataservice/device/tools/nping/{deviceIP}` | `run_device_diagnostic` | `nping` |
+| Troubleshooting: Device Connectivity | POST | `/dataservice/device/tools/ping/{deviceIP}` | `run_device_diagnostic` | `ping` |
+| Troubleshooting: Device Connectivity | POST | `/dataservice/device/tools/servicepath/{deviceIP}` | `run_device_diagnostic` | `service-path` |
+| Troubleshooting: Device Connectivity | POST | `/dataservice/device/tools/traceroute/{deviceIP}` | `run_device_diagnostic` | `traceroute` |
+| Troubleshooting: Device Connectivity | POST | `/dataservice/device/tools/tunnelpath/{deviceIP}` | `run_device_diagnostic` | `tunnel-path` |
+| Troubleshooting: Device Connectivity | GET | `/dataservice/troubleshooting/control/{uuid}` | `get_monitoring_info` | `control-troubleshooting` |
+| Troubleshooting: Device Connectivity | GET | `/dataservice/troubleshooting/devicebringup` | `get_monitoring_info` | `device-bringup` |
+| Troubleshooting: Device Group | GET | `/dataservice/group` | `get_monitoring_info` | `device-groups` |
+| Troubleshooting: Device Group | GET | `/dataservice/group/device` | `get_monitoring_info` | `device-groups-at-site` |
+| Troubleshooting: Device Group | GET | `/dataservice/group/devices` | `get_monitoring_info` | `device-group-devices` |
+| Troubleshooting: Device Group | GET | `/dataservice/group/map/devices` | `get_monitoring_info` | `device-group-map` |
+| Troubleshooting: Device Group | GET | `/dataservice/group/map/devices/links` | `get_monitoring_info` | `device-group-map-links` |
+| Troubleshooting: Diagnostics | GET | `/dataservice/statistics/speedtest` | `query_statistics` | `speedtest / raw` |
+| Troubleshooting: Diagnostics | POST | `/dataservice/statistics/speedtest` | `query_statistics` | `speedtest / raw` |
+| Troubleshooting: Diagnostics | GET | `/dataservice/statistics/speedtest/aggregation` | `query_statistics` | `speedtest / aggregation` |
+| Troubleshooting: Diagnostics | POST | `/dataservice/statistics/speedtest/aggregation` | `query_statistics` | `speedtest / aggregation` |
+| Troubleshooting: Diagnostics | GET | `/dataservice/statistics/speedtest/doccount` | `query_statistics` | `speedtest / doccount` |
+| Troubleshooting: Diagnostics | POST | `/dataservice/statistics/speedtest/doccount` | `query_statistics` | `speedtest / doccount` |
+| Troubleshooting: Diagnostics | GET | `/dataservice/statistics/speedtest/fields` | `query_statistics` | `speedtest / fields` |
+| Troubleshooting: Diagnostics | GET | `/dataservice/statistics/speedtest/page` | `query_statistics` | `speedtest / page` |
+| Troubleshooting: Diagnostics | POST | `/dataservice/statistics/speedtest/page` | `query_statistics` | `speedtest / page` |
+| Troubleshooting: Diagnostics | GET | `/dataservice/statistics/speedtest/query/fields` | `query_statistics` | `speedtest / query-fields` |
+| Troubleshooting: Diagnostics | GET | `/dataservice/stream/device/capture/vnicsInfo/{vnfId}` | `get_monitoring_info` | `capture-vnic-info` |
+| Troubleshooting: Diagnostics | GET | `/dataservice/stream/device/log/sessions` | `get_monitoring_info` | `log-sessions` |
+| Troubleshooting: Diagnostics | GET | `/dataservice/stream/device/log/type` | `get_monitoring_info` | `log-types` |
+| Troubleshooting: Diagnostics | GET | `/dataservice/stream/device/speed/interface/bandwidth` | `get_monitoring_info` | `speed-test-bandwidth` |
+| Troubleshooting: Network Wide Path Insight | GET | `/dataservice/stream/device/nwpi/tasks/{taskId}/traces` | `get_monitoring_info` | `nwpi-task-traces` |
+| Troubleshooting: Network Wide Path Insight | GET | `/dataservice/stream/device/nwpi/tasks/taskHistory` | `get_monitoring_info` | `nwpi-task-history` |
+| Troubleshooting: Network Wide Path Insight | GET | `/dataservice/stream/device/nwpi/traceHistory` | `get_monitoring_info` | `nwpi-trace-history` |
+
+</details>
+
+<details><summary>Operations served by earlier tools</summary>
+
+| Category | Method | Endpoint | Tool |
+|---|---|---|---|
+| Monitoring: Alarms Details | GET | `/dataservice/alarms` | `list_alarms` |
+| Monitoring: Cedge Cflowd | GET | `/dataservice/device/cedgecflowd/app-fwd-cflowd-v6-flows` | `get_ipv6_status` |
+| Monitoring: Cflowd | GET | `/dataservice/device/cflowd/flows` | `get_cflowd_flows` |
+| Monitoring: Cflowd | GET | `/dataservice/device/cflowd/statistics` | `get_cflowd_statistics` |
+| Monitoring: Device Details | GET | `/dataservice/device` | `list_devices, get_device_details` |
+| Monitoring: Device Details | GET | `/dataservice/device/reachable` | `list_reachable_devices` |
+| Monitoring: Device Details | GET | `/dataservice/device/tloc` | `get_device_tloc` |
+| Monitoring: Device Details | GET | `/dataservice/device/vedgeinventory/detail` | `list_vedge_inventory` |
+| Monitoring: Health | GET | `/dataservice/health/devices` | `get_fabric_health` |
+| Real-Time: App Logs | GET | `/dataservice/device/app/log/flow-count` | `get_app_log_flow_count` |
+| Real-Time: App Logs | GET | `/dataservice/device/app/log/flows` | `get_app_log_flows` |
+| Real-Time: Application-Aware Route | GET | `/dataservice/device/app-route/sla-class` | `get_app_route_sla_class` |
+| Real-Time: Application-Aware Route | GET | `/dataservice/device/app-route/statistics` | `get_app_route_statistics` |
+| Real-Time: ARP | GET | `/dataservice/device/arp` | `get_device_arp` |
+| Real-Time: BFD | GET | `/dataservice/device/bfd/sessions` | `get_bfd_sessions` |
+| Real-Time: BFD | GET | `/dataservice/device/bfd/summary` | `get_bfd_summary` |
+| Real-Time: BFD | GET | `/dataservice/device/bfd/synced/sessions` | `get_bfd_sessions` |
+| Real-Time: BFD | GET | `/dataservice/device/bfd/tloc` | `get_bfd_tloc` |
+| Real-Time: BGP | GET | `/dataservice/device/bgp/neighbors` | `get_bgp_neighbors` |
+| Real-Time: BGP | GET | `/dataservice/device/bgp/routes` | `get_bgp_routes` |
+| Real-Time: BGP | GET | `/dataservice/device/bgp/summary` | `get_bgp_summary` |
+| Real-Time: Bridge | GET | `/dataservice/device/bridge/table` | `get_bridge_table` |
+| Real-Time: Device | GET | `/dataservice/device/ipv6/nd6` | `get_ipv6_status` |
+| Real-Time: Device Control | GET | `/dataservice/device/control/affinity/config` | `get_control_affinity` |
+| Real-Time: Device Control | GET | `/dataservice/device/control/affinity/status` | `get_control_affinity` |
+| Real-Time: Device Control | GET | `/dataservice/device/control/connections` | `get_control_connections` |
+| Real-Time: Device Control | GET | `/dataservice/device/control/connectionshistory` | `get_control_connections_history` |
+| Real-Time: Device Control | GET | `/dataservice/device/control/count` | `get_control_count` |
+| Real-Time: Device Control | GET | `/dataservice/device/control/links` | `get_control_links` |
+| Real-Time: Device Control | GET | `/dataservice/device/control/localproperties` | `get_control_local_properties` |
+| Real-Time: Device Control | GET | `/dataservice/device/control/networksummary` | `get_control_network_summary` |
+| Real-Time: Device Control | GET | `/dataservice/device/control/statistics` | `get_control_statistics` |
+| Real-Time: Device Control | GET | `/dataservice/device/control/status` | `get_control_status` |
+| Real-Time: Device Control | GET | `/dataservice/device/control/summary` | `get_control_summary` |
+| Real-Time: Device Control | GET | `/dataservice/device/control/synced/connections` | `get_control_connections` |
+| Real-Time: Device Control | GET | `/dataservice/device/control/synced/localproperties` | `get_control_local_properties` |
+| Real-Time: Device Control | GET | `/dataservice/device/control/synced/waninterface` | `get_control_wan_interfaces` |
+| Real-Time: Device Control | GET | `/dataservice/device/control/validdevices` | `get_control_valid_devices` |
+| Real-Time: Device Control | GET | `/dataservice/device/control/validvmanageid` | `get_control_valid_devices` |
+| Real-Time: Device Control | GET | `/dataservice/device/control/validvsmarts` | `get_control_valid_devices` |
+| Real-Time: Device Control | GET | `/dataservice/device/control/waninterface` | `get_control_wan_interfaces` |
+| Real-Time: DHCP | GET | `/dataservice/device/dhcpv6/interface` | `get_ipv6_status` |
+| Real-Time: EIGRP | GET | `/dataservice/device/eigrp/interface` | `get_eigrp_interfaces` |
+| Real-Time: EIGRP | GET | `/dataservice/device/eigrp/route` | `get_eigrp_routes` |
+| Real-Time: EIGRP | GET | `/dataservice/device/eigrp/topology` | `get_eigrp_topology` |
+| Real-Time: IGMP | GET | `/dataservice/device/igmp/groups` | `get_igmp_status` |
+| Real-Time: IGMP | GET | `/dataservice/device/igmp/interface` | `get_igmp_status` |
+| Real-Time: IGMP | GET | `/dataservice/device/igmp/statistics` | `get_igmp_status` |
+| Real-Time: IGMP | GET | `/dataservice/device/igmp/summary` | `get_igmp_status` |
+| Real-Time: Interface | GET | `/dataservice/device/interface` | `get_device_interfaces` |
+| Real-Time: Interface | GET | `/dataservice/device/interface/ipv6Stats` | `get_ipv6_status` |
+| Real-Time: Interface | GET | `/dataservice/device/interface/synced` | `get_device_interfaces` |
+| Real-Time: IP | GET | `/dataservice/device/ip/ipRoutes` | `get_ipv6_status` |
+| Real-Time: IP | GET | `/dataservice/device/ip/mfiboil` | `get_mfib` |
+| Real-Time: IP | GET | `/dataservice/device/ip/mfibstats` | `get_mfib` |
+| Real-Time: IP | GET | `/dataservice/device/ip/mfibsummary` | `get_mfib` |
+| Real-Time: IP | GET | `/dataservice/device/ip/nat64/translation` | `get_ipv6_status` |
+| Real-Time: IPv6 FIB | GET | `/dataservice/device/ip/v6fib` | `get_ipv6_status` |
+| Real-Time: IPv6 Neighbours | GET | `/dataservice/device/ndv6` | `get_ipv6_status` |
+| Real-Time: Multicast | GET | `/dataservice/device/multicast/replicator` | `get_multicast_status` |
+| Real-Time: Multicast | GET | `/dataservice/device/multicast/rpf` | `get_multicast_status` |
+| Real-Time: Multicast | GET | `/dataservice/device/multicast/topology` | `get_multicast_status` |
+| Real-Time: Multicast | GET | `/dataservice/device/multicast/tunnel` | `get_multicast_status` |
+| Real-Time: OMP | GET | `/dataservice/device/omp/cloudx` | `get_omp_cloudx` |
+| Real-Time: OMP | GET | `/dataservice/device/omp/links` | `get_omp_links` |
+| Real-Time: OMP | GET | `/dataservice/device/omp/mcastautodiscoveradvt` | `get_omp_multicast` |
+| Real-Time: OMP | GET | `/dataservice/device/omp/mcastautodiscoverrecv` | `get_omp_multicast` |
+| Real-Time: OMP | GET | `/dataservice/device/omp/mcastroutesadvt` | `get_omp_multicast` |
+| Real-Time: OMP | GET | `/dataservice/device/omp/mcastroutesrecv` | `get_omp_multicast` |
+| Real-Time: OMP | GET | `/dataservice/device/omp/peers` | `get_omp_peers` |
+| Real-Time: OMP | GET | `/dataservice/device/omp/routes/advertised` | `get_omp_routes` |
+| Real-Time: OMP | GET | `/dataservice/device/omp/routes/advertised/ompIpv6` | `get_omp_routes` |
+| Real-Time: OMP | GET | `/dataservice/device/omp/routes/received` | `get_omp_routes` |
+| Real-Time: OMP | GET | `/dataservice/device/omp/routes/received/ompIpv6` | `get_omp_routes` |
+| Real-Time: OMP | GET | `/dataservice/device/omp/services` | `get_omp_services` |
+| Real-Time: OMP | GET | `/dataservice/device/omp/status` | `get_omp_status` |
+| Real-Time: OMP | GET | `/dataservice/device/omp/summary` | `get_omp_summary` |
+| Real-Time: OMP | GET | `/dataservice/device/omp/synced/peers` | `get_omp_peers` |
+| Real-Time: OMP | GET | `/dataservice/device/omp/tlocs/advertised` | `get_omp_tlocs` |
+| Real-Time: OMP | GET | `/dataservice/device/omp/tlocs/received` | `get_omp_tlocs` |
+| Real-Time: Orchestrator | GET | `/dataservice/device/orchestrator/connections` | `get_validator_connections` |
+| Real-Time: Orchestrator | GET | `/dataservice/device/orchestrator/connectionshistory` | `get_validator_connections` |
+| Real-Time: Orchestrator | GET | `/dataservice/device/orchestrator/localproperties` | `get_validator_local_properties` |
+| Real-Time: Orchestrator | GET | `/dataservice/device/orchestrator/proxymapping` | `get_validator_proxy_mapping` |
+| Real-Time: Orchestrator | GET | `/dataservice/device/orchestrator/statistics` | `get_validator_statistics` |
+| Real-Time: Orchestrator | GET | `/dataservice/device/orchestrator/summary` | `get_validator_summary` |
+| Real-Time: Orchestrator | GET | `/dataservice/device/orchestrator/validvedges` | `get_validator_valid_devices` |
+| Real-Time: Orchestrator | GET | `/dataservice/device/orchestrator/validvmanageid` | `get_validator_valid_devices` |
+| Real-Time: Orchestrator | GET | `/dataservice/device/orchestrator/validvsmarts` | `get_validator_valid_devices` |
+| Real-Time: OSPF | GET | `/dataservice/device/ospf/database` | `get_ospf_database` |
+| Real-Time: OSPF | GET | `/dataservice/device/ospf/databaseexternal` | `get_ospf_database` |
+| Real-Time: OSPF | GET | `/dataservice/device/ospf/databasesummary` | `get_ospf_database` |
+| Real-Time: OSPF | GET | `/dataservice/device/ospf/interface` | `get_ospf_interfaces` |
+| Real-Time: OSPF | GET | `/dataservice/device/ospf/neighbor` | `get_ospf_neighbors` |
+| Real-Time: OSPF | GET | `/dataservice/device/ospf/process` | `get_ospf_process` |
+| Real-Time: OSPF | GET | `/dataservice/device/ospf/routes` | `get_ospf_routes` |
+| Real-Time: OSPF | GET | `/dataservice/device/ospf/v3interface` | `get_ospf_interfaces` |
+| Real-Time: OSPF | GET | `/dataservice/device/ospf/v3neighbor` | `get_ospf_neighbors` |
+| Real-Time: PIM | GET | `/dataservice/device/pim/interface` | `get_pim_status` |
+| Real-Time: PIM | GET | `/dataservice/device/pim/neighbor` | `get_pim_status` |
+| Real-Time: PIM | GET | `/dataservice/device/pim/rp-mapping` | `get_pim_status` |
+| Real-Time: PIM | GET | `/dataservice/device/pim/statistics` | `get_pim_status` |
+| Real-Time: Policy | GET | `/dataservice/device/policy/ipv6/accesslistassociations` | `get_ipv6_policy_status` |
+| Real-Time: Policy | GET | `/dataservice/device/policy/ipv6/accesslistcounters` | `get_ipv6_policy_status` |
+| Real-Time: Policy | GET | `/dataservice/device/policy/ipv6/accesslistnames` | `get_ipv6_policy_status` |
+| Real-Time: Policy | GET | `/dataservice/device/policy/ipv6/accesslistpolicers` | `get_ipv6_policy_status` |
+| Real-Time: SDWAN Statistics | GET | `/dataservice/device/sdwan-stats` | `get_sdwan_stats` |
+| Real-Time: System | GET | `/dataservice/device/system/status` | `get_system_status` |
+| Real-Time: System | GET | `/dataservice/device/system/synced/status` | `get_system_status` |
+| Real-Time: Trustsec | GET | `/dataservice/device/roleBasedIpv6Counters` | `get_ipv6_policy_status` |
+| Real-Time: Trustsec | GET | `/dataservice/device/roleBasedIpv6Permissions` | `get_ipv6_policy_status` |
+| Real-Time: VPN | GET | `/dataservice/device/vpn` | `get_device_vpn` |
+
+</details>
+
+<details><summary>Deprecated operations (not implemented)</summary>
+
+| Category | Method | Endpoint | Operation | Replacement |
+|---|---|---|---|---|
+| Monitoring: BFD | GET | `/dataservice/statistics/bfd` | getStatDataRawData_MonitoringBfd_1503 | None named by Cisco. Closest supported: get_bfd_sessions / get_fabric_bfd_status (real time), query_statistics dataset approute |
+| Monitoring: BFD | POST | `/dataservice/statistics/bfd` | getStatsRawData_MonitoringBfd_1504 | None named by Cisco. Closest supported: get_bfd_sessions / get_fabric_bfd_status (real time), query_statistics dataset approute |
+| Monitoring: BFD | GET | `/dataservice/statistics/bfd/aggregation` | getAggregationDataByQuery_MonitoringBfd_2703 | None named by Cisco. Closest supported: get_bfd_sessions / get_fabric_bfd_status (real time), query_statistics dataset approute |
+| Monitoring: BFD | POST | `/dataservice/statistics/bfd/aggregation` | getPostAggregationDataByQuery_MonitoringBfd_2704 | None named by Cisco. Closest supported: get_bfd_sessions / get_fabric_bfd_status (real time), query_statistics dataset approute |
+| Monitoring: BFD | GET | `/dataservice/statistics/bfd/csv` | getStatDataRawDataAsCSV_MonitoringBfd_1903 | None named by Cisco. Closest supported: get_bfd_sessions / get_fabric_bfd_status (real time), query_statistics dataset approute |
+| Monitoring: BFD | GET | `/dataservice/statistics/bfd/doccount` | getCount_MonitoringBfd_2403 | None named by Cisco. Closest supported: get_bfd_sessions / get_fabric_bfd_status (real time), query_statistics dataset approute |
+| Monitoring: BFD | POST | `/dataservice/statistics/bfd/doccount` | getCountPost_MonitoringBfd_2404 | None named by Cisco. Closest supported: get_bfd_sessions / get_fabric_bfd_status (real time), query_statistics dataset approute |
+| Monitoring: BFD | GET | `/dataservice/statistics/bfd/fields` | getStatDataFields_MonitoringBfd_2203 | None named by Cisco. Closest supported: get_bfd_sessions / get_fabric_bfd_status (real time), query_statistics dataset approute |
+| Monitoring: BFD | GET | `/dataservice/statistics/bfd/page` | getStatsPaginationRawData_MonitoringBfd_2003 | None named by Cisco. Closest supported: get_bfd_sessions / get_fabric_bfd_status (real time), query_statistics dataset approute |
+| Monitoring: BFD | POST | `/dataservice/statistics/bfd/page` | getPostStatsPaginationRawData_MonitoringBfd_2004 | None named by Cisco. Closest supported: get_bfd_sessions / get_fabric_bfd_status (real time), query_statistics dataset approute |
+| Monitoring: BFD | GET | `/dataservice/statistics/bfd/query/fields` | getStatQueryFields_MonitoringBfd_2803 | None named by Cisco. Closest supported: get_bfd_sessions / get_fabric_bfd_status (real time), query_statistics dataset approute |
+| Monitoring: Cflowd | GET | `/dataservice/statistics/cflowd` | getStatDataRawData_MonitoringCflowd_1803 | None named by Cisco. Closest supported: query_statistics dataset flowlog, get_cflowd_flows |
+| Monitoring: Cflowd | POST | `/dataservice/statistics/cflowd` | getStatsRawData_MonitoringCflowd_1804 | None named by Cisco. Closest supported: query_statistics dataset flowlog, get_cflowd_flows |
+| Monitoring: Cflowd | GET | `/dataservice/statistics/cflowd/aggregation` | getAggregationDataByQuery_MonitoringCflowd_3003 | None named by Cisco. Closest supported: query_statistics dataset flowlog, get_cflowd_flows |
+| Monitoring: Cflowd | POST | `/dataservice/statistics/cflowd/aggregation` | getPostAggregationDataByQuery_MonitoringCflowd_3004 | None named by Cisco. Closest supported: query_statistics dataset flowlog, get_cflowd_flows |
+| Monitoring: Cflowd | GET | `/dataservice/statistics/cflowd/csv` | getStatDataRawDataAsCSV_MonitoringCflowd_2203 | None named by Cisco. Closest supported: query_statistics dataset flowlog, get_cflowd_flows |
+| Monitoring: Cflowd | GET | `/dataservice/statistics/cflowd/doccount` | getCount_MonitoringCflowd_2703 | None named by Cisco. Closest supported: query_statistics dataset flowlog, get_cflowd_flows |
+| Monitoring: Cflowd | POST | `/dataservice/statistics/cflowd/doccount` | getCountPost_MonitoringCflowd_2704 | None named by Cisco. Closest supported: query_statistics dataset flowlog, get_cflowd_flows |
+| Monitoring: Cflowd | GET | `/dataservice/statistics/cflowd/fields` | getStatDataFields_MonitoringCflowd_2503 | None named by Cisco. Closest supported: query_statistics dataset flowlog, get_cflowd_flows |
+| Monitoring: Cflowd | GET | `/dataservice/statistics/cflowd/page` | getStatsPaginationRawData_MonitoringCflowd_2303 | None named by Cisco. Closest supported: query_statistics dataset flowlog, get_cflowd_flows |
+| Monitoring: Cflowd | POST | `/dataservice/statistics/cflowd/page` | getPostStatsPaginationRawData_MonitoringCflowd_2304 | None named by Cisco. Closest supported: query_statistics dataset flowlog, get_cflowd_flows |
+| Monitoring: Cflowd | GET | `/dataservice/statistics/cflowd/query/fields` | getStatQueryFields_MonitoringCflowd_3103 | None named by Cisco. Closest supported: query_statistics dataset flowlog, get_cflowd_flows |
+| Monitoring: Device Details | GET | `/dataservice/device/config/html` | getDeviceRunningConfigHTML | None named by Cisco. Same data as text: GET /device/config (excluded here: holds secrets) |
+| Monitoring: Device Statistics | GET | `/dataservice/statistics/device` | getStatDataRawData_MonitoringDeviceStatistics_1803 | None named by Cisco. Closest supported: query_statistics dataset system |
+| Monitoring: Device Statistics | POST | `/dataservice/statistics/device` | getStatsRawData_MonitoringDeviceStatistics_1804 | None named by Cisco. Closest supported: query_statistics dataset system |
+| Monitoring: Device Statistics | GET | `/dataservice/statistics/device/aggregation` | getAggregationDataByQuery_MonitoringDeviceStatistics_3003 | None named by Cisco. Closest supported: query_statistics dataset system |
+| Monitoring: Device Statistics | POST | `/dataservice/statistics/device/aggregation` | getPostAggregationDataByQuery_MonitoringDeviceStatistics_3004 | None named by Cisco. Closest supported: query_statistics dataset system |
+| Monitoring: Device Statistics | GET | `/dataservice/statistics/device/csv` | getStatDataRawDataAsCSV_MonitoringDeviceStatistics_2203 | None named by Cisco. Closest supported: query_statistics dataset system |
+| Monitoring: Device Statistics | GET | `/dataservice/statistics/device/doccount` | getCount_MonitoringDeviceStatistics_2703 | None named by Cisco. Closest supported: query_statistics dataset system |
+| Monitoring: Device Statistics | POST | `/dataservice/statistics/device/doccount` | getCountPost_MonitoringDeviceStatistics_2704 | None named by Cisco. Closest supported: query_statistics dataset system |
+| Monitoring: Device Statistics | GET | `/dataservice/statistics/device/fields` | getStatDataFields_MonitoringDeviceStatistics_2503 | None named by Cisco. Closest supported: query_statistics dataset system |
+| Monitoring: Device Statistics | GET | `/dataservice/statistics/device/page` | getStatsPaginationRawData_MonitoringDeviceStatistics_2303 | None named by Cisco. Closest supported: query_statistics dataset system |
+| Monitoring: Device Statistics | POST | `/dataservice/statistics/device/page` | getPostStatsPaginationRawData_MonitoringDeviceStatistics_2304 | None named by Cisco. Closest supported: query_statistics dataset system |
+| Monitoring: Device Statistics | GET | `/dataservice/statistics/device/query/fields` | getStatQueryFields_MonitoringDeviceStatistics_3103 | None named by Cisco. Closest supported: query_statistics dataset system |
+| Monitoring: SecureX Integration | GET | `/dataservice/accesstoken/{regionBaseUri}/{clientId}` | getSecureXAccessToken | None named by Cisco |
+| Monitoring: SecureX Integration | POST | `/dataservice/device_authorization/{regionBaseUri}/{clientId}` | deviceAuthorization | None named by Cisco |
+| Monitoring: SecureX Integration | GET | `/dataservice/refreshtoken/{regionBaseUri}/{clientId}` | getSecureXRefreshToken | None named by Cisco |
+| Monitoring: SecureX Integration | POST | `/dataservice/token/{regionBaseUri}/{clientId}` | token | None named by Cisco |
+| Monitoring: System Status Stats | GET | `/dataservice/statistics/system/stats` | getStatDataRawData_MonitoringSystemStatusStats_2403 | None named by Cisco. Closest supported: query_statistics dataset system (/statistics/system) |
+| Monitoring: System Status Stats | POST | `/dataservice/statistics/system/stats` | getStatsRawData_MonitoringSystemStatusStats_2404 | None named by Cisco. Closest supported: query_statistics dataset system (/statistics/system) |
+| Monitoring: System Status Stats | GET | `/dataservice/statistics/system/stats/aggregation` | getAggregationDataByQuery_MonitoringSystemStatusStats_3603 | None named by Cisco. Closest supported: query_statistics dataset system (/statistics/system) |
+| Monitoring: System Status Stats | POST | `/dataservice/statistics/system/stats/aggregation` | getPostAggregationDataByQuery_MonitoringSystemStatusStats_3604 | None named by Cisco. Closest supported: query_statistics dataset system (/statistics/system) |
+| Monitoring: System Status Stats | GET | `/dataservice/statistics/system/stats/csv` | getStatDataRawDataAsCSV_MonitoringSystemStatusStats_2803 | None named by Cisco. Closest supported: query_statistics dataset system (/statistics/system) |
+| Monitoring: System Status Stats | GET | `/dataservice/statistics/system/stats/doccount` | getCount_MonitoringSystemStatusStats_3303 | None named by Cisco. Closest supported: query_statistics dataset system (/statistics/system) |
+| Monitoring: System Status Stats | POST | `/dataservice/statistics/system/stats/doccount` | getCountPost_MonitoringSystemStatusStats_3304 | None named by Cisco. Closest supported: query_statistics dataset system (/statistics/system) |
+| Monitoring: System Status Stats | GET | `/dataservice/statistics/system/stats/fields` | getStatDataFields_MonitoringSystemStatusStats_3103 | None named by Cisco. Closest supported: query_statistics dataset system (/statistics/system) |
+| Monitoring: System Status Stats | GET | `/dataservice/statistics/system/stats/page` | getStatsPaginationRawData_MonitoringSystemStatusStats_2903 | None named by Cisco. Closest supported: query_statistics dataset system (/statistics/system) |
+| Monitoring: System Status Stats | POST | `/dataservice/statistics/system/stats/page` | getPostStatsPaginationRawData_MonitoringSystemStatusStats_2904 | None named by Cisco. Closest supported: query_statistics dataset system (/statistics/system) |
+| Monitoring: System Status Stats | GET | `/dataservice/statistics/system/stats/query/fields` | getStatQueryFields_MonitoringSystemStatusStats_3703 | None named by Cisco. Closest supported: query_statistics dataset system (/statistics/system) |
+| Real-Time: DPI | GET | `/dataservice/device/dpi/qosmos/applications` | getQosmosApplicationList | None named by Cisco. Closest supported: get_device_dataplane_realtime view dpi-qosmos-static-applications |
+| Troubleshooting: UMTS | GET | `/dataservice/stream/device/umts/statistics/{deviceUUID}/{eventType}` | getUMTSData | None named by Cisco |
+
+</details>
+
+<details><summary>Other operations without a dedicated view</summary>
+
+| Category | Method | Endpoint | Status | Reason |
+|---|---|---|---|---|
+| File based RealTime Data Collection - Device notification - File generation status | POST | `/dataservice/device/file-based/data-collection/file-generation-status` | State-changing | POST changes configuration or state; call_api_operation runs it when VMANAGE_ALLOW_WRITE=true and confirm: true |
+| File based RealTime Data Collection - Download Generated File | GET | `/dataservice/device/file-based/data-collection/download/{requestUUID}` | Excluded read | File download (binary content); not usable as an MCP JSON result |
+| File based RealTime Data Collection - Initiate File Generation | POST | `/dataservice/device/file-based/data-collection/initiate-file-generation` | State-changing | POST changes configuration or state; call_api_operation runs it when VMANAGE_ALLOW_WRITE=true and confirm: true |
+| Monitoring: Alarms Details | POST | `/dataservice/alarms/clear` | State-changing | POST changes configuration or state; call_api_operation runs it when VMANAGE_ALLOW_WRITE=true and confirm: true |
+| Monitoring: Alarms Details | POST | `/dataservice/alarms/disabled` | State-changing | POST changes configuration or state; call_api_operation runs it when VMANAGE_ALLOW_WRITE=true and confirm: true |
+| Monitoring: Alarms Details | POST | `/dataservice/alarms/dump` | State-changing | POST changes configuration or state; call_api_operation runs it when VMANAGE_ALLOW_WRITE=true and confirm: true |
+| Monitoring: Alarms Details | POST | `/dataservice/alarms/link-state-alarm` | State-changing | POST changes configuration or state; call_api_operation runs it when VMANAGE_ALLOW_WRITE=true and confirm: true |
+| Monitoring: Alarms Details | POST | `/dataservice/alarms/markallasviewed` | State-changing | POST changes configuration or state; call_api_operation runs it when VMANAGE_ALLOW_WRITE=true and confirm: true |
+| Monitoring: Alarms Details | POST | `/dataservice/alarms/markviewed` | State-changing | POST changes configuration or state; call_api_operation runs it when VMANAGE_ALLOW_WRITE=true and confirm: true |
+| Monitoring: Alarms Details | POST | `/dataservice/alarms/purgefrequency` | State-changing | POST changes configuration or state; call_api_operation runs it when VMANAGE_ALLOW_WRITE=true and confirm: true |
+| Monitoring: Alarms Details | GET | `/dataservice/alarms/reset` | State-changing | GET that changes vManage or device state; call_api_operation runs it when VMANAGE_ALLOW_WRITE=true and confirm: true |
+| Monitoring: Alarms Details | GET | `/dataservice/alarms/restart` | State-changing | GET that changes vManage or device state; call_api_operation runs it when VMANAGE_ALLOW_WRITE=true and confirm: true |
+| Monitoring: Alarms Details | POST | `/dataservice/alarms/starttracking/{testName}` | State-changing | POST changes configuration or state; call_api_operation runs it when VMANAGE_ALLOW_WRITE=true and confirm: true |
+| Monitoring: Alarms Details | POST | `/dataservice/alarms/stoptracking/{testName}` | State-changing | POST changes configuration or state; call_api_operation runs it when VMANAGE_ALLOW_WRITE=true and confirm: true |
+| Monitoring: Alarms Notification | POST | `/dataservice/notifications/rule` | State-changing | POST changes configuration or state; call_api_operation runs it when VMANAGE_ALLOW_WRITE=true and confirm: true |
+| Monitoring: Alarms Notification | PUT | `/dataservice/notifications/rule` | State-changing | PUT changes configuration or state; call_api_operation runs it when VMANAGE_ALLOW_WRITE=true and confirm: true |
+| Monitoring: Alarms Notification | POST | `/dataservice/notifications/rule/{type}` | State-changing | POST changes configuration or state; call_api_operation runs it when VMANAGE_ALLOW_WRITE=true and confirm: true |
+| Monitoring: Alarms Notification | PUT | `/dataservice/notifications/rule/{type}` | State-changing | PUT changes configuration or state; call_api_operation runs it when VMANAGE_ALLOW_WRITE=true and confirm: true |
+| Monitoring: Alarms Notification | DELETE | `/dataservice/notifications/rules` | State-changing | DELETE changes configuration or state; call_api_operation runs it when VMANAGE_ALLOW_WRITE=true and confirm: true |
+| Monitoring: App Hosting | GET | `/dataservice/statistics/apphosting/csv` | Excluded read | CSV export of the JSON raw-data operation (use query_statistics, operation raw or page) |
+| Monitoring: App Hosting | GET | `/dataservice/statistics/apphostinginterface/csv` | Excluded read | CSV export of the JSON raw-data operation (use query_statistics, operation raw or page) |
+| Monitoring: Application Aware Routing | GET | `/dataservice/statistics/approute/csv` | Excluded read | CSV export of the JSON raw-data operation (use query_statistics, operation raw or page) |
+| Monitoring: ART | GET | `/dataservice/statistics/art/csv` | Excluded read | CSV export of the JSON raw-data operation (use query_statistics, operation raw or page) |
+| Monitoring: Bridge | GET | `/dataservice/statistics/bridgeinterface/csv` | Excluded read | CSV export of the JSON raw-data operation (use query_statistics, operation raw or page) |
+| Monitoring: Bridge | GET | `/dataservice/statistics/bridgemac/csv` | Excluded read | CSV export of the JSON raw-data operation (use query_statistics, operation raw or page) |
+| Monitoring: CDP | POST | `/dataservice/device/cdp/neighbors` | State-changing | POST changes configuration or state; call_api_operation runs it when VMANAGE_ALLOW_WRITE=true and confirm: true |
+| Monitoring: Cellular-EIOLTE | GET | `/dataservice/statistics/eiolte/csv` | Excluded read | CSV export of the JSON raw-data operation (use query_statistics, operation raw or page) |
+| Monitoring: CloudExpress | GET | `/dataservice/statistics/cloudx/csv` | Excluded read | CSV export of the JSON raw-data operation (use query_statistics, operation raw or page) |
+| Monitoring: Device Details | POST | `/dataservice/device/blockSync` | State-changing | POST changes configuration or state; call_api_operation runs it when VMANAGE_ALLOW_WRITE=true and confirm: true |
+| Monitoring: Device Details | GET | `/dataservice/device/config` | Excluded read | Returns device configuration text, which can hold passwords and keys; preview_config_group_device_config (view existing) returns a masked running config |
+| Monitoring: Device Details | POST | `/dataservice/device/enableSDAVC/{deviceIP}/{enable}` | State-changing | POST changes configuration or state; call_api_operation runs it when VMANAGE_ALLOW_WRITE=true and confirm: true |
+| Monitoring: Device Details | POST | `/dataservice/device/syncall/memorydb` | State-changing | POST changes configuration or state; call_api_operation runs it when VMANAGE_ALLOW_WRITE=true and confirm: true |
+| Monitoring: Device Details | POST | `/dataservice/device/tier` | State-changing | POST changes configuration or state; call_api_operation runs it when VMANAGE_ALLOW_WRITE=true and confirm: true |
+| Monitoring: Device Details | DELETE | `/dataservice/device/tier/{tierName}` | State-changing | DELETE changes configuration or state; call_api_operation runs it when VMANAGE_ALLOW_WRITE=true and confirm: true |
+| Monitoring: Device Details | DELETE | `/dataservice/device/unreachable/{deviceIP}` | State-changing | DELETE changes configuration or state; call_api_operation runs it when VMANAGE_ALLOW_WRITE=true and confirm: true |
+| Monitoring: Device Details | POST | `/dataservice/v1/device/analyzeCliConfig` | State-changing | POST changes configuration or state; call_api_operation runs it when VMANAGE_ALLOW_WRITE=true and confirm: true |
+| Monitoring: Device Details | GET | `/dataservice/v1/device/runningIosCliConfig/{deviceUUID}` | Excluded read | Returns device configuration text, which can hold passwords and keys; preview_config_group_device_config (view existing) returns a masked running config |
+| Monitoring: Device Details | GET | `/dataservice/v1/device/unsupportedCliConfig/{deviceUUID}` | Excluded read | Returns device configuration text, which can hold passwords and keys; preview_config_group_device_config (view existing) returns a masked running config |
+| Monitoring: DPI | GET | `/dataservice/statistics/dpi/csv` | Excluded read | CSV export of the JSON raw-data operation (use query_statistics, operation raw or page) |
+| Monitoring: DPI - On-demand troubleshooting | POST | `/dataservice/statistics/on-demand/queue` | State-changing | POST changes configuration or state; call_api_operation runs it when VMANAGE_ALLOW_WRITE=true and confirm: true |
+| Monitoring: DPI - On-demand troubleshooting | DELETE | `/dataservice/statistics/on-demand/queue/{entryId}` | State-changing | DELETE changes configuration or state; call_api_operation runs it when VMANAGE_ALLOW_WRITE=true and confirm: true |
+| Monitoring: DPI - On-demand troubleshooting | PUT | `/dataservice/statistics/on-demand/queue/{entryId}` | State-changing | PUT changes configuration or state; call_api_operation runs it when VMANAGE_ALLOW_WRITE=true and confirm: true |
+| Monitoring: Endpoint Tracker Status | GET | `/dataservice/statistics/endpointTracker/csv` | Excluded read | CSV export of the JSON raw-data operation (use query_statistics, operation raw or page) |
+| Monitoring: Events | GET | `/dataservice/event/enable/fileprocess` | State-changing | GET that changes vManage or device state; call_api_operation runs it when VMANAGE_ALLOW_WRITE=true and confirm: true |
+| Monitoring: Flowlog | GET | `/dataservice/statistics/flowlog/csv` | Excluded read | CSV export of the JSON raw-data operation (use query_statistics, operation raw or page) |
+| Monitoring: Interface Statistics | GET | `/dataservice/statistics/interface/csv` | Excluded read | CSV export of the JSON raw-data operation (use query_statistics, operation raw or page) |
+| Monitoring: IPsAlert | GET | `/dataservice/statistics/ipsalert/csv` | Excluded read | CSV export of the JSON raw-data operation (use query_statistics, operation raw or page) |
+| Monitoring: LLDP | POST | `/dataservice/device/lldp/neighbors` | State-changing | POST changes configuration or state; call_api_operation runs it when VMANAGE_ALLOW_WRITE=true and confirm: true |
+| Monitoring: PPL | GET | `/dataservice/statistics/ppl/ctg/csv` | Excluded read | CSV export of the JSON raw-data operation (use query_statistics, operation raw or page) |
+| Monitoring: PPL | GET | `/dataservice/statistics/ppl/reordering/csv` | Excluded read | CSV export of the JSON raw-data operation (use query_statistics, operation raw or page) |
+| Monitoring: Qfp | GET | `/dataservice/statistics/qfp/csv` | Excluded read | CSV export of the JSON raw-data operation (use query_statistics, operation raw or page) |
+| Monitoring: Qfp Drop Statistics | GET | `/dataservice/statistics/qfpdrop/csv` | Excluded read | CSV export of the JSON raw-data operation (use query_statistics, operation raw or page) |
+| Monitoring: QoS | GET | `/dataservice/statistics/qos/csv` | Excluded read | CSV export of the JSON raw-data operation (use query_statistics, operation raw or page) |
+| Monitoring: Security Unified Logging Connection Events | GET | `/dataservice/statistics/sul/connections/csv` | Excluded read | CSV export of the JSON raw-data operation (use query_statistics, operation raw or page) |
+| Monitoring: SiteHealth Monitor | GET | `/dataservice/statistics/sitehealth/csv` | Excluded read | CSV export of the JSON raw-data operation (use query_statistics, operation raw or page) |
+| Monitoring: Stats Download | GET | `/dataservice/statistics/download/{processType}/file/{token}/{fileName}` | Unsupported over MCP | Issues or exposes tokens, passwords, credentials or bootstrap secrets |
+| Monitoring: Stats Download | POST | `/dataservice/statistics/download/{processType}/filelist` | State-changing | POST changes configuration or state; call_api_operation runs it when VMANAGE_ALLOW_WRITE=true and confirm: true |
+| Monitoring: Stats Processing | GET | `/dataservice/statistics/collect` | State-changing | GET that changes vManage or device state; call_api_operation runs it when VMANAGE_ALLOW_WRITE=true and confirm: true |
+| Monitoring: Stats Processing | GET | `/dataservice/statistics/collection/reset/{processQueue}` | State-changing | GET that changes vManage or device state; call_api_operation runs it when VMANAGE_ALLOW_WRITE=true and confirm: true |
+| Monitoring: Stats Processing | GET | `/dataservice/statistics/demomode` | State-changing | GET that changes vManage or device state; call_api_operation runs it when VMANAGE_ALLOW_WRITE=true and confirm: true |
+| Monitoring: Stats Processing | GET | `/dataservice/statistics/process` | Excluded read | processStatisticsData ("Process stats data") runs statistics processing on the Manager; not a monitoring read |
+| Monitoring: Status | PUT | `/dataservice/statistics/settings/disable/devicelist/{indexName}` | State-changing | PUT changes configuration or state; call_api_operation runs it when VMANAGE_ALLOW_WRITE=true and confirm: true |
+| Monitoring: Status | PUT | `/dataservice/statistics/settings/status` | State-changing | PUT changes configuration or state; call_api_operation runs it when VMANAGE_ALLOW_WRITE=true and confirm: true |
+| Monitoring: Temperature Statistics | GET | `/dataservice/statistics/temperature/csv` | Excluded read | CSV export of the JSON raw-data operation (use query_statistics, operation raw or page) |
+| Monitoring: Tunnel Health | GET | `/dataservice/statistics/csv` | Excluded read | CSV export of the JSON raw-data operation (use query_statistics, operation raw or page) |
+| Monitoring: Umbrella | GET | `/dataservice/statistics/umbrella/csv` | Excluded read | CSV export of the JSON raw-data operation (use query_statistics, operation raw or page) |
+| Monitoring: Umbrella Patterns | GET | `/dataservice/statistics/fwall/csv` | Excluded read | CSV export of the JSON raw-data operation (use query_statistics, operation raw or page) |
+| Monitoring: URL Filtering | GET | `/dataservice/statistics/urlf/csv` | Excluded read | CSV export of the JSON raw-data operation (use query_statistics, operation raw or page) |
+| Monitoring: VNF Interface Statistics | GET | `/dataservice/statistics/vnfstatistics/csv` | Excluded read | CSV export of the JSON raw-data operation (use query_statistics, operation raw or page) |
+| Monitoring: Wlan Client Info | GET | `/dataservice/statistics/wlanclientinfo/csv` | Excluded read | CSV export of the JSON raw-data operation (use query_statistics, operation raw or page) |
+| Real-Time: Device System Stats | GET | `/dataservice/statistics/system/csv` | Excluded read | CSV export of the JSON raw-data operation (use query_statistics, operation raw or page) |
+| Real-Time: Interface | GET | `/dataservice/device/interface/config` | Excluded read | Returns device configuration text, which can hold passwords and keys; preview_config_group_device_config (view existing) returns a masked running config |
+| Troubleshooting MRE - Workflow | GET | `/dataservice/troubleshooting/mre/workflow/{operation}/{executionId}` | State-changing | GET documented as an action (changes vManage or device state); call_api_operation runs it when VMANAGE_ALLOW_WRITE=true and confirm: true |
+| Troubleshooting MRE - Workflow | POST | `/dataservice/troubleshooting/mre/workflow/{workflowType}` | State-changing | POST changes configuration or state; call_api_operation runs it when VMANAGE_ALLOW_WRITE=true and confirm: true |
+| Troubleshooting: Device Connectivity | POST | `/dataservice/device/tools/admintech` | State-changing | POST changes configuration or state; call_api_operation runs it when VMANAGE_ALLOW_WRITE=true and confirm: true |
+| Troubleshooting: Device Connectivity | DELETE | `/dataservice/device/tools/admintech/{requestID}` | State-changing | DELETE changes configuration or state; call_api_operation runs it when VMANAGE_ALLOW_WRITE=true and confirm: true |
+| Troubleshooting: Device Connectivity | POST | `/dataservice/device/tools/admintech/copy` | State-changing | POST changes configuration or state; call_api_operation runs it when VMANAGE_ALLOW_WRITE=true and confirm: true |
+| Troubleshooting: Device Connectivity | POST | `/dataservice/device/tools/admintech/delayed/cancel` | State-changing | POST changes configuration or state; call_api_operation runs it when VMANAGE_ALLOW_WRITE=true and confirm: true |
+| Troubleshooting: Device Connectivity | DELETE | `/dataservice/device/tools/admintech/delete` | State-changing | DELETE changes configuration or state; call_api_operation runs it when VMANAGE_ALLOW_WRITE=true and confirm: true |
+| Troubleshooting: Device Connectivity | GET | `/dataservice/device/tools/admintech/download/{filename}` | Excluded read | File download (binary content); not usable as an MCP JSON result |
+| Troubleshooting: Device Connectivity | POST | `/dataservice/device/tools/admintech/force/generate` | State-changing | POST changes configuration or state; call_api_operation runs it when VMANAGE_ALLOW_WRITE=true and confirm: true |
+| Troubleshooting: Device Connectivity | POST | `/dataservice/device/tools/admintechs/upload` | State-changing | POST changes configuration or state; call_api_operation runs it when VMANAGE_ALLOW_WRITE=true and confirm: true |
+| Troubleshooting: Device Connectivity | POST | `/dataservice/device/tools/factoryreset` | State-changing | POST changes configuration or state; call_api_operation runs it when VMANAGE_ALLOW_WRITE=true and confirm: true |
+| Troubleshooting: Device Connectivity | POST | `/dataservice/device/tools/porthopcolor/{deviceIP}` | State-changing | POST changes configuration or state; call_api_operation runs it when VMANAGE_ALLOW_WRITE=true and confirm: true |
+| Troubleshooting: Device Connectivity | POST | `/dataservice/device/tools/reset/interface/{deviceIP}` | State-changing | POST changes configuration or state; call_api_operation runs it when VMANAGE_ALLOW_WRITE=true and confirm: true |
+| Troubleshooting: Device Connectivity | POST | `/dataservice/device/tools/reset/profile` | State-changing | POST changes configuration or state; call_api_operation runs it when VMANAGE_ALLOW_WRITE=true and confirm: true |
+| Troubleshooting: Device Connectivity | POST | `/dataservice/device/tools/resetuser/{deviceIP}` | State-changing | POST changes configuration or state; call_api_operation runs it when VMANAGE_ALLOW_WRITE=true and confirm: true |
+| Troubleshooting: Diagnostics | GET | `/dataservice/statistics/speedtest/csv` | Excluded read | CSV export of the JSON raw-data operation (use query_statistics, operation raw or page) |
+| Troubleshooting: Diagnostics | POST | `/dataservice/stream/device/capture` | State-changing | POST changes configuration or state; call_api_operation runs it when VMANAGE_ALLOW_WRITE=true and confirm: true |
+| Troubleshooting: Diagnostics | POST | `/dataservice/stream/device/capture/{deviceUUID}/{sessionId}` | State-changing | POST changes configuration or state; call_api_operation runs it when VMANAGE_ALLOW_WRITE=true and confirm: true |
+| Troubleshooting: Diagnostics | GET | `/dataservice/stream/device/capture/disable/{sessionId}` | State-changing | GET that changes vManage or device state; call_api_operation runs it when VMANAGE_ALLOW_WRITE=true and confirm: true |
+| Troubleshooting: Diagnostics | GET | `/dataservice/stream/device/capture/download/{sessionId}` | Excluded read | Reads a streaming troubleshooting session (packet capture, debug log, speed test, DM log) that only a state-changing operation can start |
+| Troubleshooting: Diagnostics | GET | `/dataservice/stream/device/capture/forcedisbale/{sessionId}` | State-changing | GET documented as an action (changes vManage or device state); call_api_operation runs it when VMANAGE_ALLOW_WRITE=true and confirm: true |
+| Troubleshooting: Diagnostics | GET | `/dataservice/stream/device/capture/start/{sessionId}` | State-changing | GET that changes vManage or device state; call_api_operation runs it when VMANAGE_ALLOW_WRITE=true and confirm: true |
+| Troubleshooting: Diagnostics | GET | `/dataservice/stream/device/capture/status/{sessionId}` | Excluded read | Reads a streaming troubleshooting session (packet capture, debug log, speed test, DM log) that only a state-changing operation can start |
+| Troubleshooting: Diagnostics | GET | `/dataservice/stream/device/capture/stop/{sessionId}` | State-changing | GET that changes vManage or device state; call_api_operation runs it when VMANAGE_ALLOW_WRITE=true and confirm: true |
+| Troubleshooting: Diagnostics | POST | `/dataservice/stream/device/log` | State-changing | POST changes configuration or state; call_api_operation runs it when VMANAGE_ALLOW_WRITE=true and confirm: true |
+| Troubleshooting: Diagnostics | POST | `/dataservice/stream/device/log/{logType}/{deviceUUID}/{sessionId}` | State-changing | POST changes configuration or state; call_api_operation runs it when VMANAGE_ALLOW_WRITE=true and confirm: true |
+| Troubleshooting: Diagnostics | GET | `/dataservice/stream/device/log/{sessionId}` | Excluded read | Reads a streaming troubleshooting session (packet capture, debug log, speed test, DM log) that only a state-changing operation can start |
+| Troubleshooting: Diagnostics | GET | `/dataservice/stream/device/log/disable/{sessionId}` | State-changing | GET that changes vManage or device state; call_api_operation runs it when VMANAGE_ALLOW_WRITE=true and confirm: true |
+| Troubleshooting: Diagnostics | GET | `/dataservice/stream/device/log/download/{sessionId}` | Excluded read | Reads a streaming troubleshooting session (packet capture, debug log, speed test, DM log) that only a state-changing operation can start |
+| Troubleshooting: Diagnostics | GET | `/dataservice/stream/device/log/renew/{sessionId}` | State-changing | GET that changes vManage or device state; call_api_operation runs it when VMANAGE_ALLOW_WRITE=true and confirm: true |
+| Troubleshooting: Diagnostics | POST | `/dataservice/stream/device/log/search/{sessionId}` | State-changing | POST changes configuration or state; call_api_operation runs it when VMANAGE_ALLOW_WRITE=true and confirm: true |
+| Troubleshooting: Diagnostics | GET | `/dataservice/stream/device/log/sessions/clear/{sessionId}` | State-changing | GET that changes vManage or device state; call_api_operation runs it when VMANAGE_ALLOW_WRITE=true and confirm: true |
+| Troubleshooting: Diagnostics | POST | `/dataservice/stream/device/speed` | State-changing | POST changes configuration or state; call_api_operation runs it when VMANAGE_ALLOW_WRITE=true and confirm: true |
+| Troubleshooting: Diagnostics | POST | `/dataservice/stream/device/speed/{deviceUUID}/{sessionId}` | State-changing | POST changes configuration or state; call_api_operation runs it when VMANAGE_ALLOW_WRITE=true and confirm: true |
+| Troubleshooting: Diagnostics | GET | `/dataservice/stream/device/speed/{sessionId}` | Excluded read | Reads a streaming troubleshooting session (packet capture, debug log, speed test, DM log) that only a state-changing operation can start |
+| Troubleshooting: Diagnostics | GET | `/dataservice/stream/device/speed/disable/{sessionId}` | State-changing | GET that changes vManage or device state; call_api_operation runs it when VMANAGE_ALLOW_WRITE=true and confirm: true |
+| Troubleshooting: Diagnostics | GET | `/dataservice/stream/device/speed/start/{sessionId}` | State-changing | GET that changes vManage or device state; call_api_operation runs it when VMANAGE_ALLOW_WRITE=true and confirm: true |
+| Troubleshooting: Diagnostics | GET | `/dataservice/stream/device/speed/status/{sessionId}` | Excluded read | Reads a streaming troubleshooting session (packet capture, debug log, speed test, DM log) that only a state-changing operation can start |
+| Troubleshooting: Diagnostics | GET | `/dataservice/stream/device/speed/stop/{sessionId}` | State-changing | GET that changes vManage or device state; call_api_operation runs it when VMANAGE_ALLOW_WRITE=true and confirm: true |
+| Troubleshooting: Diagnostics | POST | `/dataservice/stream/device/status/{deviceUUID}` | State-changing | POST changes configuration or state; call_api_operation runs it when VMANAGE_ALLOW_WRITE=true and confirm: true |
+| Troubleshooting: Diagnostics | POST | `/dataservice/stream/dmlog` | State-changing | POST changes configuration or state; call_api_operation runs it when VMANAGE_ALLOW_WRITE=true and confirm: true |
+| Troubleshooting: Diagnostics | POST | `/dataservice/stream/dmlog/client/uploadFF/{sessionId}` | State-changing | POST changes configuration or state; call_api_operation runs it when VMANAGE_ALLOW_WRITE=true and confirm: true |
+| Troubleshooting: Diagnostics | GET | `/dataservice/stream/dmlog/disable/{sessionId}` | State-changing | GET that changes vManage or device state; call_api_operation runs it when VMANAGE_ALLOW_WRITE=true and confirm: true |
+| Troubleshooting: Diagnostics | GET | `/dataservice/stream/dmlog/download/{sessionId}` | Excluded read | Reads a streaming troubleshooting session (packet capture, debug log, speed test, DM log) that only a state-changing operation can start |
+| Troubleshooting: Diagnostics | GET | `/dataservice/stream/dmlog/start/{sessionId}` | State-changing | GET that changes vManage or device state; call_api_operation runs it when VMANAGE_ALLOW_WRITE=true and confirm: true |
+| Troubleshooting: Diagnostics | GET | `/dataservice/stream/dmlog/status/{sessionId}` | Excluded read | Reads a streaming troubleshooting session (packet capture, debug log, speed test, DM log) that only a state-changing operation can start |
+| Troubleshooting: Diagnostics | GET | `/dataservice/stream/dmlog/stop/{sessionId}` | State-changing | GET that changes vManage or device state; call_api_operation runs it when VMANAGE_ALLOW_WRITE=true and confirm: true |
+| Troubleshooting: Network Wide Path Insight | GET | `/dataservice/stream/device/nwpi/exportTrace` | State-changing | GET documented as an action (changes vManage or device state); call_api_operation runs it when VMANAGE_ALLOW_WRITE=true and confirm: true |
+| Troubleshooting: Network Wide Path Insight | POST | `/dataservice/stream/device/nwpi/importTrace` | Unsupported over MCP | File upload (multipart/form-data) is not supported over MCP |
+| Troubleshooting: Network Wide Path Insight | POST | `/dataservice/stream/device/nwpi/tasks/create` | State-changing | POST changes configuration or state; call_api_operation runs it when VMANAGE_ALLOW_WRITE=true and confirm: true |
+| Troubleshooting: Network Wide Path Insight | DELETE | `/dataservice/stream/device/nwpi/tasks/delete/{taskId}` | State-changing | DELETE changes configuration or state; call_api_operation runs it when VMANAGE_ALLOW_WRITE=true and confirm: true |
+| Troubleshooting: Network Wide Path Insight | POST | `/dataservice/stream/device/nwpi/tasks/stop/{taskId}` | State-changing | POST changes configuration or state; call_api_operation runs it when VMANAGE_ALLOW_WRITE=true and confirm: true |
+| Troubleshooting: Network Wide Path Insight | DELETE | `/dataservice/stream/device/nwpi/trace/delete` | State-changing | DELETE changes configuration or state; call_api_operation runs it when VMANAGE_ALLOW_WRITE=true and confirm: true |
+| Troubleshooting: Network Wide Path Insight | POST | `/dataservice/stream/device/nwpi/trace/start` | State-changing | POST changes configuration or state; call_api_operation runs it when VMANAGE_ALLOW_WRITE=true and confirm: true |
+| Troubleshooting: Network Wide Path Insight | POST | `/dataservice/stream/device/nwpi/trace/stop/{traceId}` | State-changing | POST changes configuration or state; call_api_operation runs it when VMANAGE_ALLOW_WRITE=true and confirm: true |
+| Troubleshooting: UMTS | POST | `/dataservice/stream/device/umts` | State-changing | POST changes configuration or state; call_api_operation runs it when VMANAGE_ALLOW_WRITE=true and confirm: true |
+| Troubleshooting: UMTS | POST | `/dataservice/stream/device/umts/{deviceUUID}/save` | State-changing | POST changes configuration or state; call_api_operation runs it when VMANAGE_ALLOW_WRITE=true and confirm: true |
+| Troubleshooting: UMTS | GET | `/dataservice/stream/device/umts/{operation}/{sessionId}` | State-changing | GET documented as an action (changes vManage or device state); call_api_operation runs it when VMANAGE_ALLOW_WRITE=true and confirm: true |
+
+</details>
+<!-- monitoring-inventory:end -->
 
 ---
 
@@ -685,7 +1928,7 @@ The server reads `.env` from the project (or deployed) root folder. You can also
 | `VMANAGE_PASSWORD` | Yes | | API password |
 | `VMANAGE_PORT` | No | `443` | HTTPS port |
 | `VMANAGE_USE_JWT` | No | `true` | `false` uses session-cookie auth (Manager releases before 20.18.1) |
-| `VMANAGE_ALLOW_WRITE` | No | `false` | `true` allows write operations through `call_api_operation` and the dedicated write tools (each call still needs `confirm: true`). The dedicated write tools (`create_*`, `update_*`, `delete_*`, `associate_*`, `clone_*`, `deploy_*`) are listed only when this is `true`. |
+| `VMANAGE_ALLOW_WRITE` | No | `false` | `true` allows write operations through `call_api_operation` and the dedicated write tools (each call still needs `confirm: true`). The dedicated write tools (`create_*`, `update_*`, `delete_*`, `associate_*`, `clone_*`, `deploy_*`, and `run_device_diagnostic`) are listed only when this is `true`. |
 | `VMANAGE_MIGRATION_AAA_PASSWORD` | No | – | The AAA user password `deploy_template_migration` sets in a configuration group that has an AAA password variable. Never sent to the assistant. |
 | `VMANAGE_STATE_DIR` | No | `~/.local/state/cisco-catalyst-sdwan-mcp` | Where `deploy_template_migration` keeps each device's migration state (running config masked, files mode 600) and its per-device lock. Must be writable; mount a volume there to keep it across container restarts. |
 | `VMANAGE_TIMEOUT_MS` | No | `120000` | Timeout for real-time device queries (calls with a `deviceId`), which the Manager proxies to the device and can be slow. |
@@ -1405,6 +2648,7 @@ Without `confirm: true`, or with writes disabled, the server refuses the call an
 
 - **Read-only by default.** POST, PUT and DELETE operations, and GETs documented as actions, are refused unless `VMANAGE_ALLOW_WRITE=true`. Each write call then also needs `confirm: true`, which assistants should set only after the user approves. The dedicated write tools are not even listed until writes are enabled.
 - **Scoped write tools.** The BGP, OSPF and routing template write tools run through the same gate as `call_api_operation`: the request is resolved to an operation in the Manager's spec and validated before it is sent. They only reach their own protocol's features or templates; IDs must be UUIDs, and a template of another type (for example `cisco_vpn`) is refused. A template's type cannot be changed by an update. Profile and template changes are never deployed to devices by these tools.
+- **Monitoring tools cannot change anything.** Each monitoring view is checked against the connected Manager's spec before it runs: a read tool refuses any operation classified as state-changing, and deprecated operations are refused. `run_device_diagnostic` makes the device send traffic (ping, traceroute), so it is treated as a write: listed only with `VMANAGE_ALLOW_WRITE=true`, and every call needs `confirm: true`. Device running configurations are not offered by the monitoring tools, because they can contain secrets.
 - **Blocked endpoints.** Operations that issue or expose tokens, passwords, OTPs, credentials or bootstrap configurations are never callable. Neither are file uploads or server-sent event streams.
 - **Validation.** Path and query parameters must exist in the spec, required ones must be present, and types and enums are checked. Path values are URL-encoded and `.`/`..` are rejected.
 - **Redaction and limits.** Values of keys such as `password`, `token`, `csrf` and `sessionId` are replaced with `***redacted***`. List responses are capped (default 200 rows, `max_items` to change) and output stays under 200,000 characters.
@@ -1417,11 +2661,13 @@ Without `confirm: true`, or with writes disabled, the server refuses the call an
 
 ## Testing and verification
 
-Four test suites check the server. Only `npm test` runs without a Manager; the others call a real Manager and send **read operations only**.
+Five test suites check the server. `npm test` and `npm run verify:monitoring` run without a Manager; the others call a real Manager and send **read operations only**.
 
 | Command | Needs a Manager | What it checks | Runs in CI |
 |---|---|---|---|
-| `npm test` | No (simulated vManage) | 354 checks: every tool family, spec coverage of all routing/multicast/IPv6/CLI, configuration/policy/topology group and network-hierarchy operations, write protection, input validation, resilience, multi-tenancy, tool-list size | Yes: Node.js 20, 22 and 24 |
+| `npm test` | No (simulated vManage) | 388 checks: every tool family, spec coverage of all routing/multicast/IPv6/CLI, configuration/policy/topology group, network-hierarchy and monitoring/troubleshooting operations, write protection, input validation, resilience, concurrency, large answers, multi-tenancy, tool-list size | Yes: Node.js 20, 22 and 24 |
+| `npm run verify:monitoring` | No (bundled 26.2.1 spec) | Every Monitoring, Real-Time Monitoring and Troubleshooting operation is implemented by a tool or excluded with a reason; every monitoring view is a supported, non-deprecated operation of the right access level. `-- --write` regenerates the [inventory](#monitoring-and-troubleshooting-inventory) | No (run it after `npm run build`) |
+| `npm run test:monitoring -- <edge> [<controller>]` | Yes (≈15 min) | Every view of the read monitoring tools and every `query_statistics` operation, with safe inputs (last hour, VPN 0, the given devices); writes `monitoring_live.json`. `MONITORING_LIVE_RETRY=<report>` reruns only the calls that were not ok. Never calls `run_device_diagnostic` | No |
 | `npm run test:control-plane -- <edge> <controller> <validator>` | Yes | 39 control-plane, OMP and Validator calls plus 3 input-validation checks | No |
 | `npm run test:ux2 -- <edge-hostname>` | Yes | UX 2.0, fabric-wide, paging and response-shaping tools; hostname resolution, parallel calls, error handling, with timings | No |
 | `npm run verify:api -- <edge> <controller> <validator>` | Yes (≈25 min) | Every read operation that needs no IDs (≈1,260 on 26.2) plus every dedicated read tool; writes [API_COVERAGE.md](API_COVERAGE.md) and [api_coverage.csv](api_coverage.csv) | No |
@@ -1429,6 +2675,8 @@ Four test suites check the server. Only `npm test` runs without a Manager; the o
 ```bash
 npm run build                 # compile TypeScript
 npm test                      # offline tests against a simulated vManage (no lab needed; runs in CI)
+npm run verify:monitoring     # monitoring/troubleshooting coverage against the bundled 26.2.1 spec (no lab needed)
+npm run test:monitoring -- <edge> <controller>
 # <edge>, <controller>, <validator>: hostname or system IP of a WAN edge, Controller and Validator in your fabric
 npm run test:control-plane -- <edge> <controller> <validator>
 npm run test:ux2 -- <edge-hostname>
@@ -1441,7 +2689,8 @@ npm run verify:api -- <edge> <controller> <validator>
 
 | Area | What is checked |
 |---|---|
-| Tool list | 121 tools on a read-only server with no write tool listed, 163 with `VMANAGE_ALLOW_WRITE=true`; the read-only tool list stays under 110 KB |
+| Tool list | 127 tools on a read-only server with no write tool listed, 170 with `VMANAGE_ALLOW_WRITE=true`; the read-only tool list stays under 130 KB |
+| Monitoring and troubleshooting | All 514 tool views (505 views plus 9 synced copies) and 187 `query_statistics` dataset operations call exactly their spec operation with the device resolved; view listing; the default views of `get_bfd_summary` and `get_control_summary` unchanged; 13 input errors refused before any request (unknown view or device, `device_id` on a fabric-wide view, unknown or missing parameters, path traversal, deprecated dataset, diagnostics on a read-only server); HTTP 500 reported, 503 retried, malformed JSON and timeouts handled; a 50,000-row answer paged, filtered and counted; identical concurrent calls combined; 40 parallel calls held to 8 in flight; server memory bounded; `run_device_diagnostic` write gate and body |
 | Client and resilience | Hostname resolution, `Retry-After` retries on 503, re-login after an expired token, session-cookie login and logout, fail-fast when the Manager is unreachable, real-time vs. list timeouts named in the error |
 | Response shaping | `fields`, `filter`, `count_by`, `offset`/`limit` paging, truncation with a `nextOffset` cursor on a 3,000-device inventory |
 | OMP routes | A 4,600-path Controller table cut at 4,000 rows by the simulated Manager: `manager_row_limit`, `vpn_id` and `prefix` sent to the Manager, a VPN and a prefix beyond the cut read whole, `family: ipv6` and `all`, the IPv4 default unchanged, an unknown `family` refused, a Manager that ignores the filters (`manager_filter: ignored`) |
@@ -1456,7 +2705,7 @@ npm run verify:api -- <edge> <controller> <validator>
 
 #### Coverage by area
 
-Every one of the 163 tools belongs to one area below. **Offline** is what `npm test` checks against the simulated Manager. **Live** is the suite that runs the tools against a real 26.2.1 Manager. Read tools are verified live; write tools only up to the write gate, because writes are disabled on the lab.
+Every one of the 170 tools belongs to one area below. **Offline** is what `npm test` checks against the simulated Manager. **Live** is the suite that runs the tools against a real 26.2.1 Manager. Read tools are verified live; write tools only up to the write gate, because writes are disabled on the lab.
 
 | Area | UX | Tools | vManage APIs the tools call | Offline (`npm test`) | Live |
 |---|---|---:|---|---|---|
@@ -1479,9 +2728,10 @@ Every one of the 163 tools belongs to one area below. **Offline** is what `npm t
 | Routing and multicast feature templates | 1.0 | 7 | `/template/feature` (list, object, device templates, type definition, create, update, delete, clone) | Requests, template-type guard | `verify:api` (list and schema; the lab has no routing templates to read) |
 | CLI add-on templates | 1.0 | 5 | `/template/feature` (list, object, device templates, create, update, delete) | Requests, template-type guard, `contains` search | `verify:api` (list; the lab has no CLI templates to read) |
 | Cloud OnRamp and administration | – | 8 | `/template/cloudx/*`, `/alarms`, `/certificate/stats/summary`, `/clusterManagement/health/status`, `/template/policy/customapp` | – | `verify:api` |
-| **Total** | | **163** | | | |
+| **Monitoring and troubleshooting (1.3.0)** | – | 7 | 821 operations of the Monitoring, Real-Time Monitoring and Troubleshooting categories (see the [inventory](#monitoring-and-troubleshooting-inventory)) | Full spec sweep of every view and statistics operation, errors, retries, timeouts, large answers, concurrency, diagnostics write gate | `test:monitoring` (no server-side failure in 701 calls) |
+| **Total** | | **170** | | | |
 
-Every write tool (41) is additionally checked offline for refusal while `VMANAGE_ALLOW_WRITE=false` and without `confirm: true`, and for the exact method, path and body when allowed. Live, write tools were checked only up to the write gate (writes disabled on the lab).
+Every write tool (42) is additionally checked offline for refusal while `VMANAGE_ALLOW_WRITE=false` and without `confirm: true`, and for the exact method, path and body when allowed. Live, write tools were checked only up to the write gate (writes disabled on the lab).
 
 #### Spec sweeps
 
@@ -1528,6 +2778,8 @@ Results on Catalyst SD-WAN Manager 26.2.1:
 | Operations in the spec | 4,128 (2,392 read / 1,672 write / 64 blocked) |
 | Read operations live-tested (`verify:api`) | 1,261: 1,113 returned data, 148 errors from the Manager or lab (feature not configured, query body required, provider-only role) |
 | Read tools (`verify:api`, server 1.0.1) | 113 / 119 verified live. The 6 that need IDs were run by hand: 4 passed; `get_routing_template` and `get_cli_template` had nothing to read (no UX 1.0 routing or CLI templates on the lab) and are covered offline |
+| Monitoring tools (`test:monitoring`, server 1.3.0, `<edge>`, `<controller>`) | 701 calls (514 views, 187 statistics operations), 4 in parallel, 13.4 min. 614 returned data (543, plus 71 more when the non-ok calls were rerun with an aggregation block, a page `count` and start/end dates). 0 failed in the server. 48 Manager or device errors: 21 for features this lab lacks (NFVIS/CSP and VM views on a C8000V, EIOLTE cellular, Cloud OnRamp for SaaS applications), 23 for query documents the test cannot guess per dataset, 4 HTTP 500 from the Manager itself (`device-group-devices`, `device-group-map-links`, `stats-process-status`, `approute-tloc`). 34 views need an ID or name from the fabric (alarm UUID, NWPI task, approute `type`, ...); spot checks with real values returned data. 5 `tools-*` views (netstat, ss, nslookup, realtimeinfo, netfilter) timed out at 120 s on this lab, as `verify:api` recorded for realtimeinfo before. Median call 3.6 s, p95 5.9 s (time spent in the Manager and device) |
+| Regression (`test:control-plane`, `test:ux2`, server 1.3.0) | All checks passed (42/42 control plane; UX 2.0, fabric-wide and validation suite) |
 | Write tools (41) | Verified live only up to the write gate (writes disabled on the lab); their method, path and body are checked offline |
 | `test:control-plane` | 42 / 42 passed (39 live calls + 3 input-validation checks) |
 | `test:ux2` | 53 / 53 passed: UX 2.0 groups, profiles and preview, 6 parallel real-time calls, synced data, response shaping, fabric-wide sweeps cross-checked against per-device tools, error handling |
@@ -1593,6 +2845,7 @@ src/
   server.ts                 # MCP tool definitions and handlers
   services/vmanageApi.ts    # HTTPS client (undici), JWT/session auth, retries, caching, generic request()
   services/apiCatalog.ts    # OpenAPI-driven catalog: search, describe, validated calls, path-to-operation matching, paging, access control
+  services/monitoringCatalog.ts # monitoring and troubleshooting views (one per 26.2 API operation) and statistics datasets
   services/configReview.ts  # group previews: masks secrets in device configurations, sorts the review view
   services/configVariables.ts # template-to-group migration: maps template values onto group variables
   services/configDefects.ts # template-to-group migration: conversion defects and their fixes
@@ -1605,6 +2858,7 @@ scripts/
   test-control-plane.mjs    # live regression test
   test-ux2.mjs              # live UX 2.0 / fabric-wide tools test
   verify-api-coverage.mjs   # full coverage run and report
+  verify-monitoring.mjs     # monitoring/troubleshooting coverage against the bundled spec; regenerates the README inventory
 docs/architecture/
   architecture.html         # interactive architecture diagram (open in a browser)
   architecture.json         # diagram source (Archify)
@@ -1622,6 +2876,8 @@ Dockerfile, docker-compose.yml
 - [Cisco Catalyst SD-WAN Manager API](https://developer.cisco.com/docs/sdwan/overview/)
 - [Authentication](https://developer.cisco.com/docs/sdwan/authentication/)
 - [Device Real-Time Monitoring](https://developer.cisco.com/docs/sdwan/device-realtime-monitoring/)
+- [SD-WAN Manager 26.2 API: Monitoring and Troubleshooting](https://developer.cisco.com/docs/sd-wan/26-2/api-reference-monitoring-and-troubleshooting-overview/)
+- [SD-WAN Manager 26.2 API: Versioning and Deprecation](https://developer.cisco.com/docs/sd-wan/26-2/versioning-and-deprecation)
 - [Model Context Protocol](https://modelcontextprotocol.io/)
 
 ## License

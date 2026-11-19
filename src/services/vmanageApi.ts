@@ -136,13 +136,15 @@ class Limiter {
   constructor(private readonly max: number) {}
 
   async run<T>(task: () => Promise<T>): Promise<T> {
+    // A freed slot passes straight to the next waiter, so a newcomer cannot take it in between.
     if (this.active >= this.max) await new Promise<void>((resolve) => this.waiting.push(resolve));
-    this.active++;
+    else this.active++;
     try {
       return await task();
     } finally {
-      this.active--;
-      this.waiting.shift()?.();
+      const next = this.waiting.shift();
+      if (next) next();
+      else this.active--;
     }
   }
 }
