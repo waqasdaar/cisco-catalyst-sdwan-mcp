@@ -1,6 +1,6 @@
 # Cisco Catalyst SD-WAN MCP Server
 
-[![Version](https://img.shields.io/badge/version-1.3.0-blue.svg)](https://github.com/waqasdaar/cisco-catalyst-sdwan-mcp)
+[![Version](https://img.shields.io/badge/version-1.4.0-blue.svg)](https://github.com/waqasdaar/cisco-catalyst-sdwan-mcp)
 [![CI](https://github.com/waqasdaar/cisco-catalyst-sdwan-mcp/actions/workflows/ci.yml/badge.svg)](https://github.com/waqasdaar/cisco-catalyst-sdwan-mcp/actions/workflows/ci.yml)
 
 
@@ -8,9 +8,10 @@ A [Model Context Protocol (MCP)](https://modelcontextprotocol.io/) server for **
 
 All requests go through vManage. The server never connects to routers directly.
 
-- **170 MCP tools** (127 listed on a read-only server, 170 with writes enabled): 166 purpose-built tools, including fabric-wide health, BFD and TLOC checks in a single call, BGP, OSPF, OSPFv3, EIGRP, multicast (IGMP, PIM, MFIB) and IPv6 monitoring and configuration (UX 2.0 features and UX 1.0 templates/policy objects), CLI add-on configuration (for example RIP/RIPng), UX 2.0 configuration, policy and topology groups (read, preview, create, change, associate devices, set variables, deploy), feature profiles and the network hierarchy (regions, areas, sites and their Cyber Vision network settings), plus 4 general tools that reach **every operation in the vManage OpenAPI spec** (4,128 operations on 26.2).
+- **171 MCP tools** (128 listed on a read-only server, 171 with writes enabled): 167 purpose-built tools, including fabric-wide health, BFD and TLOC checks in a single call, BGP, OSPF, OSPFv3, EIGRP, multicast (IGMP, PIM, MFIB) and IPv6 monitoring and configuration (UX 2.0 features and UX 1.0 templates/policy objects), CLI add-on configuration (for example RIP/RIPng), UX 2.0 configuration, policy and topology groups (read, preview, create, change, associate devices, set variables, deploy), feature profiles and the network hierarchy (regions, areas, sites and their Cyber Vision network settings), plus 4 general tools that reach **every operation in the vManage OpenAPI spec** (4,128 operations on 26.2).
 - **Every supported monitoring and troubleshooting API of SD-WAN Manager 26.2** (1.3.0). The Monitoring, Real-Time Monitoring and Troubleshooting operations of the 26.2 API (1,114 in the 26.2.1 spec) are each reachable through a dedicated tool: 933 through a tool or tool view, the rest excluded on purpose with the reason recorded (51 deprecated, 84 that change state or start sessions, 46 reads that return files, configuration text with secrets, or the data of a streaming session). See [Monitoring and troubleshooting](#monitoring-and-troubleshooting-sd-wan-manager-262-7).
-- **Lean tool list.** Write tools are listed only when `VMANAGE_ALLOW_WRITE=true`, so a read-only server offers 127 tools (under VS Code's 128-tool limit). The monitoring tools group their operations by `view` rather than one tool per endpoint; the read-only tool list is about 127 KB (108 KB in 1.2.0).
+- **Lean tool list.** Write tools are listed only when `VMANAGE_ALLOW_WRITE=true`, so a read-only server offers 128 tools, exactly VS Code's 128-tool limit (a further read tool would go over it, so new read features should become views of existing tools). The monitoring tools group their operations by `view` rather than one tool per endpoint; the read-only tool list is about 128 KB (108 KB in 1.2.0).
+- **Service chaining and service insertion** (1.4.0). `get_service_insertion` lists service chain definitions, service-insertion attachments of UX 2.0 service profiles, their schema, and the traffic and data policy sequences that send traffic to a service; `run_device_diagnostic` traces the service path. See [Service chaining and service insertion](#service-chaining-and-service-insertion-1).
 - **Read-only by default.** Operations that change configuration or state are disabled unless you enable them, and each call then needs explicit confirmation.
 - **BGP, OSPF, OSPFv3 and EIGRP end to end.** Real-time neighbors, routes, interfaces, topology and LSDB; UX 2.0 feature reads and writes for SD-WAN and SD-Routing profiles; UX 1.0 feature templates (list, read, schema, create, update, delete, clone). Every BGP, OSPF and EIGRP operation in the 26.2 spec has a dedicated tool.
 - **Multicast end to end.** IGMP, PIM, overlay multicast (topology, RPF, replicators, tunnels) and MFIB monitoring; UX 2.0 multicast features (read, schema, write); UX 1.0 IGMP, PIM and multicast templates. Every multicast operation in the 26.2 spec has a dedicated tool.
@@ -42,7 +43,7 @@ flowchart LR
 
   subgraph MCP["catalyst-sdwan MCP server · Node.js"]
     direction TB
-    T["Tool router<br/>166 dedicated + 4 general tools"]
+    T["Tool router<br/>167 dedicated + 4 general tools"]
     R["Name resolution<br/>hostname · system IP · UUID<br/>group · profile · hierarchy node"]
     G{"Write gate<br/>VMANAGE_ALLOW_WRITE<br/>+ confirm: true"}
     C["API catalog<br/>checks each call against the OpenAPI spec"]
@@ -104,11 +105,13 @@ A question goes from the AI client to the matching tool. The server resolves nam
 - [Architecture](#architecture)
 - [Quick start](#quick-start)
 - [Versions and compatibility](#versions-and-compatibility)
+  - [What's new in 1.4.0](#whats-new-in-140)
   - [What's new in 1.3.0](#whats-new-in-130)
   - [What's new in 1.2.0](#whats-new-in-120)
 - [Supported functionality](#supported-functionality)
   - [General API tools](#general-api-tools-full-vmanage-api)
   - [Dedicated tools (full reference)](#dedicated-tools)
+  - [Service chaining and service insertion](#service-chaining-and-service-insertion-1)
   - [Monitoring and troubleshooting (SD-WAN Manager 26.2)](#monitoring-and-troubleshooting-sd-wan-manager-262-7)
   - [Routing protocols: BGP, OSPF, OSPFv3, EIGRP](#routing-protocols-at-a-glance)
   - [Multicast (IGMP, PIM, MFIB)](#multicast-igmp-pim-overlay-multicast-mfib-10)
@@ -164,6 +167,7 @@ Ask questions about your SD-WAN fabric in plain language and get answers built f
 | **Tunnels, forwarding, QoS and app optimisation** | "Tunnel loss and FEC per tunnel? Is the route in the FIB? QFP drops? AppQoE status?" | `get_device_dataplane_realtime` (`tunnel-statistics`, `fib`, `qfp-drops`, `appqoe-status`, ...) |
 | **Alarms, events and historical statistics** | "Critical events in the last 24 h? Interface throughput trend for site 100? Worst tunnels by loss?" | `get_monitoring_info` (`events-by-severity`, `approute-tunnels`, ...), `query_statistics` |
 | **Active troubleshooting (opt-in)** | "Ping 10.1.1.1 from Branch-1 in VPN 10. Traceroute to the hub." | `run_device_diagnostic` (`VMANAGE_ALLOW_WRITE=true`, `confirm: true`) |
+| **Service chaining and service insertion** | "Which service chains are defined? Which VPNs are attached to them? Which policies send traffic to the firewall chain?" | `get_service_insertion`, `get_omp_services`, `run_device_diagnostic` (`service-path`) |
 | **Anything else in the API** | "Show IPsec/IKE sessions", "audit log for today" | `search_api_operations` → `describe_api_operation` → `call_api_operation` |
 | **Controlled changes (opt-in)** | Any POST/PUT/DELETE operation, only after you approve it | The routing write tools, or `call_api_operation`, with `confirm: true` and `VMANAGE_ALLOW_WRITE=true` |
 
@@ -230,7 +234,7 @@ See [Installation](#installation), [Configuration](#configuration) and [Integrat
 
 | Component | Version | Notes |
 |---|---|---|
-| MCP server | **1.3.0** | `package.json` version, reported in the MCP `initialize` response |
+| MCP server | **1.4.0** | `package.json` version, reported in the MCP `initialize` response |
 | Catalyst SD-WAN Manager API | **26.2** | Bundled spec 26.2.1; monitoring and troubleshooting checked against Cisco's [26.2 Monitoring and Troubleshooting API reference](https://developer.cisco.com/docs/sd-wan/26-2/api-reference-monitoring-and-troubleshooting-overview/) (document 26.2.0+2026-07-29) |
 | Catalyst SD-WAN Manager (tested) | **Tested on 26.2.1** | Controllers 26.2.1, WAN edges Catalyst 8000V IOS XE 26.02.01. The 1.3.0 monitoring tools were run live with `npm run test:monitoring` (701 read calls; results under [Live tests](#live-tests)) |
 | Catalyst SD-WAN Manager (auth) | 20.18.1+ for JWT | Older releases: set `VMANAGE_USE_JWT=false` (session cookie + XSRF token) |
@@ -238,6 +242,19 @@ See [Installation](#installation), [Configuration](#configuration) and [Integrat
 | MCP TypeScript SDK | `@modelcontextprotocol/sdk` ^1.0.4 | Tested with 1.27.1 |
 | Transport | stdio | The client starts the server as a child process |
 | MCP clients tested | OpenChamber 2.5 (bundled OpenCode 2.0.32), OpenCode 1.19 | Other clients use their documented standard MCP config |
+
+### What's new in 1.4.0
+
+Service chaining and service insertion. Existing tools and calls are unchanged.
+
+| Change | Before (1.3.0) | Now (1.4.0) |
+|---|---|---|
+| Service chain definitions | Only through `call_api_operation` (`serviceChainMapping`) | `get_service_insertion` view `chain-mapping` |
+| Service-insertion attachments (UX 2.0) | Not readable: they sit inside service profiles, mixed with all other features | View `attachments`: every service-insertion attachment of the SD-WAN service profiles (also nested under a VPN), with its chain, VPN and services |
+| Attachment body schema | – | View `attachment-schema` (`schema_type` post or put) |
+| Policies that use a service | Read whole with `list_policy_definitions` and searched by hand | View `policies`: only the sequences of UX 2.0 traffic policies and UX 1.0 data policies whose actions send traffic to a service, service chain or service node group |
+| Tool count | 127 read-only / 170 with writes | 128 read-only / 171 with writes (VS Code's limit is 128) |
+| Checks | 388 offline checks | 395 offline checks; all four views run live on 26.2.1 |
 
 ### What's new in 1.3.0
 
@@ -658,6 +675,21 @@ The write tools follow the same rules as the other write tools (`VMANAGE_ALLOW_W
 | `list_custom_apps` | Custom application definitions | – | "List the custom applications." |
 
 Anything else in the API, such as the audit log, software images or certificates management, is available through `search_api_operations` and `call_api_operation`.
+
+#### Service chaining and service insertion (1)
+
+The SD-WAN Manager 26.2 API documents one service-chaining read, `GET /v1/service-insertion/service-chain-mapping`, and one action, the service path trace (`POST /device/tools/servicepath/{deviceIP}`). Service-insertion attachments are features (parcels) of UX 2.0 service profiles, and service chaining is applied by traffic and data policy actions, so `get_service_insertion` reads those documented profile and policy endpoints and keeps only the service-insertion parts.
+
+| View | What it returns | Endpoints | Key parameters | Example prompt |
+|---|---|---|---|---|
+| `chain-mapping` (default) | Service chain definitions with their name and number | `GET /v1/service-insertion/service-chain-mapping` | – | "Which service chains are defined?" |
+| `attachments` | Every service-insertion attachment of the SD-WAN service profiles, also when nested under a LAN VPN: profile, parcel ID, name, and its data (service chain definition and instance, VPN, services) | `GET /v1/feature-profile/sdwan/service[/{id}]?details=true` (one request per profile) | `profile` (ID or name) | "Which VPNs of Hub-Service are attached to a service chain?" |
+| `attachment-schema` | JSON schema of an attachment body. Served by 26.2.1 but not in its published spec | `GET /v1/feature-profile/sdwan/service/service-insertion-attachment/schema` | `schema_type` (`post`, `put`) | "What fields does a service-insertion attachment have?" |
+| `policies` | The sequences of UX 2.0 traffic policies and UX 1.0 data policies whose actions send traffic to a service, service chain or service node group, with their match and service actions | `GET /v1/feature-profile/sdwan/application-priority[/{id}]?details=true`, `GET /template/policy/definition/data[/{id}]` | `profile` (application-priority profile; then UX 1.0 policies are skipped) | "Which policies send traffic to the firewall chain?" |
+
+Related tools: `get_omp_services` (service routes such as FW, IDS or netsvc advertised in OMP), `get_device_dataplane_realtime` views `endpoint-trackers` and `fib` (service reachability), `get_device_security_realtime` view `policy-data-filter` (policy counters on the device), and `run_device_diagnostic` view `service-path` (opt-in) to trace the service path of a flow.
+
+Not available: creating or changing service chains and attachments. The 26.2 spec documents no write operation for them, and the server only sends writes that are in the Manager's spec. Use the Manager GUI (**Configuration → Service Insertion**), then read the result with `get_service_insertion`.
 
 #### Monitoring and troubleshooting: SD-WAN Manager 26.2 (7)
 
@@ -2665,7 +2697,7 @@ Five test suites check the server. `npm test` and `npm run verify:monitoring` ru
 
 | Command | Needs a Manager | What it checks | Runs in CI |
 |---|---|---|---|
-| `npm test` | No (simulated vManage) | 388 checks: every tool family, spec coverage of all routing/multicast/IPv6/CLI, configuration/policy/topology group, network-hierarchy and monitoring/troubleshooting operations, write protection, input validation, resilience, concurrency, large answers, multi-tenancy, tool-list size | Yes: Node.js 20, 22 and 24 |
+| `npm test` | No (simulated vManage) | 395 checks: every tool family, spec coverage of all routing/multicast/IPv6/CLI, configuration/policy/topology group, network-hierarchy and monitoring/troubleshooting operations, write protection, input validation, resilience, concurrency, large answers, multi-tenancy, tool-list size | Yes: Node.js 20, 22 and 24 |
 | `npm run verify:monitoring` | No (bundled 26.2.1 spec) | Every Monitoring, Real-Time Monitoring and Troubleshooting operation is implemented by a tool or excluded with a reason; every monitoring view is a supported, non-deprecated operation of the right access level. `-- --write` regenerates the [inventory](#monitoring-and-troubleshooting-inventory) | No (run it after `npm run build`) |
 | `npm run test:monitoring -- <edge> [<controller>]` | Yes (≈15 min) | Every view of the read monitoring tools and every `query_statistics` operation, with safe inputs (last hour, VPN 0, the given devices); writes `monitoring_live.json`. `MONITORING_LIVE_RETRY=<report>` reruns only the calls that were not ok. Never calls `run_device_diagnostic` | No |
 | `npm run test:control-plane -- <edge> <controller> <validator>` | Yes | 39 control-plane, OMP and Validator calls plus 3 input-validation checks | No |
@@ -2689,7 +2721,8 @@ npm run verify:api -- <edge> <controller> <validator>
 
 | Area | What is checked |
 |---|---|
-| Tool list | 127 tools on a read-only server with no write tool listed, 170 with `VMANAGE_ALLOW_WRITE=true`; the read-only tool list stays under 130 KB |
+| Tool list | 128 tools on a read-only server with no write tool listed, 171 with `VMANAGE_ALLOW_WRITE=true`; the read-only tool list stays under 130 KB |
+| Service insertion | Chain mapping; attachments found in nested parcels and other parcels left out; attachment schema with `schemaType`; only the UX 2.0 traffic-policy and UX 1.0 data-policy sequences with a service action kept; unknown view, profile and schema type rejected |
 | Monitoring and troubleshooting | All 514 tool views (505 views plus 9 synced copies) and 187 `query_statistics` dataset operations call exactly their spec operation with the device resolved; view listing; the default views of `get_bfd_summary` and `get_control_summary` unchanged; 13 input errors refused before any request (unknown view or device, `device_id` on a fabric-wide view, unknown or missing parameters, path traversal, deprecated dataset, diagnostics on a read-only server); HTTP 500 reported, 503 retried, malformed JSON and timeouts handled; a 50,000-row answer paged, filtered and counted; identical concurrent calls combined; 40 parallel calls held to 8 in flight; server memory bounded; `run_device_diagnostic` write gate and body |
 | Client and resilience | Hostname resolution, `Retry-After` retries on 503, re-login after an expired token, session-cookie login and logout, fail-fast when the Manager is unreachable, real-time vs. list timeouts named in the error |
 | Response shaping | `fields`, `filter`, `count_by`, `offset`/`limit` paging, truncation with a `nextOffset` cursor on a 3,000-device inventory |
@@ -2705,7 +2738,7 @@ npm run verify:api -- <edge> <controller> <validator>
 
 #### Coverage by area
 
-Every one of the 170 tools belongs to one area below. **Offline** is what `npm test` checks against the simulated Manager. **Live** is the suite that runs the tools against a real 26.2.1 Manager. Read tools are verified live; write tools only up to the write gate, because writes are disabled on the lab.
+Every one of the 171 tools belongs to one area below. **Offline** is what `npm test` checks against the simulated Manager. **Live** is the suite that runs the tools against a real 26.2.1 Manager. Read tools are verified live; write tools only up to the write gate, because writes are disabled on the lab.
 
 | Area | UX | Tools | vManage APIs the tools call | Offline (`npm test`) | Live |
 |---|---|---:|---|---|---|
@@ -2729,7 +2762,8 @@ Every one of the 170 tools belongs to one area below. **Offline** is what `npm t
 | CLI add-on templates | 1.0 | 5 | `/template/feature` (list, object, device templates, create, update, delete) | Requests, template-type guard, `contains` search | `verify:api` (list; the lab has no CLI templates to read) |
 | Cloud OnRamp and administration | – | 8 | `/template/cloudx/*`, `/alarms`, `/certificate/stats/summary`, `/clusterManagement/health/status`, `/template/policy/customapp` | – | `verify:api` |
 | **Monitoring and troubleshooting (1.3.0)** | – | 7 | 821 operations of the Monitoring, Real-Time Monitoring and Troubleshooting categories (see the [inventory](#monitoring-and-troubleshooting-inventory)) | Full spec sweep of every view and statistics operation, errors, retries, timeouts, large answers, concurrency, diagnostics write gate | `test:monitoring` (no server-side failure in 701 calls) |
-| **Total** | | **170** | | | |
+| **Service chaining and service insertion (1.4.0)** | 2.0 and 1.0 | 1 | `/v1/service-insertion/service-chain-mapping`, `/v1/feature-profile/sdwan/{service,application-priority}[/{id}]?details=true`, `/v1/feature-profile/sdwan/service/service-insertion-attachment/schema`, `/template/policy/definition/data[/{id}]` | Every view, filtering of attachments and policy sequences, input errors | All 4 views on 26.2.1 (the lab has no service chains, so the lists are empty) |
+| **Total** | | **171** | | | |
 
 Every write tool (42) is additionally checked offline for refusal while `VMANAGE_ALLOW_WRITE=false` and without `confirm: true`, and for the exact method, path and body when allowed. Live, write tools were checked only up to the write gate (writes disabled on the lab).
 

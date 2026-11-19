@@ -403,6 +403,15 @@ const MONITORING_BODY = { body: { type: 'object', description: 'Request body of 
 const MONITORING_MAX_ITEMS = Number.MAX_SAFE_INTEGER;
 const DEVICE_PARAM: Record<string, 'ip' | 'uuid'> = { deviceId: 'ip', deviceIp: 'ip', deviceIP: 'ip', deviceUUID: 'uuid', uuid: 'uuid' };
 
+const SERVICE_INSERTION_VIEWS: Record<string, string> = {
+  'chain-mapping': 'chain-mapping',
+  attachments: 'attachments',
+  'attachment-schema': 'attachment-schema',
+  policies: 'policies',
+};
+// A policy action that steers traffic to a service, service chain or service node group (UX 2.0 keys, UX 1.0 set fields).
+const SERVICE_ACTION = /"(service|serviceChain|serviceNodeGroup)"\s*:|"field"\s*:\s*"(service|serviceChain|serviceNodeGroup)"/;
+
 /** A tool whose `view` selects one Monitoring / Real-Time Monitoring / Troubleshooting operation. */
 function monitoringTool(name: string, description: string, extra: Record<string, object> = {}): Tool {
   return {
@@ -840,7 +849,7 @@ export class CatalystSdwanMCPServer {
     this.server = new Server(
       {
         name: 'catalyst-sdwan-mcp',
-        version: '1.3.0',
+        version: '1.4.0',
       },
       {
         capabilities: {
@@ -2650,6 +2659,19 @@ export class CatalystSdwanMCPServer {
         `Run ping, traceroute, nping, tunnel-path or service-path from a device (via SD-WAN Manager). body e.g. ping {"host":"10.1.12.16","vpn":"0","source":"10.1.12.15","count":"5"}. Generates traffic on the device, so it is gated like a change: needs VMANAGE_ALLOW_WRITE=true on the server and confirm: true after explicit user approval.`,
         { ...MONITORING_BODY, ...WRITE_CONFIRM }
       ),
+      {
+        name: 'get_service_insertion',
+        description:
+          'Service chaining / service insertion. view chain-mapping (default): service chain definitions with name and number. attachments: service-insertion attachments in UX 2.0 SD-WAN service profiles (chain, VPN, services). attachment-schema: body schema of an attachment. policies: sequences of UX 2.0 traffic policies and UX 1.0 data policies that send traffic to a service or service chain. Related: get_omp_services (service routes), run_device_diagnostic view service-path.',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            view: { type: 'string', enum: Object.keys(SERVICE_INSERTION_VIEWS), description: 'Default: chain-mapping' },
+            profile: { type: 'string', description: 'attachments: only this SD-WAN service profile (ID or exact name); policies: only this application-priority profile' },
+            schema_type: { type: 'string', enum: ['post', 'put'], description: 'attachment-schema: create (post, default) or update (put)' },
+          },
+        },
+      },
     ];
   }
 
@@ -3588,6 +3610,8 @@ export class CatalystSdwanMCPServer {
         return this.monitoringCall(name, args, 'read');
       case 'run_device_diagnostic':
         return this.monitoringCall(name, args, 'write');
+      case 'get_service_insertion':
+        return this.serviceInsertion(pick('view', SERVICE_INSERTION_VIEWS, 'chain-mapping'), args);
       case 'query_statistics': {
         const base = pick('dataset', STATISTICS_DATASETS, '');
         const operation = pick('operation', Object.fromEntries(Object.keys(STATISTICS_OPERATIONS).map((k) => [k, k])), 'raw');
@@ -4264,6 +4288,121 @@ export class CatalystSdwanMCPServer {
       confirm: args.confirm === true,
       maxItems: MONITORING_MAX_ITEMS,
     });
+  }
+
+  /**
+   * get_service_insertion. chain-mapping is the documented 26.2 endpoint; attachments and policies read documented profile
+   * and policy endpoints and keep the service-insertion parts; attachment-schema is served by 26.2.1 but not documented.
+   */
+  private async serviceInsertion(view: string, args: Record<string, unknown>): Promise<unknown> {
+    if (view === 'chain-mapping') {
+      const rows = await this.apiService.get<unknown>('/dataservice/v1/service-insertion/service-chain-mapping');
+      return { data: Array.isArray(rows) ? rows : dataOf(rows) };
+    }
+    if (view === 'attachment-schema') {
+      const schemaType = args.schema_type === undefined ? 'post' : String(args.schema_type);
+      if (schemaType !== 'post' && schemaType !== 'put') throw new Error('schema_type must be post or put');
+      return this.apiService.get('/dataservice/v1/feature-profile/sdwan/service/service-insertion-attachment/schema', { schemaType });
+    }
+    // Profile reads with details=true carry every parcel inline, so one request per profile.
+    const profiles = async (type: string) => {
+      if (args.profile !== undefined) {
+        const id = await this.resolveFeatureProfileId('sdwan', type, args.profile);
+        return [{ id, name: String(args.profile) }];
+      }
+      const rows = await this.apiService.get<Array<Record<string, unknown>>>(`/dataservice/v1/feature-profile/sdwan/${type}`, undefined, GROUP_LIST_TTL_MS);
+      return (Array.isArray(rows) ? rows : []).map((p) => ({ id: String(p.profileId), name: String(p.profileName) }));
+    };
+    const parcelsOf = async (type: string, profile: { id: string; name: string }) => {
+      const body = await this.apiService.get<Record<string, unknown>>(`/dataservice/v1/feature-profile/sdwan/${type}/${encodeURIComponent(profile.id)}`, { details: 'true' });
+      const out: Array<Record<string, any>> = [];
+      const walk = (list: unknown) => {
+        for (const p of (Array.isArray(list) ? list : []) as Array<Record<string, any>>) {
+          out.push(p);
+          walk(p.subparcels);
+        }
+      };
+      walk(body?.associatedProfileParcels);
+      return out;
+    };
+    const perProfile = async <T>(type: string, fn: (profile: { id: string; name: string }) => Promise<T[]>) => {
+      const results = await mapLimit(await profiles(type), 4, async (p) => {
+        try {
+          return await fn(p);
+        } catch (e) {
+          return [{ profile: p.name, profileId: p.id, error: errorMessage(e) } as unknown as T];
+        }
+      });
+      return results.flat();
+    };
+
+    if (view === 'attachments') {
+      const rows = await perProfile('service', async (p) =>
+        (await parcelsOf('service', p))
+          .filter((x) => /service-insertion/i.test(String(x.parcelType)))
+          .map((x) => ({
+            profile: p.name,
+            profileId: p.id,
+            parcelId: x.parcelId,
+            parcelType: x.parcelType,
+            name: x.payload?.name,
+            description: x.payload?.description,
+            data: x.payload?.data,
+            lastUpdatedBy: x.lastUpdatedBy,
+            lastUpdatedOn: x.lastUpdatedOn,
+          }))
+      );
+      return { data: rows };
+    }
+
+    // policies: sequences whose actions send traffic to a service, service chain or service node group.
+    const serviceActions = (sequence: Record<string, any>) =>
+      (Array.isArray(sequence?.actions) ? sequence.actions : []).filter((a: unknown) => SERVICE_ACTION.test(JSON.stringify(a)));
+    const ux2 = await perProfile('application-priority', async (p) =>
+      (await parcelsOf('application-priority', p))
+        .filter((x) => x.parcelType === 'traffic-policy')
+        .flatMap((x) =>
+          (Array.isArray(x.payload?.data?.sequences) ? x.payload.data.sequences : [])
+            .map((s: Record<string, any>) => ({ s, actions: serviceActions(s) }))
+            .filter(({ actions }: { actions: unknown[] }) => actions.length)
+            .map(({ s, actions }: { s: Record<string, any>; actions: unknown[] }) => ({
+              source: 'UX 2.0 traffic policy',
+              profile: p.name,
+              policy: x.payload?.name,
+              policyId: x.parcelId,
+              sequenceId: s.sequenceId?.value ?? s.sequenceId,
+              sequenceName: s.sequenceName?.value ?? s.sequenceName,
+              match: s.match,
+              serviceActions: actions,
+            }))
+        )
+    );
+    let ux1: unknown[] = [];
+    if (args.profile === undefined) {
+      const list = await this.apiService.get<{ data?: Array<Record<string, unknown>> }>('/dataservice/template/policy/definition/data');
+      const defs = await mapLimit(list?.data ?? [], 4, (d) =>
+        this.apiService
+          .get<Record<string, any>>(`/dataservice/template/policy/definition/data/${encodeURIComponent(String(d.definitionId))}`)
+          .catch((e) => ({ name: d.name, definitionId: d.definitionId, error: errorMessage(e) }) as Record<string, any>)
+      );
+      ux1 = defs.flatMap((d): unknown[] =>
+        d.error
+          ? [{ source: 'UX 1.0 data policy', policy: d.name, policyId: d.definitionId, error: d.error }]
+          : (Array.isArray(d.sequences) ? d.sequences : [])
+              .map((s: Record<string, any>) => ({ s, actions: serviceActions(s) }))
+              .filter(({ actions }: { actions: unknown[] }) => actions.length)
+              .map(({ s, actions }: { s: Record<string, any>; actions: unknown[] }) => ({
+                source: 'UX 1.0 data policy',
+                policy: d.name,
+                policyId: d.definitionId,
+                sequenceId: s.sequenceId,
+                sequenceName: s.sequenceName,
+                match: s.match,
+                serviceActions: actions,
+              }))
+      );
+    }
+    return { data: [...ux2, ...ux1] };
   }
 
   /** The views of a monitoring tool with their endpoint, device handling and parameters (required ones end in *). */

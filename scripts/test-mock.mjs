@@ -241,6 +241,32 @@ const OMP_V6 = [10, 20, 30].map((v) => ({ 'vpn-id': String(v), prefix: `2001:db8
 const ompStats = { queries: [] };
 const mock = { ompIgnoreFilters: false, extraEdges: 0, bfdDelayMs: 0, bfdStatus: 200, bfdCalls: 0, bfdInFlight: 0, bfdMaxInFlight: 0, templateListDelayMs: 3000, preview: null, migration: false, echo: false, echoStatus: 0, echoRows: 0, echoDelayMs: 0, echoMalformed: false };
 const monStats = { calls: [], inFlight: 0, maxInFlight: 0 };
+// Service insertion: one chain, an attachment (nested under a LAN VPN), a UX 2.0 traffic policy and a UX 1.0 data policy
+// that each send one sequence to a service, plus a sequence and a policy that do not.
+const SI = { svc: 'c1000000-0000-4000-8000-000000000001', ap: 'c1000000-0000-4000-8000-000000000002' };
+const SERVICE_INSERTION = {
+  '/dataservice/v1/service-insertion/service-chain-mapping': [{ serviceChainDefinitionName: 'FW-IPS', serviceChainNumber: 'SC1' }],
+  '/dataservice/v1/feature-profile/sdwan/service': [{ profileId: SI.svc, profileName: 'Hub-Service' }],
+  [`/dataservice/v1/feature-profile/sdwan/service/${SI.svc}`]: { associatedProfileParcels: [
+    { parcelType: 'lan/vpn', parcelId: 'vpn-10', payload: { name: 'VPN10' }, subparcels: [
+      { parcelType: 'service-insertion-attachment', parcelId: 'sia-1', payload: { name: 'FW-attach', data: { serviceChainDefinitionID: { value: 'SC1' }, vpn: { value: 10 } } } },
+    ] },
+    { parcelType: 'routing/bgp', parcelId: 'bgp-1', payload: { name: 'BGP' } },
+  ] },
+  '/dataservice/v1/feature-profile/sdwan/service/service-insertion-attachment/schema': { request: { title: 'service-fabric-attachment-gateway Parcel Schema' } },
+  '/dataservice/v1/feature-profile/sdwan/application-priority': [{ profileId: SI.ap, profileName: 'Branch-AppPriority' }],
+  [`/dataservice/v1/feature-profile/sdwan/application-priority/${SI.ap}`]: { associatedProfileParcels: [
+    { parcelType: 'traffic-policy', parcelId: 'tp-1', payload: { name: 'Steer-FW', data: { sequences: [
+      { sequenceId: { value: 1 }, sequenceName: { value: 'to-fw' }, actions: [{ set: [{ serviceChain: { serviceChainName: 'SC1', vpn: 10 } }] }] },
+      { sequenceId: { value: 2 }, sequenceName: { value: 'count-only' }, actions: [{ count: 'c1' }] },
+    ] } } },
+  ] },
+  '/dataservice/template/policy/definition/data': { data: [{ definitionId: 'dp-1', name: 'Legacy-FW' }, { definitionId: 'dp-2', name: 'No-Service' }] },
+  '/dataservice/template/policy/definition/data/dp-1': { name: 'Legacy-FW', sequences: [
+    { sequenceId: 10, sequenceName: 'fw', actions: [{ type: 'set', parameter: [{ field: 'service', value: { type: 'FW', vpn: '10' } }] }] },
+  ] },
+  '/dataservice/template/policy/definition/data/dp-2': { name: 'No-Service', sequences: [{ sequenceId: 10, actions: [{ type: 'count', parameter: 'x' }] }] },
+};
 const deviceIdOf = (url) => url.searchParams.get('deviceId');
 // Multi-tenant Manager: provider account switches tenants with a VSessionId header.
 const TENANTS = [
@@ -289,6 +315,10 @@ function handler(req, res) {
     const authorized = (bearer && tokens.has(bearer)) || req.headers.cookie?.includes('JSESSIONID=sess-1');
     if (!authorized) return send(401, { error: 'unauthorized' });
     if (p === '/dataservice/client/token') return send(200, '"xsrf"');
+    if (mock.si && Object.hasOwn(SERVICE_INSERTION, p)) {
+      monStats.calls.push({ method: req.method, path: p, query: Object.fromEntries(url.searchParams) });
+      return send(200, SERVICE_INSERTION[p]);
+    }
     // Monitoring tests: every request except the device inventory is recorded and echoed (or failed / slowed / enlarged).
     if (mock.echo && p !== '/dataservice/device') {
       monStats.calls.push({ method: req.method, path: p, query: Object.fromEntries(url.searchParams), body: raw ? JSON.parse(raw) : undefined });
@@ -603,7 +633,7 @@ async function tool(client, name, args = {}) {
 // ---------- Tests ----------
 const c = await connect();
 const { tools } = await c.listTools();
-check('tool list (read-only server: write tools hidden)', tools.length === 127, `${tools.length} tools`);
+check('tool list (read-only server: write tools hidden)', tools.length === 128, `${tools.length} tools`);
 check(
   'write tools hidden when writes are disabled; call_api_operation kept',
   !tools.some((x) => /^(create|update|delete|associate|clone|deploy|run)_/.test(x.name)) && tools.some((x) => x.name === 'call_api_operation')
@@ -1433,7 +1463,7 @@ check('IPv6 writes disabled by default', /VMANAGE_ALLOW_WRITE=true/.test(r.error
 await cv.close();
 
 const wv = await connect({ VMANAGE_ALLOW_WRITE: 'true' });
-check('tool list with writes enabled', (await wv.listTools()).tools.length === 170);
+check('tool list with writes enabled', (await wv.listTools()).tools.length === 171);
 const lastV6Write = () => stats.v6Writes.at(-1);
 const PREFIX_LIST = { name: 'Branch-v6', description: 'test', entries: [{ ipv6Prefix: '2001:db8:10::/48' }] };
 r = await tool(wv, 'create_ipv6_policy_object', { kind: 'prefix-list', body: PREFIX_LIST });
@@ -2220,6 +2250,42 @@ mock.extraEdges = 0;
   check('run_device_diagnostic: body required by the spec', /requires a request body/.test(r.error ?? ''), r.error ?? 'accepted');
   await wd.close();
   mock.echo = false;
+}
+
+// Service chaining / service insertion.
+{
+  const si = await connect();
+  mock.si = true;
+  let s = await tool(si, 'get_service_insertion');
+  check('get_service_insertion: chain-mapping (default view)', s.value?.data?.[0]?.serviceChainNumber === 'SC1', JSON.stringify(s.value ?? s.error));
+  s = await tool(si, 'get_service_insertion', { view: 'attachments' });
+  check(
+    'get_service_insertion: attachments found in nested parcels, other parcels left out',
+    s.value?.data?.length === 1 && s.value.data[0].parcelId === 'sia-1' && s.value.data[0].profile === 'Hub-Service' && s.value.data[0].data?.serviceChainDefinitionID?.value === 'SC1' &&
+      monStats.calls.some((c) => c.path.endsWith(SI.svc) && c.query.details === 'true'),
+    JSON.stringify(s.value ?? s.error)
+  );
+  monStats.calls = [];
+  s = await tool(si, 'get_service_insertion', { view: 'attachment-schema', schema_type: 'put' });
+  check('get_service_insertion: attachment-schema with schemaType', s.value?.request?.title?.includes('attachment') && monStats.calls[0]?.query.schemaType === 'put', JSON.stringify(monStats.calls[0] ?? s.error));
+  s = await tool(si, 'get_service_insertion', { view: 'policies' });
+  const rows = s.value?.data ?? [];
+  check(
+    'get_service_insertion: policies keep only sequences that send traffic to a service (UX 2.0 and UX 1.0)',
+    rows.length === 2 && rows.some((r) => r.source === 'UX 2.0 traffic policy' && r.policy === 'Steer-FW' && r.sequenceId === 1) &&
+      rows.some((r) => r.source === 'UX 1.0 data policy' && r.policy === 'Legacy-FW' && r.serviceActions?.[0]?.parameter?.[0]?.field === 'service'),
+    JSON.stringify(rows)
+  );
+  for (const [label, args, pattern] of [
+    ['get_service_insertion: unknown view rejected', { view: 'constructor' }, /view must be one of/],
+    ['get_service_insertion: unknown profile rejected', { view: 'attachments', profile: 'nope' }, /No sdwan service profile named "nope"/],
+    ['get_service_insertion: bad schema_type rejected', { view: 'attachment-schema', schema_type: 'delete' }, /schema_type must be post or put/],
+  ]) {
+    s = await tool(si, 'get_service_insertion', args);
+    check(label, pattern.test(s.error ?? ''), s.error ?? 'accepted');
+  }
+  mock.si = false;
+  await si.close();
 }
 
 // Multi-tenant: fixed tenant, per-call switching, cache isolation, expired VSessionId.
